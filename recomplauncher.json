@@ -1,0 +1,38 @@
+{
+    "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+    "format": 1,
+    "name": "MSR2DS",
+    "repo": "gminustwo/msr2ds",
+    "saves": [
+        "{install}/user/native-save/savedata",
+        "{local}/msr-native/user/native-save/savedata"
+    ],
+    "folders": {
+        "saves": [
+            {
+                "path": "{install}/user/native-save/savedata",
+                "if": "{install}/user/native-save/savedata"
+            },
+            {
+                "path": "{local}/msr-native/user/native-save/savedata"
+            }
+        ],
+        "logs": [
+            {
+                "path": "{install}/user",
+                "if": "{install}/user"
+            },
+            {
+                "path": "{local}/msr-native/user"
+            }
+        ]
+    },
+    "actions": [
+        {
+            "id": "saves",
+            "label": "Saves",
+            "help": "Your three save files (A, B and C).",
+            "open": "saves"
+        }
+    ]
+}
