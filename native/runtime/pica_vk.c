@@ -1043,13 +1043,18 @@ static uint32_t ds_pack(const DsState *s) {
    anything else (the profile list's Mii icon, faces, the signature) may be drawn once and kept, so its draws wait for a
    pipeline compiled on the spot. Compiled pipelines are kept in
    pwr_pipelines.bin, so this mostly happens the first time an effect appears. PWR_VK_SYNC_PIPES=1: compile every pipeline when
-   first needed, as before. */
-typedef struct { PKey k; VkPipeline p; atomic_int ready; VkPipeline sp; } Pipe;   /* sp: compiled on the spot while p is still queued */
-#define MAX_PIPES 4096
-static Pipe pipes[MAX_PIPES]; static int npipes;
+   first needed, as before.
+   A full table takes no new pipeline: a new effect draws with its generic one from then on. pwr_shaders.bin (below) keeps the
+   SEED_KEEP most recently used, a quarter of the table, so that a run starts with room (#62: it kept every one, with 4096
+   places; once 4096 had been saved, each run started full and every effect not seen before stayed on its generic pipeline). */
+typedef struct { PKey k; VkPipeline p; atomic_int ready; VkPipeline sp; uint64_t used; } Pipe;   /* sp: compiled on the spot while p is still queued; used: use_clock at its last lookup (0: not in this run) */
+#define MAX_PIPES 16384
+#define SEED_KEEP 4096
+static Pipe pipes[MAX_PIPES]; static int npipes; static uint64_t use_clock;
 static int pipe_hash[2 * MAX_PIPES];   /* open addressing: index + 1 into pipes, 0 = empty */
 static VkPipelineCache pcache; static atomic_int pcache_dirty; static double pcache_saved;   /* pwr_pipelines.bin in the working directory */
-static int pq[MAX_PIPES], pq_head, pq_tail; static pthread_mutex_t pq_lock = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t pq_cond = PTHREAD_COND_INITIALIZER;
+#define PQ_N (MAX_PIPES + 1)   /* (a ring of N holds N - 1: every pipe can be queued at once) */
+static int pq[PQ_N], pq_head, pq_tail; static pthread_mutex_t pq_lock = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t pq_cond = PTHREAD_COND_INITIALIZER;
 static atomic_int pipes_pending;
 int pica_vk_npipes(void) { GL_FWD(pica_gl_programs()); return npipes; }
 static uint32_t pkey_hash(const PKey *k) { const uint8_t *b = (const uint8_t *)k; uint32_t h = 2166136261u; for (size_t i = 0; i < sizeof *k; i++) h = (h ^ b[i]) * 16777619u; return h; }
@@ -1132,7 +1137,7 @@ static void *pipe_worker(void *arg) {
     for (;;) {
         pthread_mutex_lock(&pq_lock);
         while (pq_head == pq_tail) pthread_cond_wait(&pq_cond, &pq_lock);
-        int i = pq[pq_head]; pq_head = (pq_head + 1) % MAX_PIPES;
+        int i = pq[pq_head]; pq_head = (pq_head + 1) % PQ_N;
         pthread_mutex_unlock(&pq_lock);
         pipes[i].p = make_pipeline(&pipes[i].k);
         atomic_store_explicit(&pipes[i].ready, 1, memory_order_release);
@@ -1145,7 +1150,9 @@ static void *pipe_worker(void *arg) {
    pwr_shaders.bin (beside pwr_pipelines.bin) lists every generated vertex shader (its key and SPIR-V) and every pipeline
    (its key, the vertex shader named by kind and key) the game has used. At start-up they are all built again (four
    threads, the pipeline cache making most of them quick), so an effect seen before no longer waits for its shaders the
-   first time it appears in a session. The file names the vertex shader generator that wrote it (seed_stamp); another
+   first time it appears in a session. The pipelines are written most recently used first, at most SEED_KEEP of them;
+   the ones this run did not use keep their order from the file, so an effect no longer seen (or a key an older build
+   made) falls off the end in time. The file names the vertex shader generator that wrote it (seed_stamp); another
    generator's is dropped and written again. pica_vk_preload(0) (--preload-shaders=off, the launcher's "Preload shaders") or
    PWR_NO_PRELOAD=1 leaves this out, and the file is left as it is. */
 static int preload_on = 1; static atomic_int seed_dirty;
@@ -1167,8 +1174,15 @@ const char *pica_vsgen_build(void);
    so a rebuild no longer drops the file (it did until 2026-11-02, and every effect then compiled again in play). */
 static void seed_stamp(char out[64]) { memset(out, 0, 64); snprintf(out, 64, "%s%s", pica_vsgen_build(), g_vk_rp ? " vk11" : static_ds ? " ds" : ""); }   /* (the 1.1 mode: its own SPIR-V and keys; static_ds: its own keys) */
 
-typedef struct { uint32_t kind; uint64_t vkey; PKey k; } SeedPipe;
-static void seed_save(const SeedPipe *sp, uint32_t np) {
+typedef struct { uint32_t kind; uint64_t vkey; PKey k; uint64_t used; uint32_t idx; } SeedPipe;   /* (used, idx: for the order; not written) */
+static int seed_cmp(const void *a, const void *b) {
+    const SeedPipe *x = a, *y = b;
+    if (x->used != y->used) return x->used > y->used ? -1 : 1;   /* the most recently used first */
+    return x->idx < y->idx ? -1 : x->idx > y->idx;   /* the rest (unused in this run) in the file's order */
+}
+static void seed_save(SeedPipe *sp, uint32_t np) {
+    qsort(sp, np, sizeof *sp, seed_cmp);
+    if (np > SEED_KEEP) np = SEED_KEEP;
     FILE *f = fopen("pwr_shaders.bin.tmp", "wb");
     if (!f) return;
     uint32_t pk = sizeof(PKey), nvs = 0; char stamp[64]; seed_stamp(stamp);
@@ -1195,7 +1209,7 @@ static SeedPipe *seed_snapshot(uint32_t *np) {
         PKey k = pipes[i].k; uint32_t kind = 0; uint64_t vkey = 0;
         VkShaderModule m = (VkShaderModule)(uintptr_t)k.vs;
         if (m == vs_mod) kind = 0; else if (m == vsi_mod) kind = 1; else if (pica_vsgen_lookup(m, &vkey)) kind = 2; else continue;
-        k.vs = 0; sp[n].kind = kind; sp[n].vkey = vkey; sp[n].k = k; n++;
+        k.vs = 0; sp[n].kind = kind; sp[n].vkey = vkey; sp[n].k = k; sp[n].used = pipes[i].used; sp[n].idx = (uint32_t)i; n++;
     }
     *np = n; return sp;
 }
@@ -1294,7 +1308,7 @@ static void seed_load(void) {
         uint32_t hs = pkey_hash(&k) & (2 * MAX_PIPES - 1), j; int dup = 0;
         for (j = hs; pipe_hash[j]; j = (j + 1) & (2 * MAX_PIPES - 1)) if (!memcmp(&pipes[pipe_hash[j] - 1].k, &k, sizeof k)) { dup = 1; break; }
         if (dup || npipes >= MAX_PIPES) continue;
-        Pipe *e = &pipes[npipes]; e->k = k; e->p = e->sp = VK_NULL_HANDLE; atomic_store(&e->ready, 0);
+        Pipe *e = &pipes[npipes]; e->k = k; e->p = e->sp = VK_NULL_HANDLE; e->used = 0; atomic_store(&e->ready, 0);
         pipe_hash[j] = ++npipes;
         preload_idx[preload_n++] = (int)(e - pipes);
     }
@@ -1310,9 +1324,13 @@ static void seed_load(void) {
 /* the pipe for k, created now (sync) or queued for the worker (urgent: ahead of the others); NULL when the table is full */
 static Pipe *pipe_get(const PKey *k, int sync, int urgent) {
     uint32_t hs = pkey_hash(k) & (2 * MAX_PIPES - 1), j;
-    for (j = hs; pipe_hash[j]; j = (j + 1) & (2 * MAX_PIPES - 1)) if (!memcmp(&pipes[pipe_hash[j] - 1].k, k, sizeof *k)) return &pipes[pipe_hash[j] - 1];
-    if (npipes >= MAX_PIPES) return NULL;
-    Pipe *e = &pipes[npipes]; e->k = *k; e->p = e->sp = VK_NULL_HANDLE; atomic_store(&e->ready, 0);
+    for (j = hs; pipe_hash[j]; j = (j + 1) & (2 * MAX_PIPES - 1))
+        if (!memcmp(&pipes[pipe_hash[j] - 1].k, k, sizeof *k)) { Pipe *e = &pipes[pipe_hash[j] - 1]; e->used = ++use_clock; return e; }
+    if (npipes >= MAX_PIPES) {
+        static int told; if (!told) { told = 1; fprintf(stderr, "pica_vk: the pipeline table is full (%d): new effects draw with their generic pipeline\n", MAX_PIPES); }
+        return NULL;
+    }
+    Pipe *e = &pipes[npipes]; e->k = *k; e->p = e->sp = VK_NULL_HANDLE; e->used = ++use_clock; atomic_store(&e->ready, 0);
     pipe_hash[j] = ++npipes;
     atomic_store(&seed_dirty, 1);
     if (sync) {
@@ -1324,8 +1342,8 @@ static Pipe *pipe_get(const PKey *k, int sync, int urgent) {
         if (!started) { started = 1; for (int t = 0; t < 3; t++) if (!pthread_create(&th, NULL, pipe_worker, NULL)) pthread_detach(th); }   /* three: a new area or effect brings dozens */
         atomic_fetch_add(&pipes_pending, 1);
         pthread_mutex_lock(&pq_lock);
-        if (urgent) { pq_head = (pq_head + MAX_PIPES - 1) % MAX_PIPES; pq[pq_head] = (int)(e - pipes); }
-        else { pq[pq_tail] = (int)(e - pipes); pq_tail = (pq_tail + 1) % MAX_PIPES; }
+        if (urgent) { pq_head = (pq_head + PQ_N - 1) % PQ_N; pq[pq_head] = (int)(e - pipes); }
+        else { pq[pq_tail] = (int)(e - pipes); pq_tail = (pq_tail + 1) % PQ_N; }
         pthread_cond_signal(&pq_cond); pthread_mutex_unlock(&pq_lock);
     }
     return e;
