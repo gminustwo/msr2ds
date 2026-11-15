@@ -261,7 +261,9 @@ same `settings.ini`; LB and RB switch tabs.
   a Mac in fullscreen: more of the level above and below instead of bars), all
   on by default; camera zoom (0.70-1.50); bloom
   (0-100%, default 75%); HDR (Windows, once Use HDR is on in Windows' display
-  settings) with its highlights and paper white; **Anti-aliasing (FXAA)**;
+  settings) with its highlights and paper white (by default the display's peak,
+  up to 1000 nits, and Windows' SDR content brightness; **Reset HDR to the
+  defaults** brings those back); **Anti-aliasing (FXAA)**;
   **Smooth texture packs** (a pack's textures filtered smoothly, also where the
   game shows its own with sharp pixels); brightness, contrast and saturation
   (50-150%); internal resolution (Match

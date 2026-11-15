@@ -586,7 +586,7 @@ static int create_swapchain(void) {
         img_free(&target); img_free(&ui_layer);
         if (img_make(&target, sc_extent.width, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return -1;
         if (hdr_mode) {   /* HDR: the interface layer, views of the swapchain images (hdr.frag draws into them), the pipeline for this format */
-            if (img_make(&ui_layer, sc_extent.width, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return -1;
+            if (img_make(&ui_layer, sc_extent.width, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) return -1;   /* (copied: PWR_HDR_DUMP) */
             for (uint32_t i = 0; i < sc_count; i++) {
                 VkImageViewCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = sc_images[i], .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sc_format,
                     .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
@@ -626,8 +626,11 @@ static int create_swapchain(void) {
 }
 
 static int recreate_swapchain(void) {
+    const char *was = stage_set(STAGE_MAIN, "remaking the swapchain");
     queue_acquire(); vk_wait_device(dev); queue_release();
-    return create_swapchain();
+    const int r = create_swapchain();
+    stage_set(STAGE_MAIN, was);
+    return r;
 }
 /* the window's surface again, and its swapchain: Android destroys the window's surface while the app is in the
    background (VK_ERROR_SURFACE_LOST_KHR, or the foreground again: SDL_APP_DIDENTERFOREGROUND) */
@@ -1052,6 +1055,12 @@ int video_init(int scale) {
     /* every pad's face buttons by position (A = bottom), as input.c, glyphs.cpp and the settings take them: SDL 2 names a
        Nintendo pad's by label unless told (its A, on the right, came as SDL's A, the bottom button) */
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
+#ifdef SDL_HINT_AUTO_UPDATE_JOYSTICKS
+    /* the controllers are updated once a frame by video_frame (SDL_JoystickUpdate), apart from the window's messages
+       (SDL_PollEvent, which did both), so main.c's long-frame lines tell the two apart: on Windows a scan of the devices
+       after a change in them can take half a second (2026-11-15: a 0.5 s freeze inside SDL_PollEvent on the user's PC) */
+    SDL_SetHint(SDL_HINT_AUTO_UPDATE_JOYSTICKS, "0");
+#endif
 #ifdef __APPLE__
     /* MoltenVK: its errors only in the log (not its device report, nor a warning for each pipeline that Metal always
        restarts primitives); MVK_CONFIG_LOG_LEVEL set by the player wins */
@@ -1545,6 +1554,65 @@ static int gl_frame(int dw, int dh, const ScreenSource *top, const ScreenSource 
 }
 #endif
 
+/* PWR_HDR_DUMP=<s>[,<s>...]: at those run times (from the first frame) with HDR on, the HDR pass's two inputs as they
+   are, the game's picture and the interface layer (8 bits, gamma-encoded, the layer premultiplied by its coverage), with
+   the paper white, peak, knee and desaturation it used: hdr_dump_<n>.txt, _game.rgba and _ui.rgba in the working folder.
+   tools/dev/hdr_sim.py works out the HDR picture from them for any settings (2026-11-15: an HDR10 window's screen
+   captures look washed out, so the output itself cannot be judged from one) */
+static VkBuffer dump_buf; static VkDeviceMemory dump_mem; static uint8_t *dump_ptr; static VkDeviceSize dump_size;
+static float dump_paper, dump_peak = -1, dump_knee, dump_desat;   /* dump_peak >= 0: copies recorded this frame, written after it */
+static int dump_wanted(void) {   /* 1 when a dump time has come (each once) */
+    static const char *list; static int checked, done; static double t0;
+    if (!checked) { checked = 1; list = getenv("PWR_HDR_DUMP"); t0 = now_s(); }
+    if (!list) return 0;
+    const double t = now_s() - t0; const char *p = list;
+    for (int i = 0; *p; i++) {
+        char *end; const double at = strtod(p, &end);
+        if (end == p) break;
+        if (i == done && t >= at) { done++; return 1; }
+        p = *end == ',' ? end + 1 : end;
+    }
+    return 0;
+}
+static int dump_record(void) {   /* the copies, into this frame's command buffer (target and ui_layer: shader-read layout) */
+    const VkDeviceSize one = (VkDeviceSize)target.w * target.h * 4;
+    if (dump_size < 2 * one) {
+        if (dump_buf) { vkUnmapMemory(dev, dump_mem); vkDestroyBuffer(dev, dump_buf, NULL); vkFreeMemory(dev, dump_mem, NULL); dump_buf = VK_NULL_HANDLE; dump_size = 0; }
+        VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 2 * one, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
+        if (vkCreateBuffer(dev, &bi, NULL, &dump_buf) != VK_SUCCESS) return 0;
+        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(dev, dump_buf, &mr);
+        VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+            .memoryTypeIndex = mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) };
+        if (vkAllocateMemory(dev, &ai, NULL, &dump_mem) != VK_SUCCESS) { vkDestroyBuffer(dev, dump_buf, NULL); dump_buf = VK_NULL_HANDLE; return 0; }
+        vkBindBufferMemory(dev, dump_buf, dump_mem, 0);
+        if (vkMapMemory(dev, dump_mem, 0, 2 * one, 0, (void **)&dump_ptr) != VK_SUCCESS) return 0;
+        dump_size = 2 * one;
+    }
+    const Img *im[2] = { &target, &ui_layer };
+    for (int i = 0; i < 2; i++) {
+        barrier_img(im[i]->img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        VkBufferImageCopy c = { .bufferOffset = one * (VkDeviceSize)i, .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .imageExtent = { im[i]->w, im[i]->h, 1 } };
+        vkCmdCopyImageToBuffer(cmdbuf, im[i]->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dump_buf, 1, &c);
+    }
+    return 1;
+}
+static void dump_write(float paper, float peak, float knee, float desat) {   /* after the frame's fence */
+    static int n;
+    if (vk_wait_fences(dev, 1, &fence) != VK_SUCCESS) return;
+    const size_t one = (size_t)target.w * target.h * 4;
+    char fn[64]; const char *part[2] = { "game", "ui" };
+    for (int i = 0; i < 2; i++) {
+        snprintf(fn, sizeof fn, "hdr_dump_%d_%s.rgba", n, part[i]);
+        FILE *f = fopen(fn, "wb"); if (f) { fwrite(dump_ptr + one * (size_t)i, 1, one, f); fclose(f); }
+    }
+    snprintf(fn, sizeof fn, "hdr_dump_%d.txt", n);
+    FILE *f = fopen(fn, "w");
+    if (f) { fprintf(f, "width %u\nheight %u\nbgra %d\npaper %.1f\npeak %.1f\nknee %.3f\ndesat %.3f\nmode %d\n", target.w, target.h,
+                     target_fmt == VK_FORMAT_B8G8R8A8_UNORM, paper, peak, knee, desat, hdr_mode); fclose(f); }
+    fprintf(stderr, "video: HDR inputs written to hdr_dump_%d_*\n", n);
+    n++;
+}
+
 int video_frame(void) {
     test_pad_frame();
     SDL_Event e; int bottom_click = 0;
@@ -1552,7 +1620,13 @@ int video_frame(void) {
     Rect rt, rb; layout_rects(ww, wh, &rt, &rb);   /* window coordinates for touch; the drawing below uses drawable pixels */
     int dw0, dh0; drawable_size(&dw0, &dh0);
     float msx = ww > 0 ? (float)dw0 / (float)ww : 1.f, msy = wh > 0 ? (float)dh0 / (float)wh : 1.f;   /* the overlay's mouse: drawable pixels */
-    while (SDL_PollEvent(&e)) {
+    /* (the stages: main.c's long-frame lines) */
+#ifdef SDL_HINT_AUTO_UPDATE_JOYSTICKS
+    stage_set(STAGE_MAIN, "updating the controllers (SDL_JoystickUpdate: their state, a scan after a device change)");
+    SDL_JoystickUpdate();   /* (not by SDL_PollEvent: video_init) */
+#endif
+    while (stage_set(STAGE_MAIN, "reading the window's messages (SDL_PollEvent)"), SDL_PollEvent(&e)) {
+        stage_set(STAGE_MAIN, "handling a window or controller event");
         if (e.type == SDL_QUIT) return 0;
 #ifdef __ANDROID__
         if (e.type == SDL_APP_DIDENTERFOREGROUND) { surface_reset = 1; continue; }   /* a new window surface */
@@ -1700,6 +1774,7 @@ int video_frame(void) {
             break; }
         }
     }
+    stage_set(STAGE_MAIN, "reading the screens (the bottom screen's read-back)");
     if (opt_layout == L_AUTO) auto_update(now_s(), bottom_click);
     mouse_frame(rt);
     {   /* touch navigation: the left stick steps or glides; the game's input comes back once nothing is held */
@@ -1750,6 +1825,7 @@ int video_frame(void) {
     static int last_dw = -1, last_dh = -1; int dw, dh; drawable_size(&dw, &dh);
     if (last_dw >= 0 && (dw != last_dw || dh != last_dh)) { if (!use_gl && recreate_swapchain()) return 0; if (opt_res_match) match_resolution(dw, dh); }
     last_dw = dw; last_dh = dh;
+    stage_set(STAGE_MAIN, "the settings overlay's actions");
     msr_overlay_frame();   /* the settings overlay's actions: before an image is acquired, as V-Sync rebuilds the swapchain */
     {   /* save states: "Saved", "Loaded"... where the layout label goes */
         const char *m = msr_state_message();
@@ -1760,7 +1836,7 @@ int video_frame(void) {
 #endif
     {   /* HDR: the display's state when the settings open (Windows' "Use HDR" may have changed), the player's setting */
         static int was_visible; int vis = msr_overlay_visible();
-        if (vis && !was_visible) hdr_detect();
+        if (vis && !was_visible) { stage_set(STAGE_MAIN, "checking for HDR (DXGI, the display configuration)"); hdr_detect(); }
         was_visible = vis;
         if (swap && gpu_ok && hdr_wanted() != (hdr_mode != 0)) { if (recreate_swapchain()) return 0; }
     }
@@ -1770,10 +1846,14 @@ int video_frame(void) {
     if (surface_reset) { surface_reset = 0; if (recreate_surface()) return 0; }
     {   /* moved to another display, or its refresh rate changed: the present mode may too (present_mode), checked each second */
         static double checked; const double t = now_s();
-        if (swap && t - checked > 1.0) { checked = t; if (present_mode() != sc_present_mode && recreate_swapchain()) return 0; }
+        if (swap && t - checked > 1.0) {
+            checked = t; stage_set(STAGE_MAIN, "checking the display's refresh rate and present modes");
+            if (present_mode() != sc_present_mode && recreate_swapchain()) return 0;
+        }
     }
     if (!swap || !sc_extent.width || !sc_extent.height) return 1;
 
+    stage_set(STAGE_MAIN, "drawing the frame (the screens, the HUD, the menus)");
     double w0 = wait_clock();
     const char *stage_was = stage_set(STAGE_MAIN, "waiting for the GPU to finish the last frame shown");
     /* the last frame's fence, waited for in earnest (vk_wait.h): reset while still pending, the sets and the command
@@ -1865,7 +1945,11 @@ int video_frame(void) {
             vk_mark(cmdbuf, VKM_HDR, frame_mark);
             begin_pass_view(sc_views[idx], sc_format, sc_extent, VK_ATTACHMENT_LOAD_OP_DONT_CARE, 1);
             float pk, pp; msr_hdr(&pk, &pp); if (pk <= 0) pk = disp_peak; if (pp <= 0) pp = disp_paper;
-            Push hp = { { -1, -1, 1, 1 }, { W, H, 1, 1 }, { hdr_mode, 0, 0, 0 }, { pp, pk > pp ? pk : pp, 0.5f, 0 } };
+            /* the knee (the SDR luminance where the highlights' expansion starts) and how far it moves them toward white:
+               hdr.frag expand(); PWR_HDR_KNEE, PWR_HDR_DESAT for comparisons */
+            static float knee = -1, desat;
+            if (knee < 0) { const char *k = getenv("PWR_HDR_KNEE"), *d = getenv("PWR_HDR_DESAT"); knee = k ? (float)atof(k) : 0.75f; desat = d ? (float)atof(d) : 0.5f; }
+            Push hp = { { -1, -1, 1, 1 }, { W, H, 1, 1 }, { hdr_mode, 0, 0, 0 }, { pp, pk > pp ? pk : pp, knee, desat } };
             VkDescriptorImageInfo ii[2] = { { smp_linear, target.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }, { smp_linear, ui_layer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } };
             VkWriteDescriptorSet wds[2] = { { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[0] },
                                             { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[1] } };
@@ -1874,6 +1958,7 @@ int video_frame(void) {
             vkCmdPushConstants(cmdbuf, play_hdr, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof hp, &hp);
             vkCmdDraw(cmdbuf, 4, 1, 0, 0);
             end_pass();
+            if (dump_wanted() && dump_record()) { dump_paper = hp.extra[0]; dump_peak = hp.extra[1]; dump_knee = hp.extra[2]; dump_desat = hp.extra[3]; }
             barrier_img(sc_images[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
         } else {
             barrier_img(target.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
@@ -1923,6 +2008,7 @@ int video_frame(void) {
     }
     g_vid_wait_present += wait_clock() - w2;
     queue_release();   /* (with what the GX thread submitted meanwhile) */
+    if (dump_peak >= 0) { dump_write(dump_paper, dump_peak, dump_knee, dump_desat); dump_peak = -1; }   /* PWR_HDR_DUMP */
     stage_set(STAGE_MAIN, stage_was);
 #ifdef __ANDROID__
     if (r == VK_SUBOPTIMAL_KHR) r = VK_SUCCESS;   /* not pre-rotated (create_swapchain: the compositor turns it), every frame */

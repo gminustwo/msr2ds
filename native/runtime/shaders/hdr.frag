@@ -7,7 +7,8 @@ layout(push_constant) uniform P {
     vec4 dst;      // present.vert's quad: the whole target
     vec4 src;
     ivec4 mode;    // x: 1 HDR10, 2 scRGB
-    vec4 extra;    // x: paper white (nits), y: peak (nits), z: the knee (SDR level where the expansion starts)
+    vec4 extra;    // x: paper white (nits), y: peak (nits), z: the knee (SDR level where the expansion starts), w: how far
+                   // the expanded light moves toward white
 } p;
 layout(set = 0, binding = 0) uniform sampler2D game;   // the presentation's target (SDR, gamma-encoded)
 layout(set = 0, binding = 1) uniform sampler2D ui;     // the interface layer: colour premultiplied by coverage, gamma-encoded
@@ -17,13 +18,19 @@ layout(location = 0) out vec4 o;
 // SDR content was made for a gamma 2.2 display (as the 3DS's LCDs and most monitors show it)
 vec3 linear(vec3 c) { return pow(max(c, vec3(0.0)), vec3(2.2)); }
 
-// luminance above the knee rises smoothly to peak / paper at SDR white (slope 1 at the knee); the colour keeps its hue
+// luminance above the knee rises smoothly to peak / paper at SDR white (slope 1 at the knee), keeping its hue while the
+// color moves toward white as it rises, as bright light does. 2026-11-15, the user: the brightness or saturation "way
+// too high". From half of SDR white's luminance (the knee before), lit surfaces became colored lights at the peak: the
+// title's lime-green planet rim, a Chozo statue's teal metal and orange rock at 1000-1840 nits, fully saturated. The knee
+// is now 75% (video.c) and the color moves halfway to white by SDR white (tools/dev/hdr_sim.py, on captures of play):
+// over 3x paper white in play 1.3% of the picture before, 0.2% now, the glare, white-hot spots and glowing rings.
 vec3 expand(vec3 c) {
     float r = p.extra.y / p.extra.x, k = p.extra.z;
     float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
     if (y <= k || r <= 1.0) return c;
     float t = min((y - k) / (1.0 - k), 1.0);
-    return c * ((y + (r - 1.0) * t * t) / y);
+    float y2 = y + (r - 1.0) * t * t;
+    return mix(c * (y2 / y), vec3(y2), p.extra.w * t);
 }
 
 vec3 pq(vec3 nits) {

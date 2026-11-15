@@ -145,6 +145,12 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   (2026-11-03: behind the file select the title scene's highlights, expanded first, stayed brighter than the menu).
   Behind the title menus (the file select) the view darkens by 25-60% as the Title menu background setting says
   (20% before), the pause menu's by 45%.
+  The expansion starts at 75% of SDR white's luminance and moves the color halfway to white by SDR white (2026-11-15,
+  the user: brightness or saturation "way too high"; from 50%, lit surfaces such as the title's lime-green planet rim
+  and a Chozo statue's teal metal reached the peak fully saturated). `PWR_HDR_DUMP=<s>,...` writes the HDR pass's inputs
+  at those run times and `tools/dev/hdr_sim.py` works out the picture from them for any settings (views and false-color
+  maps over paper white), as captures of an HDR10 window cannot be judged; `PWR_HDR_KNEE`, `PWR_HDR_DESAT` change the
+  curve in the game. The settings' **Reset HDR to the defaults** puts back the display's own values.
 - Hard Mode from the start (2026-11-03, the Game tab, on by default): the game offers Hard only in a beaten save's New
   Game. With it on, every New Game opens the difficulty list (Normal, Hard, Fusion) and so does a new file's Play
   (`cheats.h`: its handler branches to the New Game's), which the game otherwise starts on Normal. The list was made
@@ -350,7 +356,11 @@ presenter run on Vulkan 1.1 (`g_vk_rp`, `vk_rp.h`). On a PC `--renderer=auto` st
   rebuild no longer throws it away; the log (stderr) is buffered and written with the 2 s stats (unbuffered, those
   writes cost ~19 ms on the VBlank thread every 2 s); the shader/pipeline cache saves and the infinite energy/Aeion heap
   scan run on threads of their own. The 2 s line shows `frame-max` and the frames over 10/20/50 ms; `PWR_HITCH=<ms>`
-  logs each longer frame with the GX worker's and the main loop's share. At 9x/144 while firing: 144.0 FPS, longest
+  logs each longer frame with the GX worker's and the main loop's share. Every frame over 200 ms gets a line (always
+  on, at most 40 a run; main.c long_frames, 2026-11-15: freezes of 0.3-0.5 s in a player's log that the 2 s lines could
+  not place): the watchdog thread samples, every 25 ms from 50 ms into a frame, the main thread's and the GX thread's
+  stages and what the game's frame thread does (kernel.c k_frame_where: its svc and service, a wait for the run token
+  with the thread that runs meanwhile, or a wait outside the kernel), and the line gives each one's time. At 9x/144 while firing: 144.0 FPS, longest
   frame 7.1 ms; from an empty cache no frame over 20 ms. `PWR_LOG_UNBUFFERED=1`, `PWR_VSGEN_SYNC=1`,
   `PWR_VSGEN_OPT=<0-2>` go back to the old behaviour for comparison.
 - 90, 120 and 144 FPS hold steady (2026-11-02): the GX worker no longer waits for the GPU in a frame. The bottom

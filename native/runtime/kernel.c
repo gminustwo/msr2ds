@@ -189,8 +189,8 @@ static void take_token(KThread *self) {
     if (!self->abandon) running = self;
 }
 /* a guest thread about to wait for something outside the kernel (gsp.c: room in the GX queue) lets the others run meanwhile */
-void k_wait_outside_begin(void) { if (!cur) return; pthread_mutex_lock(&K); give_token(cur); pthread_mutex_unlock(&K); }
-void k_wait_outside_end(void) { if (!cur) return; pthread_mutex_lock(&K); take_token(cur); pthread_mutex_unlock(&K); }
+void k_wait_outside_begin(const char *what) { if (!cur) return; cur->outside = what; pthread_mutex_lock(&K); give_token(cur); pthread_mutex_unlock(&K); }
+void k_wait_outside_end(void) { if (!cur) return; cur->outside = NULL; pthread_mutex_lock(&K); take_token(cur); pthread_mutex_unlock(&K); }
 void k_stats(void) {
     pthread_mutex_lock(&K);
     fprintf(stderr, "kernel: token waits behind a lower-priority thread %llu x %.3f ms, others %llu x %.3f ms\n",
@@ -444,7 +444,9 @@ static void svc_body(CPU *c, uint32_t num, uint32_t pc);
 void rt_svc(CPU *c, uint32_t num, uint32_t pc) {
     KThread *t = cur;
     if (t) { t->svc_num = num; t->svc_lr = c->r[14]; memcpy(t->svc_r, c->r, sizeof t->svc_r);
-             t->svc_cmd = num == 0x32 ? rd32(c->tls + TLS_CMDBUF) : 0; t->in_svc = 1; }
+             t->svc_cmd = num == 0x32 ? rd32(c->tls + TLS_CMDBUF) : 0;
+             if (num == 0x32) { KObject *o = k_obj(c->r[0]); t->svc_ipc = o && o->svc ? o->svc->name : NULL; }
+             t->in_svc = 1; }
     k_ev(1, num, c->r[14]);
     svc_body(c, num, pc);
     if (t) t->in_svc = 0;
@@ -475,6 +477,35 @@ void k_hang_report(void) {
             fprintf(stderr, " [%x %s sig %d count %d%s]", hs[k], o->type < 11 ? tn[o->type] : "?", o->signaled, o->count,
                     o->type == KO_MUTEX && o->owner ? (o->owner->index == 0 ? " owner k0" : " owned") : ""); }
         fputc('\n', stderr);
+    }
+}
+
+/* main.c's long-frame lines, sampled while a frame takes long: what a guest thread is doing (racy reads, diagnostics
+   only). The frame thread's work in the load line includes its waits for the run token and outside the kernel, so these
+   name the thread that holds the token too. */
+static int thread_where(const KThread *t, char *out, size_t n) {
+    const char *o = t->outside;
+    if (o) return snprintf(out, n, "%s", o);
+    if (t->ready) return snprintf(out, n, "waiting for its turn to run");
+    if (!t->in_svc) return snprintf(out, n, "running the game's code");
+    switch (t->svc_num) {
+    case 0x0A: return snprintf(out, n, "%s", t->svc_lr == g_k_limiter_lr ? "asleep in its frame limit" : "asleep (svcSleepThread)");
+    case 0x22: return snprintf(out, n, "waiting on an address arbiter");
+    case 0x24: case 0x25: return snprintf(out, n, "waiting (svcWaitSynchronization: the VBlank, the GPU or another thread)");
+    case 0x32: return snprintf(out, n, "in a request to %s (command %08x)", t->svc_ipc ? t->svc_ipc : "a service", t->svc_cmd);
+    default: return snprintf(out, n, "in svc %02x", t->svc_num);
+    }
+}
+void k_frame_where(char *out, size_t n) {
+    const int fi = g_k_frame_thread;
+    const KThread *t = fi >= 0 && fi < MAX_THREADS ? threads[fi] : NULL;
+    if (!t) { snprintf(out, n, "not identified yet (the game has not reached its frame limit)"); return; }
+    if (freeze_req) { snprintf(out, n, "stopped for a save state"); return; }
+    const int k = thread_where(t, out, n);
+    const KThread *r = running;
+    if (t->ready && !t->outside && r && r != t && k > 0 && (size_t)k < n) {
+        char w[112]; thread_where(r, w, sizeof w);
+        snprintf(out + k, n - (size_t)k, " (thread k%d, priority %d, runs: %s)", r->index, r->prio, w);
     }
 }
 
