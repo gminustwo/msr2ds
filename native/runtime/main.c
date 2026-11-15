@@ -573,7 +573,12 @@ int main(int argc, char **argv) {   /* SDL_main */
     g_android_argc = argc; g_android_argv = (const char *const *)argv;
     const int r = msr_main(argc, argv);
     if (argc > 1) android_after_game(0, 1);   /* it could not start (the log says why) */
-    return r;
+    /* the launcher's end (Quit, its window closed, or no window): its process ends too, as the game's does. When main
+       returned, SDL's activity finished and the process stayed, so the app's next start ran main again in it, over the
+       last run's state (#58, #63: the new window's first swapchain was made with the last run's as its old one, and
+       refused with VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) */
+    fflush(NULL);
+    _exit(r);
 }
 #undef main
 #define main msr_main
