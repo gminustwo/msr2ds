@@ -2,7 +2,7 @@
 // Samus Returns' single-screen compositor: pieces of the bottom screen over the game view, as the emulator-based
 // build's vulkan_present_msr.frag (keep the two in step). Here the bottom screen is screen-oriented, so the hard edge
 // bits are left, top, right, bottom.
-//   style: x = opacity, y/z = luma key low/high edge (mode 3: y = gain), w = mode
+//   style: x = opacity, y/z = luma key low/high edge (modes 0 and 3: y = gain), w = mode
 //          (0 plain, 1 luma-keyed, 2 solid colour, 3 drawn over black)
 //   flags.x: edge feather width, in percent of the quad (low byte); bits 8-11 keep the left, top, right and bottom
 //            sides hard. flags.y: circular mask radius, in percent (0 = none)
@@ -67,5 +67,11 @@ void main() {
         float brightness = max(screen.r, max(screen.g, screen.b));
         alpha *= smoothstep(p.style.y, p.style.z, brightness);
     }
-    o = vec4(screen.rgb, alpha * opacity);
+    vec3 rgb = screen.rgb;
+    if (mode == 0 && p.style.y > 1.0) {
+        // brighter (the minimap's brightness): scaled as a whole where a channel would pass 1, so it keeps its hue
+        rgb *= p.style.y;
+        rgb /= max(1.0, max(rgb.r, max(rgb.g, rgb.b)));
+    }
+    o = vec4(rgb, alpha * opacity);
 }

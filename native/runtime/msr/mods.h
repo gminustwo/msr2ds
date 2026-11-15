@@ -32,6 +32,7 @@ void SetModEnabled(const std::string& name, bool enabled);
 void MoveMod(const std::string& name, int direction);
 
 std::string TexturePackFolder();
+std::string TextureDumpFolder();   ///< Where "Dump game textures" writes, as Azahar: user/dump/textures/<title ID>/
 std::vector<TexturePack> TexturePacks();
 std::string Describe(const TexturePack& pack);
 void SetPackEnabled(const std::string& name, bool enabled);

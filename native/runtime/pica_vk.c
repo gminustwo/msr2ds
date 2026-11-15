@@ -29,6 +29,7 @@
 #include "vk_push.h"
 #include "vk_rp.h"
 #include "vk_wait.h"
+#include "vk_diag.h"
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
@@ -53,6 +54,9 @@ VkShaderModule pica_vsgen_module(VkDevice dev);   /* pica_vsgen.c */
 int video_vk(VkPhysicalDevice *p, VkDevice *d, VkQueue *q, uint32_t *family);
 void video_queue_lock(void);
 void video_queue_unlock(void);
+VkResult video_queue_submit(uint32_t n, const VkCommandBuffer *cbs, VkFence fence);   /* never waits for presenting (video.c) */
+int video_fence_kept(VkFence fence);
+void video_fence_submitted(VkFence fence);
 
 static const uint32_t vert_spv[] =
 #include "pica.vert.inc"
@@ -81,6 +85,10 @@ static const uint32_t frag_nd_spv11[] =
 ;
 
 static VkPhysicalDevice phys; static VkDevice dev; static VkQueue queue; static uint32_t qfam;
+/* This thread's fences, whose submission video.c may still hold (video_queue_submit): a wait has it submitted first, a
+   status counts it as not done, so no fence is used here while the main thread submits it. */
+static VkResult gx_fence_wait(VkFence *fence) { video_fence_submitted(*fence); return vk_wait_fences(dev, 1, fence); }
+static int gx_fence_done(VkFence fence) { return !video_fence_kept(fence) && vkGetFenceStatus(dev, fence) == VK_SUCCESS; }
 static VkCommandPool cpool; static VkCommandBuffer cb_up, cb_draw; static VkFence fence;
 /* a batch is submitted in parts (see kick()): each part has its own upload and draw command buffers */
 #define MAX_PARTS 32
@@ -255,6 +263,7 @@ static void begin_batch(void) {
     vkResetCommandBuffer(cb_draw, 0); vkBeginCommandBuffer(cb_draw, &bi);
     st_valid = 0;
     recording = 1; batch_no++;
+    vk_mark(cb_up, VKM_UPLOAD, batch_no); vk_mark(cb_draw, VKM_BATCH, batch_no);   /* (vk_diag.h) */
     memset(&bs, 0, sizeof bs); bs.t0 = now_ms(); bs.draws0 = g_vk_draws; bs.passes0 = g_vk_passes;
 }
 
@@ -479,7 +488,7 @@ static void wb_complete(Surf *s) {
     if (!s->wb_pending) return;
     uint64_t t0 = prof_ns();
     BatchSet *b = &sets[s->wb_set];
-    if (b->in_flight) { uint64_t f0 = prof_ns(); GX_WAIT("waiting for the GPU to finish an earlier batch (its set reused)", vk_wait_fences(dev, 1, &b->fence)); uint64_t d = prof_ns() - f0; g_prof_fence_ns += d; g_prof_wait_why[wb_why] += d; }
+    if (b->in_flight) { uint64_t f0 = prof_ns(); GX_WAIT("waiting for the GPU to finish an earlier batch (its set reused)", gx_fence_wait(&b->fence)); uint64_t d = prof_ns() - f0; g_prof_fence_ns += d; g_prof_wait_why[wb_why] += d; }
     s->wb_pending = 0;
     surf_writeback(s, s->wb_ptr);
     g_prof_wb_ns += prof_ns() - t0;
@@ -519,7 +528,7 @@ void pica_vk_sync_ready(void) {
     if (state != 1) return;
     for (int i = 0; i < nsurf; i++) {
         Surf *s = &surfs[i];
-        if (s->wb_pending && (!sets[s->wb_set].in_flight || vkGetFenceStatus(dev, sets[s->wb_set].fence) == VK_SUCCESS)) wb_complete(s);
+        if (s->wb_pending && (!sets[s->wb_set].in_flight || gx_fence_done(sets[s->wb_set].fence))) wb_complete(s);
     }
 }
 void pica_vk_alias_discard(uint32_t start, uint32_t end);
@@ -550,7 +559,7 @@ static void set_next(void) {
         wb_why = 2;
         for (int i = 0; i < nsurf; i++) if (surfs[i].wb_pending && surfs[i].wb_set == cur_set) wb_complete(&surfs[i]);   /* its ring is used again */
         wb_why = 0;
-        uint64_t f0 = prof_ns(); GX_WAIT("waiting for the GPU to finish a batch (its write-backs)", vk_wait_fences(dev, 1, &b->fence)); uint64_t d = prof_ns() - f0; g_prof_fence_ns += d; g_prof_wait_why[4] += d;
+        uint64_t f0 = prof_ns(); GX_WAIT("waiting for the GPU to finish a batch (its write-backs)", gx_fence_wait(&b->fence)); uint64_t d = prof_ns() - f0; g_prof_fence_ns += d; g_prof_wait_why[4] += d;
         vkResetFences(dev, 1, &b->fence); b->in_flight = 0;
         uint64_t ts[2 + 2 * PQ_MAX];
         if (b->qp && !vkGetQueryPoolResults(dev, b->qp, 0, 2 + 2u * b->npq, sizeof ts, ts, 8, VK_QUERY_RESULT_64_BIT) && ts[1] > ts[0]) {
@@ -569,7 +578,7 @@ static void set_next(void) {
 
 /* ---------------- textures ---------------- */
 typedef struct { uint32_t addr, w, h; int fmt, levels; Img im; uint64_t hash; uint32_t checked_list, used_batch, last_batch;
-                 uint64_t rep_key; Img rep; int rep_extra; int find_pending;
+                 uint64_t rep_key; Img rep; int rep_extra; int find_pending; unsigned dump_gen;
                  int glyph_sheet; unsigned glyph_ver; } Tex;   /* glyph_sheet: one of the game's face-button icon sheets (msr/glyphs.cpp) */   /* rep: a texture pack's replacement (msr/textures.cpp), rep_extra
                                                                           more mip levels than the game's (its scale, as a power of two) */
 static int tex_lod_extra[3];   /* per unit, for sampler_for: the replacement's extra levels */
@@ -656,6 +665,7 @@ static void alias_writeback(CopyAlias *a, int can_flush) {
     if (W > 1024 || H > 1024) return;
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     vkResetCommandBuffer(cb_mat, 0); vkBeginCommandBuffer(cb_mat, &bi);
+    { static uint32_t copies; vk_mark(cb_mat, VKM_COPY, ++copies); }
     static int fresh = 1; if (fresh) { to_general(cb_mat, mat_img.img, VK_IMAGE_ASPECT_COLOR_BIT); fresh = 0; }
     barrier_all(cb_mat, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
     VkImageBlit bl = { .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .srcOffsets = { { 0, 0, 0 }, { (int)(W * S), (int)(H * S), 1 } },
@@ -666,10 +676,9 @@ static void alias_writeback(CopyAlias *a, int can_flush) {
     vkCmdCopyImageToBuffer(cb_mat, mat_img.img, VK_IMAGE_LAYOUT_GENERAL, mat_buf.buf, 1, &cp);
     barrier_all(cb_mat, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
     vkEndCommandBuffer(cb_mat);
-    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb_mat };
-    video_queue_lock(); VkResult r = vkQueueSubmit(queue, 1, &si, mat_fence); video_queue_unlock();
+    VkResult r = video_queue_submit(1, &cb_mat, mat_fence);
     if (r) return;
-    GX_WAIT("waiting for the GPU to finish a copy", vk_wait_fences(dev, 1, &mat_fence)); vkResetFences(dev, 1, &mat_fence);
+    GX_WAIT("waiting for the GPU to finish a copy", gx_fence_wait(&mat_fence)); vkResetFences(dev, 1, &mat_fence);
     /* image row j = memory row H - 1 - j (tex_upload's order); the copy wrote memory rows 0..ch-1, columns 0..cw-1 */
     static const uint8_t mx2[8] = { 0, 1, 4, 5, 16, 17, 20, 21 }, my2[8] = { 0, 2, 8, 10, 32, 34, 40, 42 };
     const uint8_t *src = mat_buf.ptr; uint8_t *base = g_mem + a->addr;
@@ -970,6 +979,9 @@ static VkImageView tex_get_(int unit, int *full) {
         t->rep_key = msr_textures_active() ? msr_texture_find(g_mem + addr, w, h, fmt, t->hash, &t->find_pending) : 0;
     } else if (t->find_pending)   /* a pack worker works out its hash: asked again (the game's texture shows meanwhile) */
         t->rep_key = msr_texture_find(g_mem + addr, w, h, fmt, t->hash, &t->find_pending);
+    if (g_msr_dump_gen && (need || t->dump_gen != g_msr_dump_gen)) {   /* "Dump game textures": offered once (msr/textures.cpp) */
+        t->dump_gen = g_msr_dump_gen; msr_texture_dump(g_mem + addr, w, h, fmt, t->hash);
+    }
     if (need && tex_upload(t)) { t->checked_list = 0; t->hash = 0; *full = 1; return NULL; }   /* hash 0: re-upload after the flush */
     if (t->rep_key && !t->rep.img) tex_replace(t);
     t->used_batch = t->last_batch = batch_no;
@@ -1573,6 +1585,8 @@ static void begin_rendering(Surf *c, Surf *d, int depth_used) {
         vkCmdBeginRendering(cb_draw, &ri);
     }
     g_vk_passes++;
+    vk_mark(cb_draw, VKM_PASS, (uint32_t)g_vk_passes);
+    if (g_vk_checkpoint) vk_diag_pass((uint32_t)g_vk_passes & 0xFFFFFFu, c->addr, c->w, c->h, c->fmt, d ? d->addr : 0, cur_scale);
     { extern void k_ev(int, uint32_t, uint32_t); k_ev(0x13, c->addr, c->w << 16 | c->h); }
     if (vtrace) fprintf(stderr, "vk: pass %08x %ux%u fmt%d depth %08x\n", c->addr, c->w, c->h, c->fmt, d ? d->addr : 0);
 }
@@ -1648,15 +1662,16 @@ static void kick_submit(void) {
     kick_draws = 0; kick_due = 0;
     seal();
     end_uploads();
+    vk_mark(cb_draw, VKM_BATCH_END, batch_no);
     vkEndCommandBuffer(cb_up); vkEndCommandBuffer(cb_draw);
     VkCommandBuffer cbs[2] = { cb_up, cb_draw };
-    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 2, .pCommandBuffers = cbs };
-    video_queue_lock(); VkResult r = vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE); video_queue_unlock();
+    VkResult r = video_queue_submit(2, cbs, VK_NULL_HANDLE);
     if (r) fprintf(stderr, "pica_vk: submit failed (%d)\n", r);
     part++; cb_up = cb_part[part][0]; cb_draw = cb_part[part][1];
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     vkResetCommandBuffer(cb_up, 0); vkBeginCommandBuffer(cb_up, &bi);
     vkResetCommandBuffer(cb_draw, 0); vkBeginCommandBuffer(cb_draw, &bi);
+    vk_mark(cb_up, VKM_UPLOAD, batch_no); vk_mark(cb_draw, VKM_BATCH, batch_no);
     barrier_all(cb_up, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
     st_valid = 0;
 }
@@ -1720,11 +1735,11 @@ static void pica_vk_flush_(void) {
     barrier_all(cb_draw, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
     end_uploads();
     if (sets[cur_set].qp) vkCmdWriteTimestamp(cb_draw, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, sets[cur_set].qp, 1);
+    vk_mark(cb_draw, VKM_BATCH_END, batch_no);
     vkEndCommandBuffer(cb_up); vkEndCommandBuffer(cb_draw);
     VkCommandBuffer cbs[2] = { cb_up, cb_draw };
-    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 2, .pCommandBuffers = cbs };
     g_vk_batches++;
-    video_queue_lock(); VkResult r = vkQueueSubmit(queue, 1, &si, fence); video_queue_unlock();
+    VkResult r = video_queue_submit(2, cbs, fence);
     if (r) fprintf(stderr, "pica_vk: submit failed (%d)\n", r);
     else sets[cur_set].in_flight = 1;
     recording = 0; list_no++;
@@ -1864,9 +1879,10 @@ int pica_vk_display_transfer(uint32_t in, uint32_t out, uint32_t in_dim, uint32_
     }
     int sc = scan_next; scan_next = (scan_next + 1) % NSCAN_CB;
     VkCommandBuffer cb_scan = cb_scans[sc]; VkFence scan_fence = scan_fences[sc];   /* (its last use: two frames ago) */
-    if (scan_used[sc]) { GX_WAIT("waiting for the GPU to finish a screen read-back", vk_wait_fences(dev, 1, &scan_fence)); rb_harvest(sc); vkResetFences(dev, 1, &scan_fence); scan_used[sc] = 0; }
+    if (scan_used[sc]) { GX_WAIT("waiting for the GPU to finish a screen read-back", gx_fence_wait(&scan_fence)); rb_harvest(sc); vkResetFences(dev, 1, &scan_fence); scan_used[sc] = 0; }
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     vkResetCommandBuffer(cb_scan, 0); vkBeginCommandBuffer(cb_scan, &bi);
+    { static uint32_t scans; vk_mark(cb_scan, VKM_SCAN, ++scans); }
     VkImageMemoryBarrier b = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,   /* fully overwritten */
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = scans[k].im.img, .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
@@ -1895,8 +1911,7 @@ int pica_vk_display_transfer(uint32_t in, uint32_t out, uint32_t in_dim, uint32_
     }
     barrier_all(cb_scan, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
     vkEndCommandBuffer(cb_scan);
-    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb_scan };
-    video_queue_lock(); VkResult r = vkQueueSubmit(queue, 1, &si, scan_fence); video_queue_unlock();
+    VkResult r = video_queue_submit(1, &cb_scan, scan_fence);
     scan_used[sc] = r == VK_SUCCESS;
     if (r) rb_pending[sc] = 0;
     scans[k].valid = r == VK_SUCCESS;

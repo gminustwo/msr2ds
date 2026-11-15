@@ -88,7 +88,17 @@ struct State {
     s64 beams_up_us = -1;      // R came up then (-1: still held)
     unsigned buttons = 0;
     bool menu_asked = false;   // a Start press opened the menus over play: they show as usual until the HUD is back
-    bool menu_beside = false;  // the menu showing over play came without one (Consume): beside the view
+    bool menu_unasked = false; // the menu showing over play came without one (Consume)
+    bool panel_moved = false;  // the panel was last drawn elsewhere than its centred place (msr_single_layout)...
+    Rect panel_drawn;          // ...there, in a window of composed_w x composed_h
+    float composed_w = 0, composed_h = 0;
+    bool menu_live = false;    // this frame's bottom screen reads as a menu (Consume; msr_menu_live)
+    s64 map_focus_until_us = 0;   // the game's map shows a place of its own (msr_map_focus) until then
+    bool map_focus_on = false;    // ...as last composed
+    s64 map_focus_since_us = 0;   // ...since then
+    bool map_focus_capped = false;   // ...for too long: left until the game's map is back on Samus
+    bool panel_focus = false;     // the panel shows that map, or fades out from it: live
+    bool menu_see_through = false;   // the title menus' backdrop was left out of it, as last seen
 } st;
 
 std::vector<MsrQuad> quads;
@@ -99,7 +109,7 @@ void Region(const Rect& src, float x, float y, float w, float h, const Style& s)
     q.dst[0] = x; q.dst[1] = y; q.dst[2] = w; q.dst[3] = h;
     q.src[0] = src.l; q.src[1] = src.t; q.src[2] = src.r; q.src[3] = src.b;
     q.style[0] = s.opacity;
-    q.style[1] = s.over_black ? s.gain : s.key_low;
+    q.style[1] = s.over_black || !s.keyed ? s.gain : s.key_low;   // (msr.frag: modes 0 and 3 take a gain)
     q.style[2] = s.key_high;
     q.style[3] = s.over_black ? 3.f : s.keyed ? 1.f : 0.f;
     q.feather = s.feather;
@@ -127,6 +137,7 @@ void Consume(const BC::Image& image, s64 now) {
     const int state = static_cast<int>(result.bottom);
     st.bottom_peak = static_cast<float>(BC::Peak(image)) / 255.f;
     st.bottom_black = BC::DarkFraction(image, 6) > .9f;
+    st.menu_live = result.bottom == P::Bottom::Menu;
     if (result.page == P::Page::FileList || result.page == P::Page::FileOpen) {
         P::beam_slot.store(-1, std::memory_order_relaxed);
         P::beam_slots.store(0, std::memory_order_relaxed);
@@ -151,12 +162,31 @@ void Consume(const BC::Image& image, s64 now) {
                     else if (held(st.beam_empty_us[i]) >= 1'000'000) owned &= ~bit;
                 }
             }
+            // Only the beams Samus has (2026-11-14, the user: the Grapple Beam's slot "shouldn't appear at all unless
+            // samus already has the beam"): the game draws the slot of one not found yet as a dim striped circle, which
+            // reads as present. Her inventory says (cheats.cpp msr_item); where it cannot tell, the picture as before.
+            const float ice = msr_item(0x708718, "ITEM_WEAPON_ICE_BEAM"), grapple = msr_item(0x708714, "ITEM_WEAPON_GRAPPLE_BEAM");
+            const int unowned = (ice == 0.f ? 2 : 0) | (grapple == 0.f ? 4 : 0);
+            static int told;   // (the log, once a slot: a beam's slot the picture took for one Samus has)
+            if (owned & unowned & ~told) {
+                std::fprintf(stderr, "msr: HUD: the %s slot left out (not found yet)\n", owned & unowned & 4 ? "Grapple Beam's" : "Ice Beam's");
+                told |= owned & unowned;
+            }
+            owned &= ~unowned;
             P::beam_slots.store(owned, std::memory_order_relaxed);
             // the lit slot, greyed too (Morph Ball: the beam can still be changed); unclear: as it was
             if (result.beams.lit >= 0) P::beam_slot.store(result.beams.lit, std::memory_order_relaxed);
             st.beams_greyed = result.beams.greyed;
         }
-        if (result.marker.found) {
+        // Samus's marker where the game's minimap draws it (minimap.cpp, 2026-11-12: the red found on the picture was
+        // once a Missile Reload Station's icon, and the minimap stayed on it). Without that (another version of the
+        // game), the red dot the classifier finds.
+        Vec2 drawn{};
+        if (msr_map_marker(&drawn.x, &drawn.y)) {
+            st.map_marker = drawn;
+            st.marker_far_us = -1;
+            if (st.hud_alpha <= 0.f) st.map_center = st.map_marker;
+        } else if (result.marker.found) {
             // Samus's marker, not something else as red seen while it fades (2026-11-03: a red map pin, which the
             // classifier no longer counts): taken near where it was or the map's middle, where the game keeps it;
             // elsewhere (a new area, a teleport) once found there for 0.75 s without it showing near the last place
@@ -232,29 +262,39 @@ void Consume(const BC::Image& image, s64 now) {
     bool held = st.candidate_frames >= 3 && now - st.candidate_since_us >= 80'000;
     // A menu over play that no Start press asked for (#12, #32). Play's menus open from Start (the pause menu); without
     // one, the bottom screen read as a menu was the HUD misread (picking things up flashed the whole map) or a screen of
-    // the game's own over play (an elevator's map, whose panel covered the top screen's prompt). Such a menu shows only
-    // once it has held 1.5 s, and then beside the view, as the gallery's panel (msr_compose), the view's prompts in sight.
+    // the game's own over play (an elevator's or a Teleport Station's map). Such a menu shows only once it has held 1.5 s,
+    // and then as the pause menu does, over the view (2026-11-12, the user: "just bring the bottom screen entirely to the
+    // top screen like we do for the pause screen"; it stood beside the view, then showed its main part as a card at the
+    // view's top, "entirely too small"), without the pause menu's control hints (Overlay::DrawControlHints).
     const int menu = static_cast<int>(P::Bottom::Menu);
     const bool menu_new = state == menu && P::bottom.load(std::memory_order_relaxed) != menu;
-    bool beside = false;
+    bool unasked = false;
+    // The misread came straight from the HUD. A menu that comes when the HUD has not shown for a second, after the game's
+    // own messages and their fade, is the game's: it waits 0.3 s (2026-11-14, the user: the Aeion abilities' screen after
+    // their pickup messages took "a few seconds"; "it should be right after you select (a) to continue").
     if (held && menu_new && st.in_play && !st.menu_asked) {
         const long long start_us = P::start_pressed_us.load(std::memory_order_relaxed);   // -1: none yet
+        const s64 wait = now - st.hud_seen_us >= 1'000'000 ? 300'000 : 1'500'000;
         if (start_us >= 0 && now - start_us < 2'000'000) st.menu_asked = true;
-        else if (now - st.candidate_since_us < 1'500'000) held = false;
-        else beside = true;
+        else if (now - st.candidate_since_us < wait) held = false;
+        else {
+            unasked = true;
+            std::fprintf(stderr, "msr: a screen of the game's over play (no Start): shown after %.2f s (the HUD %.1f s before)\n",
+                         (now - st.candidate_since_us) / 1e6, (now - st.hud_seen_us) / 1e6);
+        }
     }
     if (held) {
         const bool page_held = st.page_frames >= 3 && now - st.page_since_us >= 80'000;
         static const bool trace = std::getenv("PWR_MSR_TRACE") != nullptr;   // PWR_MSR_TRACE: the published states
         if (trace && (P::bottom.load() != state || (page_held && P::page.load() != page)))
             std::fprintf(stderr, "msr: bottom %d page %d%s\n", state, page_held ? page : P::page.load(),
-                         menu_new && beside ? " (no Start: beside the view)" : "");
+                         menu_new && unasked ? " (no Start)" : "");
         P::bottom.store(state, std::memory_order_relaxed);
         if (page_held) P::page.store(page, std::memory_order_relaxed);
-        if (menu_new) st.menu_beside = beside;
-        if (state != menu) st.menu_beside = false;
+        if (menu_new) st.menu_unasked = unasked;
+        if (state != menu) st.menu_unasked = false;
         if (state == static_cast<int>(P::Bottom::Hud)) st.menu_asked = false;
-        P::menu_beside.store(st.menu_beside, std::memory_order_relaxed);
+        P::menu_unasked.store(st.menu_unasked, std::memory_order_relaxed);
     }
 }
 
@@ -298,6 +338,12 @@ s64 NowUs(double now_s) {
 extern "C" void msr_single_layout(float ww, float wh, float top[4], float panel[4]) {
     Rect t, p;
     SingleLayout(ww, wh, t, p);
+    // Touches (video.c, in window coordinates) go where msr_compose last drew the panel when that is not its centred
+    // place: the gallery's, beside the view.
+    if (st.panel_moved && st.composed_w > 0.f && st.composed_h > 0.f) {
+        const float kx = ww / st.composed_w, ky = wh / st.composed_h;
+        p = {st.panel_drawn.l * kx, st.panel_drawn.t * ky, st.panel_drawn.r * kx, st.panel_drawn.b * ky};
+    }
     top[0] = t.l; top[1] = t.t; top[2] = t.W(); top[3] = t.H();
     panel[0] = p.l; panel[1] = p.t; panel[2] = p.W(); panel[3] = p.H();
 }
@@ -308,6 +354,7 @@ extern "C" int msr_panel_visible(void) { return P::panel_visible.load(std::memor
 
 extern "C" int msr_world_in_play(void) { return st.in_play ? 1 : 0; }
 extern "C" int msr_beams_held(void) { return st.beams_held ? 1 : 0; }
+extern "C" int msr_menu_live(void) { return st.menu_live ? 1 : 0; }
 
 extern "C" void msr_world_scale(float* sx, float* sy) {
     const float zoom = P::world_zoom.load(std::memory_order_relaxed);
@@ -322,10 +369,10 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     // HID Start rising: the game sees the press (the emulator's HID sets this as the game reads it)
     if ((buttons & 8) && !(st.buttons & 8)) {
         P::start_pressed_us.store(now_us, std::memory_order_relaxed);
-        if (st.menu_beside) {   // Start over a menu beside the view: the pause menu it opens shows as usual
-            st.menu_beside = false;
+        if (st.menu_unasked) {   // Start over a menu without one: the pause menu it opens shows its control hints
+            st.menu_unasked = false;
             st.menu_asked = true;
-            P::menu_beside.store(false, std::memory_order_relaxed);
+            P::menu_unasked.store(false, std::memory_order_relaxed);
         }
     }
     st.buttons = buttons;
@@ -368,6 +415,38 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     if (state == P::Bottom::Hud) st.resuming_until_us = 0;
     const bool pausing = st.pausing_until_us != 0;
     const bool resuming = now_us < st.resuming_until_us;
+    // The game's map showing a place of its own in play (minimap.cpp msr_map_focus: the DNA scanner's way on, when an
+    // area's last Metroid dies): the whole bottom screen over the view while it does, as an elevator's map (Consume), and
+    // 0.3 s after, so the scanner's moments run together. The panel stays live until it has faded out.
+    // At most 15 s at a time: the game counts its time down only in a part of the minimap's update not checked here
+    // (PWR_TEST_DNA_SCAN's map stayed so), and a flag left set must not keep the HUD away.
+    if (st.in_play && state != P::Bottom::Menu) {
+        const int focus = msr_map_focus();
+        if (!focus) {
+            st.map_focus_capped = false;
+        } else if (!st.map_focus_capped) {
+            if (!st.map_focus_on) {
+                st.map_focus_since_us = now_us;
+                std::fprintf(stderr, "msr: the game's map shows %s: the bottom screen over the view (%.2f s)\n",
+                             focus & 1 ? "the DNA scanner's way" : "a place of its own", now_us / 1e6);
+            }
+            if (now_us - st.map_focus_since_us < 15'000'000) {
+                st.map_focus_until_us = now_us + 300'000;
+            } else {
+                st.map_focus_capped = true;
+                std::fprintf(stderr, "msr: the game's map kept a place of its own 15 s: the HUD back\n");
+            }
+        }
+    } else {
+        st.map_focus_until_us = 0;
+    }
+    const bool map_focus = now_us < st.map_focus_until_us;
+    if (st.map_focus_on && !map_focus)
+        std::fprintf(stderr, "msr: the game's map is back on Samus (%.2f s, the bottom screen read as %d)\n", now_us / 1e6,
+                     static_cast<int>(state));
+    st.map_focus_on = map_focus;
+    if (map_focus) st.panel_focus = true;
+    else if (state == P::Bottom::Menu || st.panel_alpha <= 0.f) st.panel_focus = false;
 
     if (state != P::Bottom::Prompt) {
         st.prompt_since_us = now_us;
@@ -410,8 +489,8 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     const bool prompt_on = st.prompt_alpha > 0.f;
     const bool prompt = (state == P::Bottom::Prompt && (prompt_on || now_us - st.prompt_since_us >= 300'000)) ||
                         (prompt_on && state == P::Bottom::Logo && now_us - st.prompt_seen_us < 1'500'000);
-    const bool show_hud = state == P::Bottom::Hud && !forced && !pausing;
-    const bool show_panel = state == P::Bottom::Menu || forced;
+    const bool show_hud = state == P::Bottom::Hud && !forced && !pausing && !map_focus;
+    const bool show_panel = state == P::Bottom::Menu || forced || map_focus;
     const bool show_prompt = prompt && !forced && !pausing && !resuming && now_us - st.prompt_foreign_us >= 300'000;
     const float fade = FadePerSecond * seconds;
     st.hud_alpha = Approach(st.hud_alpha, show_hud ? 1.f : 0.f, fade);
@@ -419,8 +498,8 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     st.prompt_alpha = Approach(st.prompt_alpha, show_prompt ? 1.f : 0.f, PromptFadePerSecond * seconds);
     P::panel_visible = st.panel_alpha > 0.5f || st.prompt_alpha > 0.5f;
 
-    // Gallery viewer, and a menu over play without Start (Consume): the view moves aside and the panel stands next to it.
-    const bool gallery = state == P::Bottom::Menu && (page == P::Page::Gallery || st.menu_beside);
+    // Gallery viewer: the view moves aside and the panel stands next to it.
+    const bool gallery = state == P::Bottom::Menu && page == P::Page::Gallery;
     st.gallery = Approach(st.gallery, gallery ? 1.f : 0.f, fade);
     const float ease = st.gallery * st.gallery * (3.f - 2.f * st.gallery);
     Rect view_top = layout_top, panel = layout_panel;
@@ -440,6 +519,10 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
         view_top = mix(layout_top, vx, vy, vw, vh);
         panel = mix(layout_panel, px, py, pw, ph);
     }
+    st.panel_moved = ease > 0.f;   // (msr_single_layout: touches)
+    st.panel_drawn = panel;
+    st.composed_w = ww;
+    st.composed_h = wh;
 
     // the HUD at the view's corners; on a view wider than 16:9, within its middle 16:9 if the player asks
     float left = layout_top.l, width = layout_top.W();
@@ -506,6 +589,9 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
             const float opacity = alpha * std::clamp(P::minimap_opacity.load(), 0.f, 1.f);
             Style map;
             map.opacity = opacity;
+            // brighter than the bottom screen's own colours (2026-11-14, the user: on an HDR monitor the map "doesn't
+            // appear that bright", its blues at paper white beside the game's highlights expanded to the peak)
+            map.gain = std::clamp(P::minimap_brightness.load(), 1.f, 2.f);
             const Vec2 gap{st.map_marker.x - st.map_center.x, st.map_marker.y - st.map_center.y};
             if (std::abs(gap.x) + std::abs(gap.y) < .1f) {
                 st.map_center = st.map_marker;
@@ -523,7 +609,8 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
             const float ix = x + (cx0 - sx0) * k, iy = y + (cy0 - sy0) * k, iw = (cx1 - cx0) * k, ih = (cy1 - cy0) * k;
             const auto backdrop = [&](std::size_t edge, float bx, float by, float bw, float bh) {
                 const auto& c = st.map_backdrop[edge];
-                Fill(bx, by, bw, bh, c.r, c.g, c.b, opacity);
+                const float g = map.gain / std::max(1.f, map.gain * std::max({c.r, c.g, c.b}));   // as msr.frag
+                Fill(bx, by, bw, bh, c.r * g, c.g * g, c.b * g, opacity);
             };
             if (ix > x) backdrop(0, x, y, ix - x, h);
             if (iy > y) backdrop(1, ix, y, iw, iy - y);
@@ -612,22 +699,33 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
         if (now_us - st.prompt_tall_us >= 5'000'000) st.prompt_fit = 0.f;
     }
 
+    // The panel shows the bottom screen only while it reads as a menu. After that the panel holds and fades out on the
+    // menu as last seen: video.c's copy (source 2), with its backdrop as it was then. Live, the panel showed what the
+    // game drew there next for those 0.2 s: after a file's Continue, the ship's cockpit flashed over the view
+    // (2026-11-12, the user's video). The panel shown by force stays live.
+    const bool panel_live = st.menu_live || forced || st.panel_focus;
+    if (panel_live) st.menu_see_through = !st.panel_focus && P::backdrop_removed.load(std::memory_order_relaxed);
     if (st.panel_alpha > 0.f) {
-        const bool see_through = P::backdrop_removed.load(std::memory_order_relaxed);
+        const bool see_through = st.menu_see_through;
         const float card = std::clamp(P::menu_backdrop.load(std::memory_order_relaxed), 0.f, 1.f);
         // the view darkens behind the menus: the pause menu's by 45%, the title menus' (the file select) by 25-60% as
         // the Title menu background setting says (2026-11-03, the user: the file select's background "needs to be
         // darkened"; it was 20%)
-        Fill(left, top_y, width, height, 0, 0, 0, (see_through ? .25f + .35f * card : .45f) * st.panel_alpha * (1.f - ease));
+        // The DNA scanner's map (st.panel_focus): see-through and the view not darkened, Samus showing behind it
+        // (2026-11-14, the user: "have it be [see-through] so you can still see samus behind it")
+        const float through = st.panel_focus ? .62f : 1.f;
+        if (!st.panel_focus)
+            Fill(left, top_y, width, height, 0, 0, 0, (see_through ? .25f + .35f * card : .45f) * st.panel_alpha * (1.f - ease));
         if (see_through) {
             const float grow = panel.H() * .03f;
             Fill(panel.l - grow, panel.t - grow, panel.W() + 2 * grow, panel.H() + 2 * grow, .01f, .035f, .07f,
                  card * st.panel_alpha, 4);
         }
         Style full;
-        full.opacity = st.panel_alpha;
+        full.opacity = st.panel_alpha * through;
         full.over_black = see_through;
         Region({0.f, 0.f, 1.f, 1.f}, panel.l, panel.t, panel.W(), panel.H(), full);
+        quads.back().source = panel_live ? 0 : 2;
 
         // Touch navigation: a glowing frame around the focused button, or a crosshair cursor.
         if (P::touch_mode.load(std::memory_order_relaxed)) {

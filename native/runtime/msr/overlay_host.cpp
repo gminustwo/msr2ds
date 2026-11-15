@@ -11,6 +11,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -44,6 +45,7 @@ void video_set_aniso(int aniso);
 int video_option(const char* name, const char* value);
 int video_pad_connected(void);
 int video_pad_any_held(void);
+unsigned video_pad_combo_held(void);
 void dsp_set_volume(float volume);
 void main_set_frame_rate(int fps);
 void main_set_power_saving(int on);
@@ -72,6 +74,13 @@ std::mutex upload_lock;                     // video.c holds its queue lock arou
 int capturing = -1;                         // the control waiting for a new key or button
 bool capture_armed = false;                 // the pad button that chose it has been released
 double capture_until = 0;
+// Quick save's or Quick load's gamepad combo (input.c input_combo) waiting for its count to end: whatever is held
+// then is the combo (nothing held: it stays as it was). 2026-11-14, the user: "use a 5 second countdown timer and
+// whatever combo is pressed when the time is up becomes the command for that".
+constexpr int ComboRow = MSR::ControlsSnapshot::ComboRow;
+constexpr double ComboCount = 5.0;
+int combo_capturing = -1;
+double combo_until = 0;
 
 void RefreshControls() {
     MSR::ControlsSnapshot s;
@@ -84,7 +93,14 @@ void RefreshControls() {
     s.rows.push_back({Home, "Home", "Not set"});
     s.rows.push_back({CirclePad, "Circle Pad", "Gamepad left stick (and the arrow keys)"});
     s.rows.push_back({CStick, "C-Stick", "Not set"});
-    s.capturing = capturing;
+    for (int i = 0; i < COMBO_COUNT; ++i) {
+        input_combo_text(i, text, sizeof text);
+        s.combos[i] = text;
+        s.rows.push_back({ComboRow + i, i == COMBO_SAVE ? "Quick save" : "Quick load",
+                          std::string(i == COMBO_SAVE ? "Key F5" : "Key F8") + (text[0] ? std::string(", Gamepad ") + text : "")});
+    }
+    s.capturing = capturing >= 0 ? capturing : combo_capturing >= 0 ? ComboRow + combo_capturing : -1;
+    s.combo_until = combo_until;
     s.controller_connected = video_pad_connected() != 0;
     s.right_stick_option = true;
     s.right_stick_dpad = input_right_stick_dpad() != 0;
@@ -105,6 +121,8 @@ void SaveControls() {
     file.SetBool("native_controls", "right_stick_dpad", input_right_stick_dpad() != 0);
     file.SetBool("native_controls", "menu_confirm_right", msr_menu_confirm_right() != 0);
     file.SetNumber("native_controls", "trigger_press", input_trigger_press());
+    file.SetNumber("native_controls", "quick_save_combo", input_combo(COMBO_SAVE));
+    file.SetNumber("native_controls", "quick_load_combo", input_combo(COMBO_LOAD));
     file.SetBool("native_controls", "triggers_bound", true);   // the triggers are bindings (2.0.3); LoadControls
     if (!file.Save()) std::fprintf(stderr, "msr: could not save the controls\n");
 }
@@ -114,6 +132,12 @@ void LoadControls() {
     input_set_right_stick_dpad(file.Bool("native_controls", "right_stick_dpad", input_right_stick_dpad() != 0));
     msr_set_menu_confirm_right(file.Bool("native_controls", "menu_confirm_right", msr_menu_confirm_right() != 0));
     input_set_trigger_press(static_cast<int>(file.Number("native_controls", "trigger_press", input_trigger_press())));
+    for (int i = 0; i < COMBO_COUNT; ++i) {   // (none saved: Back + LB and Back + RB)
+        const char* key = i == COMBO_SAVE ? "quick_save_combo" : "quick_load_combo";
+        if (file.Raw("native_controls", key)) {
+            input_set_combo(i, static_cast<unsigned>(file.Number("native_controls", key, input_combo(i))));
+        }
+    }
     for (int c = 0; c < Controls; ++c) {
         const std::string key = input_control_key(c);
         if (file.Raw("native_controls", key + "_key")) {
@@ -140,8 +164,14 @@ MSR::ModsSnapshot ScanMods() {
     for (const auto& pack : NativeMods::TexturePacks()) s.packs.push_back({pack.name, NativeMods::Describe(pack), pack.enabled});
     s.folder = NativeMods::TexturePackFolder();
     s.preload = true;   // msr-native reads every pack's file list at start and loads the images as they are used
-    s.dump = false;
     s.texture_options = false;
+    // #64: as the game draws them, on its workers (textures.cpp); from the menu at once, and at the next start
+    s.dump = MsrIni::File(msr_settings_file()).Bool("native", "dump_textures", false);
+#ifndef MSR_HAVE_PNG
+    s.dump_option = false;
+#endif
+    s.dumped = msr_textures_dumped();
+    s.dump_folder = NativeMods::TextureDumpFolder();
     s.restart_needed = !launcher_mode && NativeMods::Pending() != NativeMods::Booted();
     return s;
 }
@@ -470,7 +500,7 @@ extern "C" int msr_overlay_visible(void) {
 }
 
 extern "C" int msr_overlay_capturing(void) {
-    return capturing >= 0;
+    return capturing >= 0 || combo_capturing >= 0;
 }
 
 extern "C" int msr_overlay_launcher_mode(void) {
@@ -511,6 +541,17 @@ extern "C" void msr_overlay_panel(const float* panel) {
 /// An SDL event: 1 when the overlay took it (any input while it shows, or a key or button for a binding).
 /// sx, sy: drawable pixels per window coordinate.
 extern "C" int msr_overlay_event(const SDL_Event* e, float sx, float sy) {
+    if (combo_capturing >= 0) {   // the pad's buttons are held for the combo, not the menu; Escape gives up
+        if (e->type == SDL_KEYDOWN && !e->key.repeat && e->key.keysym.sym == SDLK_ESCAPE) {
+            combo_capturing = -1;
+            RefreshControls();
+            return 1;
+        }
+        if (e->type == SDL_KEYDOWN || e->type == SDL_KEYUP || e->type == SDL_CONTROLLERBUTTONDOWN ||
+            e->type == SDL_CONTROLLERBUTTONUP || e->type == SDL_CONTROLLERAXISMOTION) {
+            return 1;
+        }
+    }
     if (capturing >= 0) {
         if (e->type == SDL_KEYDOWN && !e->key.repeat) {
             if (e->key.keysym.sym != SDLK_ESCAPE) {
@@ -616,6 +657,22 @@ extern "C" void msr_overlay_frame(void) {
             RefreshControls();
         }
     }
+    if (combo_capturing >= 0 && Now() >= combo_until) {   // the count is up: what is held now
+        // Two buttons or more: one alone would stop doing its own job in play (Back alone would no longer open these
+        // settings from the pad)
+        const unsigned held = video_pad_combo_held();
+        const bool taken = (held & (held - 1)) != 0;
+        if (taken) {
+            input_set_combo(combo_capturing, held);
+            SaveControls();
+        }
+        char text[96];
+        input_combo_text(combo_capturing, text, sizeof text);
+        std::fprintf(stderr, "msr: %s combo %s%s\n", combo_capturing == COMBO_SAVE ? "quick save" : "quick load",
+                     taken ? "set to " : "unchanged (not two buttons or more): ", text[0] ? text : "none");
+        combo_capturing = -1;
+        RefreshControls();
+    }
     for (const auto& action : O().TakeActions()) {
         switch (action.kind) {
         case Kind::Emulator:
@@ -638,8 +695,22 @@ extern "C" void msr_overlay_frame(void) {
             msr_state_quick_load();
             break;
         case Kind::PreloadTextures:
-        case Kind::DumpTextures:
-            break;   // not on msr-native (the overlay shows them unavailable)
+            break;   // msr-native always preloads (the overlay shows it unavailable)
+        case Kind::DumpTextures: {
+            MsrIni::File file(msr_settings_file());
+            file.SetBool("native", "dump_textures", action.value != 0);
+            if (!file.Save()) std::fprintf(stderr, "msr: could not save the texture dumping setting\n");
+            if (!launcher_mode) msr_textures_set_dump(action.value);   // (the launcher's: when the game starts)
+            RefreshMods();
+            break;
+        }
+        case Kind::DumpFolder: {
+            const std::string folder = NativeMods::TextureDumpFolder();
+            std::error_code e;
+            std::filesystem::create_directories(std::u8string(reinterpret_cast<const char8_t*>(folder.c_str())), e);
+            NativeMods::OpenFolder(folder);
+            break;
+        }
         case Kind::Restart:
             msr_settings_save();
             main_exit(MSR_EXIT_RESTART);
@@ -672,11 +743,17 @@ extern "C" void msr_overlay_frame(void) {
                 capturing = action.value;
                 capture_armed = false;
                 capture_until = Now() + 8.0;
+                combo_capturing = -1;
+            } else if (action.value >= ComboRow && action.value < ComboRow + COMBO_COUNT) {
+                combo_capturing = action.value - ComboRow;
+                combo_until = Now() + ComboCount;
+                capturing = -1;
             }
             RefreshControls();
             break;
         case Kind::CancelBind:
             capturing = -1;
+            combo_capturing = -1;
             RefreshControls();
             break;
         case Kind::GamepadLayout:

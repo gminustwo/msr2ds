@@ -72,6 +72,7 @@ inline std::atomic<bool> wide_culling{true};
 inline std::atomic<float> hud_scale{.6f};
 inline std::atomic<float> hud_opacity{1.f};
 inline std::atomic<float> minimap_opacity{0.85f};
+inline std::atomic<float> minimap_brightness{1.f};   ///< 1-2: the map's colours brightened (msr-native)
 inline std::atomic<float> minimap_size{1.15f};
 inline std::atomic<bool> show_minimap{true};
 inline std::atomic<bool> show_counters{true};
@@ -161,9 +162,9 @@ inline std::atomic<bool> force_panel{false};
 /// The bottom-screen panel is on screen, so touches should reach the game.
 inline std::atomic<bool> panel_visible{false};
 
-/// A menu over play that no Start press opened (an elevator's map, msr-native's compositor): the panel stands beside
-/// the view and the pause menu's control hints stay away.
-inline std::atomic<bool> menu_beside{false};
+/// A menu over play that no Start press opened (an elevator's map, msr-native's compositor): the pause menu's control
+/// hints stay away.
+inline std::atomic<bool> menu_unasked{false};
 
 /// The settings overlay is open: the game keeps running but receives no input.
 inline std::atomic<bool> block_game_input{false};

@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <vulkan/vulkan.h>
+#include "vk_diag.h"
 void k_sleep_ns(int64_t ns);   /* kernel.c */
 #define VK_WAIT_NAP() k_sleep_ns(1000000)
 
@@ -20,6 +21,7 @@ static inline VkResult vk_wait_retry(VkResult r, unsigned *tries, const char *wh
         return VK_INCOMPLETE;
     }
     if (r != VK_SUCCESS && told_fail < 5) { told_fail++; fprintf(stderr, "video: %s failed (%d)\n", what, (int)r); }
+    if (r == VK_ERROR_DEVICE_LOST) vk_diag_lost(what);   /* what the GPU was doing (vk_diag.c) */
     return r;
 }
 static inline VkResult vk_wait_fences(VkDevice dev, uint32_t n, const VkFence *f) {

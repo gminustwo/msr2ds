@@ -37,6 +37,7 @@ struct PlayerSettings {
     bool show_minimap = true;
     float minimap_size = 1.15f;
     float minimap_opacity = .85f;
+    float minimap_brightness = 1.f;
     bool show_counters = true;
     bool show_abilities = true;
     bool hud_within_16_9 = false; ///< Ultrawide: the HUD at the corners of the view's middle 16:9
@@ -204,6 +205,11 @@ struct ControlsSnapshot {
     bool menu_confirm_right = false; ///< Menus choose with the game's A as bound (else A / Cross, the bottom button)
     bool trigger_option = false;     ///< msr-native: the triggers are buttons with a press point (#35)
     int trigger_press = 50;          ///< How far a trigger is pulled to press it, % of its travel (10..90)
+    /// msr-native: gamepad combos for Quick save and Quick load, rows ComboRow and ComboRow + 1 ("Back + LB", "" for
+    /// none). A capture takes whatever is held when its count ends: combo_until (steady clock, seconds).
+    static constexpr int ComboRow = 200;
+    std::string combos[2];
+    double combo_until = 0;
 };
 
 /// The Mods and Textures tabs: game mods and texture packs (msr/mods.h). Built and applied on
@@ -221,7 +227,10 @@ struct ModsSnapshot {
     bool preload = false;
     bool dump = false;
     bool restart_needed = false; ///< Changed since the game booted
-    bool texture_options = true; ///< Preload and dump can be changed (msr-native always preloads, never dumps)
+    bool texture_options = true; ///< Preload can be changed (msr-native always preloads)
+    bool dump_option = true;     ///< Dump can be changed (not on a msr-native without libpng)
+    unsigned dumped = 0;         ///< msr-native: the textures dumped this session
+    std::string dump_folder;     ///< msr-native: where they go
 };
 
 /// msr-native's launcher: the menu before the game runs (native/runtime/msr/launcher.cpp). Its
@@ -289,6 +298,7 @@ struct OverlayAction {
         TexturePackUp,    ///< Raise texture pack `value`'s priority
         TexturePackDown,  ///< Lower texture pack `value`'s priority
         ModsFolder,       ///< Open the texture packs folder
+        DumpFolder,       ///< Open the dumped textures' folder (msr-native)
         PreloadTextures,  ///< Load every pack texture at boot (`value` 0 or 1)
         DumpTextures,     ///< Save the game's textures for making packs (`value` 0 or 1)
         LauncherPlay,     ///< Start the game

@@ -21,8 +21,10 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "ini.h"
+#include "mods.h"
 #include "msr.h"
 #include "common/cityhash.h"
 #ifdef MSR_HAVE_PNG
@@ -142,6 +144,42 @@ u64 LegacyHash(const u8* data, u32 w, u32 h, int fmt) {
     return Common::CityHash64(reinterpret_cast<const char*>(linear.data()), linear.size());
 }
 
+// ---- dumping (#64): the game's textures as PNGs a pack can be made from ----
+// The texture as RGBA8, its rows as the game stores them (top-down: the order the pack loader flips them from, by default,
+// so a dump read back as a pack gives the same texels): the colour formats converted as Azahar's texture_codec.h decodes
+// them for its dumps (RGBA8, RGB8, RGB5A1, RGB565, RGBA4), the others as LegacyHash has them.
+u8 Convert6To8(u8 v) { return static_cast<u8>((v << 2) | (v >> 4)); }
+std::vector<u8> DecodeRgba(const u8* data, u32 w, u32 h, int fmt) {
+    const u32 tile_bytes = FormatBits[fmt] * 64 / 8;
+    std::vector<u8> rgba(static_cast<std::size_t>(w) * h * 4);
+    u8 texel[4];
+    for (u32 ty = 0; ty < h / 8; ++ty) {
+        for (u32 tx = 0; tx < w / 8; ++tx) {
+            const u8* tile = data + (static_cast<std::size_t>(ty) * (w / 8) + tx) * tile_bytes;
+            for (u32 y = 0; y < 8; ++y) {
+                for (u32 x = 0; x < 8; ++x) {
+                    u8* out = rgba.data() + ((ty * 8 + y) * static_cast<std::size_t>(w) + tx * 8 + x) * 4;
+                    if (fmt >= 5) { DecodeTexel(fmt, tile, x, y, out); continue; }
+                    const u8* p = tile + MortonInterleave(x, y) * (FormatBits[fmt] / 8);
+                    const u32 v = static_cast<u32>(p[0]) | static_cast<u32>(p[1]) << 8;   // (the 16-bit formats)
+                    switch (fmt) {
+                    case 0: texel[0] = p[3]; texel[1] = p[2]; texel[2] = p[1]; texel[3] = p[0]; break;   // RGBA8
+                    case 1: texel[0] = p[2]; texel[1] = p[1]; texel[2] = p[0]; texel[3] = 255; break;    // RGB8
+                    case 2: texel[0] = Convert5To8((v >> 11) & 31); texel[1] = Convert5To8((v >> 6) & 31);   // RGB5A1
+                            texel[2] = Convert5To8((v >> 1) & 31); texel[3] = (v & 1) ? 255 : 0; break;
+                    case 3: texel[0] = Convert5To8((v >> 11) & 31); texel[1] = Convert6To8((v >> 5) & 63);   // RGB565
+                            texel[2] = Convert5To8(v & 31); texel[3] = 255; break;
+                    default: texel[0] = Convert4To8((v >> 12) & 15); texel[1] = Convert4To8((v >> 8) & 15);   // RGBA4
+                             texel[2] = Convert4To8((v >> 4) & 15); texel[3] = Convert4To8(v & 15); break;
+                    }
+                    std::memcpy(out, texel, 4);
+                }
+            }
+        }
+    }
+    return rgba;
+}
+
 // paths as UTF-8 (C++20's u8string is std::u8string)
 std::string Utf8(const fs::path& p) {
     const auto s = p.u8string();
@@ -231,6 +269,15 @@ std::atomic<unsigned> loaded{0}, failed{0}, shrunk{0};
 // start: each replacement is halved this many times on its worker, never below the game's own texture. A 4x pack's
 // 1024x1024 texture (5.3 MiB on the GPU with its mipmaps) becomes 512x512 (1.3 MiB) at half, 256x256 at a quarter.
 unsigned detail_halvings = 0;
+// Dumping (#64: the menu's "Dump game textures", settings.ini [native] dump_textures): each texture the game draws with,
+// once, as the PNG a pack names it by (tex1_<w>x<h>_<hash>_<format>_mip0.png, with the hash the packs are read with) in
+// user/dump/textures/<title ID>/, as Azahar dumps. Hashed and written on the workers when they have nothing else to do.
+std::atomic<bool> dumping{false};
+fs::path dump_dir;                           // set once, before the first job
+std::deque<HashJob> dump_jobs;
+std::unordered_set<u64> dump_seen, dump_hashes;   // texture contents offered, hashes written (lock held)
+std::atomic<unsigned> dumped{0}, dump_failed{0};
+unsigned dump_generation = 0;
 
 bool DecodePng(const fs::path& path, Image& out) {
 #ifdef MSR_HAVE_PNG
@@ -256,6 +303,61 @@ bool DecodePng(const fs::path& path, Image& out) {
     (void)path; (void)out;
     return false;
 #endif
+}
+
+// A dumped texture's PNG, through memory (the path may not be in the system's code page) and a temporary name (a game
+// closed meanwhile leaves no half-written PNG under a pack's name). flip: its rows bottom-up, for packs read unflipped.
+bool WritePng(const fs::path& path, const std::vector<u8>& rgba, u32 w, u32 h, bool flip) {
+#ifdef MSR_HAVE_PNG
+    png_image png{};
+    png.version = PNG_IMAGE_VERSION;
+    png.width = w;
+    png.height = h;
+    png.format = PNG_FORMAT_RGBA;
+    const png_int_32 stride = static_cast<png_int_32>(w * 4) * (flip ? -1 : 1);
+    png_alloc_size_t size = 0;
+    if (!png_image_write_to_memory(&png, nullptr, &size, 0, rgba.data(), stride, nullptr)) return false;
+    std::vector<u8> bytes(size);
+    if (!png_image_write_to_memory(&png, bytes.data(), &size, 0, rgba.data(), stride, nullptr)) return false;
+    fs::path part = path;
+    part += ".part";
+    std::error_code ec;
+    {
+        std::ofstream file(part, std::ios::binary);
+        if (!file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(size))) {
+            file.close();
+            fs::remove(part, ec);
+            return false;
+        }
+    }
+    fs::rename(part, path, ec);
+    if (ec) fs::remove(part, ec);
+    return !ec;
+#else
+    (void)path; (void)rgba; (void)w; (void)h; (void)flip;
+    return false;
+#endif
+}
+
+// A dump job on a worker (lock not held): its hash as the packs are read (the legacy one unless the first pack's
+// pack.json sets use_new_hash), then its PNG unless one of that name was written or is there from an earlier session
+void Dump(const HashJob& job) {
+    const u64 hash = use_new_hash ? Common::CityHash64(reinterpret_cast<const char*>(job.level0.data()), job.level0.size())
+                                  : LegacyHash(job.level0.data(), job.w, job.h, job.fmt);
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        if (!dump_hashes.insert(hash).second) return;
+    }
+    char name[80];
+    std::snprintf(name, sizeof(name), "tex1_%ux%u_%016llX_%d_mip0.png", job.w, job.h, static_cast<unsigned long long>(hash),
+                  job.fmt);
+    const fs::path path = dump_dir / name;
+    std::error_code ec;
+    if (!fs::exists(path, ec) && !WritePng(path, DecodeRgba(job.level0.data(), job.w, job.h, job.fmt), job.w, job.h, !flip_png)) {
+        if (dump_failed++ < 4) std::fprintf(stderr, "msr: could not write %s\n", Utf8(path).c_str());
+        return;
+    }
+    dumped++;
 }
 
 // The game's own size of the texture a pack file replaces, from its name (tex1_<w>x<h>_...), else 8x8
@@ -317,7 +419,7 @@ void Worker() {
     k_background_thread();
     std::unique_lock<std::mutex> guard(lock);
     for (;;) {
-        wake.wait(guard, [] { return !queue.empty() || !hash_jobs.empty(); });
+        wake.wait(guard, [] { return !queue.empty() || !hash_jobs.empty() || !dump_jobs.empty(); });
         if (!hash_jobs.empty()) {   // a texture's legacy hash (msr_texture_find): its pack hash, then its PNG
             HashJob job = std::move(hash_jobs.front());
             hash_jobs.pop_front();
@@ -328,6 +430,14 @@ void Worker() {
             Trace(job.w, job.h, job.fmt, hash, key);
             memo[job.seen] = {key, false};
             if (key) Request(key);
+            continue;
+        }
+        if (queue.empty()) {   // a texture to dump, when no pack needs anything
+            HashJob job = std::move(dump_jobs.front());
+            dump_jobs.pop_front();
+            guard.unlock();
+            if (dumping.load()) Dump(job);
+            guard.lock();
             continue;
         }
         const u64 key = queue.front();
@@ -375,7 +485,17 @@ void Worker() {
     }
 }
 
+void StartWorkers() {   // (the main thread: the game's start, or dumping turned on)
+    if (!workers.empty()) return;
+    const unsigned n = std::clamp(std::thread::hardware_concurrency() / 2 - 1, 2u, 4u);
+    for (unsigned i = 0; i < n; ++i) workers.emplace_back(Worker).detach();
+}
+
 } // namespace
+
+extern "C" {
+volatile unsigned g_msr_dump_gen = 0;
+}
 
 extern "C" int msr_textures_add_pack(const char* dir) {
     fs::path root = FromUtf8(dir);
@@ -423,21 +543,77 @@ extern "C" int msr_textures_add_pack(const char* dir) {
 }
 
 extern "C" void msr_textures_start(void) {
+    const char* settings = msr_settings_file();
+    if (settings && *settings && MsrIni::File(settings).Bool("native", "dump_textures", false)) msr_textures_set_dump(1);
 #ifndef MSR_HAVE_PNG
     if (!files.empty()) std::fprintf(stderr, "msr: texture packs need libpng, which this build lacks\n");
     return;
 #endif
     if (files.empty() || active) return;
     sync_find = std::getenv("PWR_TEXPACK_SYNC") != nullptr;
-    if (const char* settings = msr_settings_file(); settings && *settings) {
+    if (settings && *settings) {
         const int detail = static_cast<int>(MsrIni::File(settings).Number("native", "texture_detail", 1));
         detail_halvings = detail >= 4 ? 2 : detail >= 2 ? 1 : 0;
         if (detail_halvings) std::fprintf(stderr, "msr: texture packs at %s size\n", detail_halvings == 2 ? "a quarter" : "half");
     }
-    const unsigned n = std::clamp(std::thread::hardware_concurrency() / 2 - 1, 2u, 4u);
-    for (unsigned i = 0; i < n; ++i) workers.emplace_back(Worker).detach();
+    StartWorkers();
     active = true;
 }
+
+extern "C" void msr_textures_set_dump(int on) {
+#ifndef MSR_HAVE_PNG
+    if (on) std::fprintf(stderr, "msr: dumping textures needs libpng, which this build lacks\n");
+    return;
+#endif
+    if (!on) {
+        if (dumping.exchange(false)) {
+            g_msr_dump_gen = 0;
+            std::fprintf(stderr, "msr: texture dumping off (%u textures dumped)\n", dumped.load());
+        }
+        return;
+    }
+    if (dumping) return;
+    if (dump_dir.empty()) dump_dir = FromUtf8(NativeMods::TextureDumpFolder().c_str());
+    std::error_code ec;
+    fs::create_directories(dump_dir, ec);
+    if (ec) {
+        std::fprintf(stderr, "msr: could not make %s for dumping textures\n", Utf8(dump_dir).c_str());
+        return;
+    }
+    // The options the textures are named and laid out with, for a pack made from the dump (the first pack's, as in
+    // Azahar's own pack.json; the defaults with no pack)
+    if (const fs::path config = dump_dir / "pack.json"; !fs::exists(config, ec)) {
+        std::ofstream file(config, std::ios::binary);
+        file << "{\n    \"author\": \"msr2ds\",\n    \"version\": \"1.0.0\",\n"
+                "    \"description\": \"Textures dumped from Metroid: Samus Returns\",\n    \"options\": {\n"
+             << "        \"flip_png_files\": " << (flip_png ? "true" : "false") << ",\n"
+             << "        \"use_new_hash\": " << (use_new_hash ? "true" : "false") << "\n    }\n}\n";
+    }
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        dump_seen.clear();
+        dump_hashes.clear();
+    }
+    StartWorkers();
+    dumping = true;
+    g_msr_dump_gen = ++dump_generation;   // each texture drawn with from now on is offered once (msr_texture_dump)
+    std::fprintf(stderr, "msr: dumping textures to %s\n", Utf8(dump_dir).c_str());
+}
+
+extern "C" void msr_texture_dump(const uint8_t* level0, uint32_t w, uint32_t h, int fmt, uint64_t content) {
+    // a power of two, as Azahar dumps (other sizes are mostly render targets)
+    if (!dumping.load(std::memory_order_relaxed) || fmt < 0 || fmt > 13 || w < 8 || h < 8 || (w & (w - 1)) || (h & (h - 1))) {
+        return;
+    }
+    const u64 seen = content ^ (static_cast<u64>(w) << 40) ^ (static_cast<u64>(h) << 20) ^ static_cast<u64>(fmt);
+    const std::size_t bytes = std::size_t{w} * h * FormatBits[fmt] / 8;
+    std::lock_guard<std::mutex> guard(lock);
+    if (!dump_seen.insert(seen).second) return;
+    dump_jobs.push_back({seen, w, h, fmt, std::vector<u8>(level0, level0 + bytes)});
+    wake.notify_one();
+}
+
+extern "C" unsigned msr_textures_dumped(void) { return dumped.load(); }
 
 extern "C" int msr_textures_active(void) { return active.load(std::memory_order_relaxed); }
 

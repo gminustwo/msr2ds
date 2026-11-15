@@ -324,6 +324,10 @@ std::string TexturePackFolder() {
     return path;
 }
 
+std::string TextureDumpFolder() {
+    return user + "dump/textures/00040000001BB200/";
+}
+
 std::vector<TexturePack> TexturePacks() {
     const std::string root = TexturePackFolder(), game = BuiltInTextures();
     std::vector<std::string> names = FindPacks(root), built_in;

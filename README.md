@@ -239,8 +239,6 @@ keys.
 - **The mouse stays in the window** while you play with it, so a shot beside a
   windowed game doesn't switch away. The settings menu (F1), the title and file
   menus, a controller or Alt+Tab let it go.
-- **Screens the game shows over play** without the pause menu, like an elevator's
-  map, stand beside the view so its prompts stay readable.
 - **The triggers** are buttons like the others: pull one while rebinding a
   control to bind it (Free Aim on LT and Morph Ball on LB, for example).
   **Trigger press point** on the Controls tab sets how far a trigger is pulled
@@ -415,11 +413,16 @@ in the list wins.
 
 ### Making a pack
 
-2.0 can't dump textures yet (**Dump game textures** on the Textures tab is
-greyed out). Packs use Azahar's names, so dump them with Azahar or msr2ds 1.x
-(its **Dump game textures**), edit the ones you want, and put them with the
-dump's `pack.json` in a new folder under `mods/textures/`. Edited textures can be
-larger than the originals.
+Turn on **Dump game textures** on the Textures tab, then play through the places
+whose textures you want: each texture the game draws with is saved once, as a
+PNG named the way Azahar names it, in `dump/textures/00040000001BB200/` in the
+user folder (**Open the dumped textures folder** while it's on). The tab counts
+them as they come. It stays on until you turn it off, also after a restart.
+
+Edit the ones you want, and put them with the dump's `pack.json` in a new folder
+under `mods/textures/`. Edited textures can be larger than the originals. Packs
+made this way also work in Azahar, except for the prologue's nine pictures,
+which have other names there (see above).
 
 ## Game mods and Randovania
 

@@ -32,6 +32,7 @@ void PlayerSettings::Load(const std::string& path) {
     flag("show_minimap", show_minimap);
     number("minimap_size", minimap_size);
     number("minimap_opacity", minimap_opacity);
+    number("minimap_brightness", minimap_brightness);
     flag("show_counters", show_counters);
     flag("show_abilities", show_abilities);
     flag("hud_within_16_9", hud_within_16_9);
@@ -94,6 +95,7 @@ void PlayerSettings::Save(const std::string& path) const {
     flag("show_minimap", show_minimap);
     number("minimap_size", minimap_size);
     number("minimap_opacity", minimap_opacity);
+    number("minimap_brightness", minimap_brightness);
     flag("show_counters", show_counters);
     flag("show_abilities", show_abilities);
     flag("hud_within_16_9", hud_within_16_9);
