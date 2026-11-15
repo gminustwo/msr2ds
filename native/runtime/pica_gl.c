@@ -285,7 +285,7 @@ static void surf_free(Surf *s) {
 }
 /* the texture cache (below) */
 typedef struct { uint32_t addr, w, h; int fmt, levels; GLuint tex; uint64_t hash; uint32_t checked_list;
-                 uint64_t rep_key; GLuint rep; int rep_extra, find_pending, glyph_sheet; unsigned glyph_ver; } Tex;   /* rep: a texture pack's */
+                 uint64_t rep_key; GLuint rep; int rep_extra, find_pending, glyph_sheet; unsigned glyph_ver, dump_gen; } Tex;   /* rep: a texture pack's */
 static Tex *texs; static int ntex, cap_tex;
 static void wb_complete(Surf *s);
 static Surf *surf_get(uint32_t addr, uint32_t w, uint32_t h, int fmt, int depth) {
@@ -724,6 +724,9 @@ static GLuint tex_get(int unit, int *flush) {
         tex_upload(t);
     } else if (t->find_pending)   /* a pack worker works out its hash: asked again (the game's texture shows meanwhile) */
         t->rep_key = msr_texture_find(g_mem + addr, w, h, fmt, t->hash, &t->find_pending);
+    if (g_msr_dump_gen && (need || t->dump_gen != g_msr_dump_gen)) {   /* "Dump game textures": offered once (msr/textures.cpp) */
+        t->dump_gen = g_msr_dump_gen; msr_texture_dump(g_mem + addr, w, h, fmt, t->hash);
+    }
     if (t->rep_key && !t->rep) tex_replace(t);
     if (t->rep) { tex_lod_extra[unit] = t->rep_extra; tex_packed[unit] = 1; return t->rep; }
     return t->tex;
@@ -1068,6 +1071,40 @@ static void APIENTRY gl_debug(GLenum source, GLenum type, GLuint id, GLenum seve
     if (severity != 0x826B /* notification */) fprintf(stderr, "pica_gl: OpenGL says (type %#x): %s\n", type, message);
 }
 
+/* The depth a fragment gets from clip-space z = clip_z (GLSL text), w = 1: gl_FragCoord.z, read back from a float target;
+   -1 when the test cannot run. pica.frag takes gl_FragCoord.z for the depth (its fog's and its depth write): with
+   glClipControl's Vulkan range it must be z/w itself. Intel's HD 4600 (OpenGL 4.3, driver 20.19.15.5171, #57) lists
+   ARB_clip_control, and its 3D had fog thickest nearest: every model yellow in the opening, the far background as it
+   should be. That is what a driver that keeps OpenGL's range would show: the depth (z/w + 1) / 2, too deep by
+   (1 - z/w) / 2, which only the nearest show much. */
+static float clip_depth_probe(const char *clip_z) {
+    char vs[256];
+    snprintf(vs, sizeof vs, "#version 330 core\nvoid main() { vec2 p = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1)) * 4.0 - 1.0;"
+             " gl_Position = vec4(p, %s, 1.0); }\n", clip_z);
+    static const char fs[] = "#version 330 core\nout vec4 o;\nvoid main() { o = vec4(gl_FragCoord.z); }\n";
+    GLuint prog = msr_gl_program("depth test", NULL, vs, fs);
+    if (!prog) return -1;
+    GLint vp[4]; glGetIntegerv(GL_VIEWPORT, vp);
+    GLuint tex = 0, fbo = 0, va = 0; float z = -1;
+    glGenTextures(1, &tex); glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, 4, 4, 0, GL_RED, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &fbo); glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+        glGenVertexArrays(1, &va); glBindVertexArray(va);   /* (no attributes: the core profile still wants one bound) */
+        glViewport(0, 0, 4, 4);
+        glUseProgram(prog); glDrawArrays(GL_TRIANGLES, 0, 3);   /* one triangle over the whole target */
+        glReadPixels(1, 1, 1, 1, GL_RED, GL_FLOAT, &z);
+        glUseProgram(0); glBindVertexArray(0); glDeleteVertexArrays(1, &va);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0); glDeleteFramebuffers(1, &fbo);
+    glBindTexture(GL_TEXTURE_2D, 0); glDeleteTextures(1, &tex);
+    glDeleteProgram(prog); glViewport(vp[0], vp[1], vp[2], vp[3]);
+    if (glGetError() != GL_NO_ERROR) z = -1;
+    return z;
+}
+
 int pica_gl_init(void) {
     if (state >= 0) return state == 1 ? 0 : -1;
     state = 0;
@@ -1084,6 +1121,16 @@ int pica_gl_init(void) {
     if (msr_gl_version() >= 45 || msr_gl_has("GL_ARB_clip_control"))
         clip_control = (void (APIENTRY *)(GLenum, GLenum))SDL_GL_GetProcAddress("glClipControl");
     if (clip_control) clip_control(0x8CA1 /* GL_LOWER_LEFT */, 0x935F /* GL_ZERO_TO_ONE */);
+    if (clip_control) {   /* ...if the depth follows it (clip_depth_probe); PWR_GL_CLIP_CONTROL=0 or 1: without it, or with it untested */
+        const char *force = getenv("PWR_GL_CLIP_CONTROL");
+        const float z = force ? -1 : clip_depth_probe("0.25");
+        if (force ? !atoi(force) : z >= 0 && fabsf(z - 0.25f) > 0.01f) {
+            clip_control(0x8CA1 /* GL_LOWER_LEFT */, 0x935E /* GL_NEGATIVE_ONE_TO_ONE */);
+            clip_control = NULL;
+            const float z2 = force ? -1 : clip_depth_probe("-0.5");   /* OpenGL's range: clip z -0.5 is depth 0.25 */
+            if (!force) fprintf(stderr, "pica_gl: glClipControl: a test point's depth was %.3f, not 0.250: OpenGL's depth range instead (%.3f)\n", z, z2);
+        } else if (z < 0 && !force) fprintf(stderr, "pica_gl: glClipControl: its depth could not be tested\n");
+    }
     if (msr_gl_version() >= 46 || msr_gl_has("GL_EXT_texture_filter_anisotropic") || msr_gl_has("GL_ARB_texture_filter_anisotropic")) {
         GLint most = 1; glGetIntegerv(0x84FF /* GL_MAX_TEXTURE_MAX_ANISOTROPY */, &most); max_aniso = most > 1 ? (float)most : 1;
     }

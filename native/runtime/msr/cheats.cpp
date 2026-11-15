@@ -46,6 +46,37 @@ struct Refills {
 // A guest range is readable: inside a region the game was given (kernel.c's map), not past its end.
 bool Valid(u32 address) { return address >= 0x00100000 && k_region_state(address) != 0; }
 
+// Samus's inventory, as the game finds it (cheats.h: from the game object's player handles, her entity's +0x18C); 0
+// out of play
+u32 Inventory() {
+    if (!Valid(C::GamePointer)) return 0;
+    const u32 game = rd32(C::GamePointer);
+    for (const u32 offset : C::PlayerHandles) {
+        if (!Valid(game + offset)) return 0;
+        const u32 handle = rd32(game + offset);
+        const u32 entity = Valid(handle + 8) ? rd32(handle + 8) : 0;
+        const u32 inventory = Valid(entity + C::EntityInventoryOffset) ? rd32(entity + C::EntityInventoryOffset) : 0;
+        if (inventory != 0) return Valid(inventory + 0x48) ? inventory : 0;
+    }
+    return 0;
+}
+// The address of an item's value (a float) in the inventory, by the key global naming it (cheats.h); 0: not there
+u32 ItemAddress(u32 inventory, u32 key) {
+    const u32 name = Valid(key) ? rd32(key) : 0;
+    if (!Valid(name + 0x10) || rd32(inventory + 0x44) == 0) return 0;
+    const u32 hash = rd32(name + 0x10), buckets = rd32(inventory + 0x40), count = rd32(inventory + 0x48);
+    if (count == 0 || !Valid(buckets + (hash % count) * 4)) return 0;
+    u32 node = rd32(buckets + (hash % count) * 4);
+    for (int guard = 0; node != 0 && guard < 64 && Valid(node + 0x10); ++guard) {
+        if (rd32(node) == hash) {
+            const u32 v = rd32(node + 4);
+            return Valid(v) ? v : 0;
+        }
+        node = rd32(node + 0x10);
+    }
+    return 0;
+}
+
 bool InGameplay() {
     switch (static_cast<P::Bottom>(P::bottom.load(std::memory_order_relaxed))) {
     case P::Bottom::Hud: return true;
@@ -427,35 +458,32 @@ extern "C" void msr_cheats_frame(double now) {
 
     // Missiles: Samus's inventory, as the game finds it.
     if ((enabled & C::InfiniteMissiles) == 0) return;
-    const u32 game = rd32(C::GamePointer);
-    u32 inventory = 0;
-    for (const u32 offset : C::PlayerHandles) {
-        if (!Valid(game + offset)) return;
-        const u32 handle = rd32(game + offset);
-        const u32 entity = Valid(handle + 8) ? rd32(handle + 8) : 0;
-        inventory = Valid(entity + C::EntityInventoryOffset) ? rd32(entity + C::EntityInventoryOffset) : 0;
-        if (inventory != 0) break;
-    }
-    if (!Valid(inventory + 0x48)) return;
-    const auto item = [&](u32 key) -> u32 {
-        const u32 name = Valid(key) ? rd32(key) : 0;
-        if (!Valid(name + 0x10) || rd32(inventory + 0x44) == 0) return 0;
-        const u32 hash = rd32(name + 0x10), buckets = rd32(inventory + 0x40), count = rd32(inventory + 0x48);
-        if (count == 0 || !Valid(buckets + (hash % count) * 4)) return 0;
-        u32 node = rd32(buckets + (hash % count) * 4);
-        for (int guard = 0; node != 0 && guard < 64 && Valid(node + 0x10); ++guard) {
-            if (rd32(node) == hash) {
-                const u32 v = rd32(node + 4);
-                return Valid(v) ? v : 0;
-            }
-            node = rd32(node + 0x10);
-        }
-        return 0;
-    };
+    const u32 inventory = Inventory();
+    if (!inventory) return;
     for (const auto& refill : C::Refills) {
-        const u32 current = item(refill.current), maximum = item(refill.maximum);
+        const u32 current = ItemAddress(inventory, refill.current), maximum = ItemAddress(inventory, refill.maximum);
         if (current != 0 && maximum != 0 && rd32(current) != rd32(maximum)) wr32(current, rd32(maximum));
     }
+}
+
+// An item of Samus's inventory by its key global and its name (cheats.h; the name, which the key's points at, checks the
+// key is this game's): its value (1 for a beam she has, a count for missiles), 0 when she has none, -1 when that cannot
+// be told (out of play, another version of the game). Main thread, as the cheats.
+extern "C" float msr_item(uint32_t key, const char* name) {
+    const u32 key_name = Valid(key) ? rd32(key) : 0;
+    const u32 text = Valid(key_name + 0x14) ? rd32(key_name) : 0;
+    for (u32 i = 0;; ++i) {
+        if (!Valid(text + i) || rd8(text + i) != static_cast<u8>(name[i])) return -1.f;
+        if (!name[i]) break;
+    }
+    const u32 inventory = Inventory();
+    if (!inventory) return -1.f;
+    const u32 at = ItemAddress(inventory, key);
+    if (!at) return 0.f;
+    const u32 w = rd32(at);
+    float f;
+    std::memcpy(&f, &w, 4);
+    return std::isfinite(f) ? f : -1.f;
 }
 
 // A save state was loaded: the objects found on the game's heaps are other ones now (or none), the calls queued meant

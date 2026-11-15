@@ -33,6 +33,7 @@
 #include "vk_push.h"
 #include "vk_rp.h"
 #include "vk_wait.h"
+#include "vk_diag.h"
 #ifdef MSR_OPENGL
 #include "video_gl.h"
 #endif
@@ -82,7 +83,41 @@ static VkCommandBuffer cmdbuf;
 static VkSemaphore sem_acquire, sem_done[MAX_IMAGES];   /* one per swapchain image: reused only after that image is re-acquired */
 static VkFence fence;
 static uint8_t top_px[TOP_W * SCR_H * 4], bot_px[BOT_W * SCR_H * 4];
-static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;   /* the queue is shared with the PICA renderer */
+/* The queue is shared with the PICA renderer (pica_vk.c), one thread at a time (queue_lock). Some drivers block in
+   vkQueuePresentKHR for most of a frame: AMD's on Windows in a window, 14.8 ms of every 16.7 in immediate mode too
+   (#49). The GX thread waited for the queue meanwhile, 6-9 ms of each frame, and the game's P3D interrupt (gsp.c) with
+   it: on a Ryzen 7 9700X with an RX 9070 XT the game missed every other VBlank (35-40 of 60 FPS, frames of 16.7 and
+   33.3 ms). Now a GX submission that finds the queue in use is kept, and whoever holds the queue submits the kept ones
+   before its own (queue_acquire) and as it lets go (queue_release): the queue gets them in the order they were made,
+   as before, and the GX thread goes on. A wait on a kept submission's fence lasts until its holder lets go and the GPU
+   has done it. None are kept while the queue is free. PWR_GX_SUBMIT_WAIT=1: the GX thread waits for the queue (A/B). */
+static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
+#define KEPT_MAX 64
+static struct { VkCommandBuffer cbs[2]; uint32_t n; VkFence fence; } kept[KEPT_MAX];
+static int nkept;
+static pthread_mutex_t kept_lock = PTHREAD_MUTEX_INITIALIZER;   /* kept: taken after queue_lock (holding it, only a try for queue_lock) */
+unsigned g_vid_gx_kept;   /* GX submissions kept (main.c's 2 s line) */
+static volatile int present_slow;   /* presenting holds the queue long: only then are submissions kept (video_queue_submit) */
+static void kept_submit(void) {   /* under queue_lock and kept_lock */
+    for (int i = 0; i < nkept; i++) {
+        VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = kept[i].n, .pCommandBuffers = kept[i].cbs };
+        VkResult r = vkQueueSubmit(queue, 1, &si, kept[i].fence);
+        if (r != VK_SUCCESS) {   /* taken as submitted: its fence still signals (after what came before), so no wait on it hangs */
+            static int told; if (told++ < 5) fprintf(stderr, "pica_vk: submit failed (%d)\n", (int)r);
+            if (r == VK_ERROR_DEVICE_LOST) vk_diag_lost("a held submission of the game's");
+            if (kept[i].fence) vkQueueSubmit(queue, 0, NULL, kept[i].fence);
+        }
+    }
+    nkept = 0;
+}
+static void queue_acquire(void) {
+    pthread_mutex_lock(&queue_lock);
+    pthread_mutex_lock(&kept_lock); kept_submit(); pthread_mutex_unlock(&kept_lock);
+}
+static void queue_release(void) {   /* free with none kept: a submission finds it in use (and is kept) or free, under kept_lock */
+    pthread_mutex_lock(&kept_lock); kept_submit();
+    pthread_mutex_unlock(&queue_lock); pthread_mutex_unlock(&kept_lock);
+}
 static int vk13;     /* the device has Vulkan 1.3's dynamic rendering */
 static int vk_hw;    /* the hardware PICA renderer and the GPU presenter can run: with Vulkan 1.3, or in the 1.1 mode (vk_rp.h) */
 static int use_gl;   /* presenting with OpenGL (video_gl.c), not Vulkan */
@@ -148,6 +183,22 @@ static void apply_fullscreen(void) {
     return;   /* always the whole screen there (video_init) */
 #endif
     SDL_SetWindowFullscreen(win, opt_fs == 1 ? SDL_WINDOW_FULLSCREEN_DESKTOP : opt_fs == 2 ? SDL_WINDOW_FULLSCREEN : 0);
+}
+/* A window to go fullscreen is made hidden and shown once it is: made at its windowed size, it showed for two frames
+   first, a small window with a blank title bar in the middle of the screen (2026-11-14, the user's video: "a flash"
+   as the game started from Steam) */
+static Uint32 hidden_until_fullscreen(void) {
+#ifdef __ANDROID__
+    return 0;
+#else
+    return opt_fs ? SDL_WINDOW_HIDDEN : 0;
+#endif
+}
+static void show_fullscreen(void) {
+#ifndef __ANDROID__
+    SDL_ShowWindow(win);
+    SDL_RaiseWindow(win);
+#endif
 }
 
 /* the window's size in pixels (larger than its size in window coordinates on a Retina display) */
@@ -575,14 +626,14 @@ static int create_swapchain(void) {
 }
 
 static int recreate_swapchain(void) {
-    pthread_mutex_lock(&queue_lock); vk_wait_device(dev); pthread_mutex_unlock(&queue_lock);
+    queue_acquire(); vk_wait_device(dev); queue_release();
     return create_swapchain();
 }
 /* the window's surface again, and its swapchain: Android destroys the window's surface while the app is in the
    background (VK_ERROR_SURFACE_LOST_KHR, or the foreground again: SDL_APP_DIDENTERFOREGROUND) */
 static int surface_reset;
 static int recreate_surface(void) {
-    pthread_mutex_lock(&queue_lock); vk_wait_device(dev); pthread_mutex_unlock(&queue_lock);
+    queue_acquire(); vk_wait_device(dev); queue_release();
     if (swap) { vkDestroySwapchainKHR(dev, swap, NULL); swap = VK_NULL_HANDLE; }
     vkDestroySurfaceKHR(inst, surf, NULL); surf = VK_NULL_HANDLE;
     if (!SDL_Vulkan_CreateSurface(win, inst, &surf)) { fprintf(stderr, "video: surface: %s\n", SDL_GetError()); return -1; }
@@ -707,14 +758,14 @@ static int vk_open(int win_w, int win_h, int probe) {
 #else
     const Uint32 win_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
 #endif
-    win = SDL_CreateWindow("Metroid: Samus Returns", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h, win_flags);
+    win = SDL_CreateWindow("Metroid: Samus Returns", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h, win_flags | hidden_until_fullscreen());
     if (!win) {   /* no Vulkan library at all (vulkan-1.dll comes with the graphics driver) */
         fprintf(stderr, "video: SDL_CreateWindow: %s\n", SDL_GetError());
         snprintf(init_error, sizeof init_error, "%s", SDL_GetError());
         return -1;
     }
     SDL_SetWindowMinimumSize(win, BOT_W, SCR_H);
-    if (opt_fs) apply_fullscreen();
+    if (opt_fs) { apply_fullscreen(); show_fullscreen(); }
     unsigned ne = 0; SDL_Vulkan_GetInstanceExtensions(win, &ne, NULL);
     const char *exts[20]; if (ne > 16) ne = 16; SDL_Vulkan_GetInstanceExtensions(win, &ne, exts);
     int has_portability_enum = 0;
@@ -836,8 +887,16 @@ static int vk_open(int win_w, int win_h, int probe) {
         if (!strcmp(dep[i].extensionName, "VK_EXT_load_store_op_none")) has_ext_none = 1;
     }
     const char *op_none = has_khr_none ? "VK_KHR_load_store_op_none" : has_ext_none ? "VK_EXT_load_store_op_none" : NULL;
+    int diag_fault, diag_marks; vk_diag_wanted(dep, nde, &diag_fault, &diag_marks);   /* if the GPU is lost: where (vk_diag.c) */
     free(dep);
-    if (safe_level >= 1) { has_push = 0; op_none = NULL; has_hdr_metadata = 0; }   /* safe levels: no optional device extensions (safe_begin) */
+    if (safe_level >= 1) { has_push = 0; op_none = NULL; has_hdr_metadata = 0; diag_fault = diag_marks = 0; }   /* safe levels: no optional device extensions (safe_begin) */
+#ifdef VK_EXT_device_fault
+    VkPhysicalDeviceFaultFeaturesEXT fault_have = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT },
+                                     fault_on = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE };
+    if (diag_fault) f13.pNext = &fault_have;
+#else
+    diag_fault = 0;
+#endif
     PFN_vkGetPhysicalDeviceFeatures2 features2 = inst_version >= VK_API_VERSION_1_1
         ? (PFN_vkGetPhysicalDeviceFeatures2)vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceFeatures2") : NULL;
     if (pp.apiVersion >= VK_API_VERSION_1_3 && features2 && !force11) features2(phys, &f2);
@@ -867,7 +926,12 @@ static int vk_open(int win_w, int win_h, int probe) {
         en10.robustBufferAccess = f10.robustBufferAccess;
         if (vk13 ? f2.features.robustBufferAccess : f10.robustBufferAccess) fprintf(stderr, "video: robust buffer access on\n");
     }
-    const char *dext[6] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME }; uint32_t ndext = 1;
+    const char *dext[8] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME }; uint32_t ndext = 1;
+#ifdef VK_EXT_device_fault
+    diag_fault = diag_fault && vk13 && fault_have.deviceFault;
+    if (diag_fault) { dext[ndext++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME; en13.pNext = &fault_on; }
+#endif
+    if (diag_marks) dext[ndext++] = VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME;
     if (has_portability_subset) dext[ndext++] = "VK_KHR_portability_subset";
     if (vk_hw && has_push) dext[ndext++] = VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME;
     if (vk13 && has_hdr_metadata) dext[ndext++] = VK_EXT_HDR_METADATA_EXTENSION_NAME; else has_hdr_metadata = 0;
@@ -894,6 +958,7 @@ static int vk_open(int win_w, int win_h, int probe) {
     { extern void msr_vk13_load(VkDevice d); if (vk13) msr_vk13_load(dev); }   /* vk13_load.c */
 #endif
     vkGetDeviceQueue(dev, qfam, 0, &queue);
+    vk_diag_init(dev, queue, diag_fault, diag_marks);
     /* swapchain format first (the presenter's target uses it), then the presenter, then the swapchain-sized resources */
     stage_set(STAGE_MAIN, "reading the window's formats");
     { VkFormat h10, scrgb; VkColorSpaceKHR cs; surface_formats(&sdr_format, &cs, &h10, &scrgb); sc_format = sdr_format; }
@@ -917,9 +982,9 @@ static int vk_open(int win_w, int win_h, int probe) {
     VK(vkCreateFence(dev, &fi, NULL, &fence));
     if (gpu_ok) {   /* the settings overlay draws into the presentation's target (its font goes up on the shared queue) */
         stage_set(STAGE_MAIN, "starting the overlay (its shaders compiled, its font uploaded)");
-        pthread_mutex_lock(&queue_lock);
+        queue_acquire();
         msr_overlay_vk_init(inst, phys, dev, qfam, queue, target_fmt, sc_count, g_vk_rp ? pass_for(target_fmt, VK_ATTACHMENT_LOAD_OP_DONT_CARE) : VK_NULL_HANDLE);
-        pthread_mutex_unlock(&queue_lock);
+        queue_release();
     }
     stage_set(STAGE_MAIN, NULL);
     fprintf(stderr, "video: presenting with Vulkan\n");
@@ -963,10 +1028,11 @@ static int gl_open(int win_w, int win_h) {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
-    win = SDL_CreateWindow("Metroid: Samus Returns", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+    win = SDL_CreateWindow("Metroid: Samus Returns", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h,
+                           SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | hidden_until_fullscreen());
     if (!win) { snprintf(gl_error, sizeof gl_error, "%s", SDL_GetError()); fprintf(stderr, "video: OpenGL window: %s\n", gl_error); return -1; }
     SDL_SetWindowMinimumSize(win, BOT_W, SCR_H);
-    if (opt_fs) apply_fullscreen();
+    if (opt_fs) { apply_fullscreen(); show_fullscreen(); }
     if (vgl_init(win, gl_error, sizeof gl_error)) { fprintf(stderr, "video: OpenGL: %s\n", gl_error); return -1; }
     use_gl = 1;
     gl_interval();
@@ -1115,6 +1181,112 @@ int video_pad_any_held(void) {   /* for a new binding: the button that chose the
     if (gc) for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) if (SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)b)) return 1;
     return 0;
 }
+unsigned video_pad_combo_held(void) {   /* the pad's buttons held now, as combo bits: what a combo's 5 s count ends on */
+    unsigned m = 0;
+    if (!gc) return 0;
+    for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) if (SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)b)) m |= input_combo_bit(b);
+    const int press = input_trigger_press() * 32767 / 100;
+    if (SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > press) m |= input_combo_bit(PAD_TRIGGER_LEFT);
+    if (SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > press) m |= input_combo_bit(PAD_TRIGGER_RIGHT);
+    return m;
+}
+
+/* Quick save and Quick load on gamepad combos (input.c input_combo; Back + LB and Back + RB by default): one goes off in
+   play (not while the settings show, nor in the launcher) when the last of its buttons goes down, once until one of them
+   comes up. That last button goes no further; the combo's others, which reached the game as they went down, are let
+   go there. The Select button (Back, which opens these settings) in a combo with others does its own thing when it
+   comes up instead, if no combo went off while it was down: Back + LB saves without opening the settings first. */
+static unsigned combo_held, combo_fired;    /* the pad's buttons held (combo bits); the combos gone off (a bit each) */
+static SDL_JoystickID combo_pad = -1;
+static int combo_trig[2];                   /* the triggers past their press point (as input.c counts them) */
+static int select_waiting, select_spent;    /* Select is down, its action left for when it comes up; a combo went off since */
+static int combo_event(const SDL_Event *e) {   /* 1: a combo went off, the event goes no further */
+    unsigned bit; int down; SDL_JoystickID which;
+    if (e->type == SDL_CONTROLLERBUTTONDOWN || e->type == SDL_CONTROLLERBUTTONUP) {
+        bit = input_combo_bit(e->cbutton.button); down = e->type == SDL_CONTROLLERBUTTONDOWN; which = e->cbutton.which;
+    } else if (e->type == SDL_CONTROLLERAXISMOTION && (e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT || e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT)) {
+        const int t = e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT, was = combo_trig[t];
+        if (input_trigger_pulled(t, e->caxis.value, &combo_trig[t]) == was) return 0;
+        bit = input_combo_bit(t ? PAD_TRIGGER_RIGHT : PAD_TRIGGER_LEFT); down = combo_trig[t]; which = e->caxis.which;
+    } else return 0;
+    if (which != combo_pad) { combo_pad = which; combo_held = combo_fired = 0; }   /* another pad: its own buttons */
+    if (!down) {
+        combo_held &= ~bit;
+        for (int i = 0; i < COMBO_COUNT; i++) if (input_combo(i) & bit) combo_fired &= ~(1u << i);
+        return 0;
+    }
+    combo_held |= bit;
+    if (g_input_none || msr_overlay_visible() || msr_overlay_capturing() || msr_overlay_launcher_mode()) return 0;
+    for (int i = 0; i < COMBO_COUNT; i++) {
+        const unsigned m = input_combo(i);
+        if (!(m & bit) || (combo_held & m) != m || (combo_fired >> i & 1)) continue;
+        combo_fired |= 1u << i;
+        if (select_waiting) select_spent = 1;
+        for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) if (m & ~bit & input_combo_bit(b)) input_pad_sdl(b, 0);
+        if (m & ~bit & input_combo_bit(PAD_TRIGGER_LEFT)) input_pad_sdl(PAD_TRIGGER_LEFT, 0);
+        if (m & ~bit & input_combo_bit(PAD_TRIGGER_RIGHT)) input_pad_sdl(PAD_TRIGGER_RIGHT, 0);
+        fprintf(stderr, "native: %s (gamepad combo)\n", i == COMBO_SAVE ? "quick save" : "quick load");
+        if (i == COMBO_SAVE) msr_state_quick_save(); else msr_state_quick_load();
+        return 1;
+    }
+    return 0;
+}
+/* PWR_TEST_PAD=<s>:<buttons>,...: a virtual gamepad (SDL's) that holds those buttons from that run time on, e.g.
+   "10:back,10.3:back+lb,10.8:none" (a b x y back guide start l3 r3 lb rb up down left right, lt rt pulled all the way):
+   the pad's own events and state, for testing without one (the combos, 2026-11-14) */
+static double now_s(void);
+static void test_pad_frame(void) {
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    static int state = -1; static SDL_Joystick *joy_t; static const char *script; static double t0; static unsigned held;
+    if (state < 0) {
+        state = 0;
+        if (!(script = getenv("PWR_TEST_PAD"))) return;
+        SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");   /* (tests run the window in the background) */
+        SDL_VirtualJoystickDesc d; SDL_zero(d);
+        d.version = SDL_VIRTUAL_JOYSTICK_DESC_VERSION; d.type = SDL_JOYSTICK_TYPE_GAMECONTROLLER; d.name = "PWR_TEST_PAD";
+        d.naxes = SDL_CONTROLLER_AXIS_MAX; d.nbuttons = SDL_CONTROLLER_BUTTON_MAX;
+        d.axis_mask = (1u << SDL_CONTROLLER_AXIS_MAX) - 1; d.button_mask = (1u << SDL_CONTROLLER_BUTTON_MAX) - 1;
+        const int idx = SDL_JoystickAttachVirtualEx(&d);
+        if (idx < 0 || !(joy_t = SDL_JoystickOpen(idx))) { fprintf(stderr, "native: PWR_TEST_PAD: %s\n", SDL_GetError()); return; }
+        t0 = now_s(); state = 1;
+    }
+    if (state != 1) return;
+    static const char *const names[] = { "a", "b", "x", "y", "back", "guide", "start", "l3", "r3", "lb", "rb", "up", "down", "left", "right" };
+    unsigned want = held; const double t = now_s() - t0;
+    for (const char *p = script; p && *p; ) {   /* the last entry whose time has come */
+        char *end; const double at = strtod(p, &end);
+        if (end == p || *end != ':' || at > t) break;
+        want = 0;
+        for (p = end + 1; *p && *p != ','; ) {
+            size_t n = strcspn(p, "+,");
+            for (int b = 0; b < (int)(sizeof names / sizeof *names); b++) if (strlen(names[b]) == n && !strncmp(p, names[b], n)) want |= 1u << b;
+            if (n == 2 && !strncmp(p, "lt", 2)) want |= 1u << 24;
+            if (n == 2 && !strncmp(p, "rt", 2)) want |= 1u << 25;
+            p += n; if (*p == '+') p++;
+        }
+        if (*p == ',') p++;
+    }
+    if (want == held) return;
+    for (int b = 0; b < (int)(sizeof names / sizeof *names); b++) if ((want ^ held) >> b & 1) SDL_JoystickSetVirtualButton(joy_t, b, (want >> b & 1) ? SDL_PRESSED : SDL_RELEASED);
+    if ((want ^ held) >> 24 & 1) SDL_JoystickSetVirtualAxis(joy_t, SDL_CONTROLLER_AXIS_TRIGGERLEFT, (want >> 24 & 1) ? 32767 : 0);
+    if ((want ^ held) >> 25 & 1) SDL_JoystickSetVirtualAxis(joy_t, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, (want >> 25 & 1) ? 32767 : 0);
+    fprintf(stderr, "native: PWR_TEST_PAD at %.1f s: %#x\n", t, want);
+    held = want;
+#endif
+}
+static int select_in_combo(int button) {   /* the Select button is in a combo with others: it acts when it comes up */
+    const unsigned bit = input_combo_bit(button);
+    for (int i = 0; i < COMBO_COUNT; i++) { const unsigned m = input_combo(i); if ((m & bit) && m != bit) return 1; }
+    return 0;
+}
+/* the Select button's settings or layout action: now (down), or on its way up when it is in a combo */
+static int select_acts(int button, int down) {
+    if (!select_in_combo(button)) return down;
+    if (down) { select_waiting = 1; select_spent = 0; return 0; }
+    const int act = select_waiting && !select_spent;
+    select_waiting = 0;
+    return act;
+}
 
 /* gamepads: only without --input=none. Controllers with an SDL mapping use the controller API; others fall back to raw joystick
    buttons/axes/hat (0..3 = south,east,west,north as most pads number them, 4/5 = L/R, 6/7 = select/start) */
@@ -1261,25 +1433,38 @@ static const Img *hi_screen(int i, const ScreenSource *s, int screen_w) {
     return t;
 }
 
-/* Samus Returns, R held (missiles): the HUD's beam slots from the bottom screen as it was before (msr_beams_held). Each
-   frame R is not held, the slots' column (x 250-320, every row) is copied into beam_copy, at the size of the bottom
-   screen in use; while it is held, the beam slots' quads sample that copy (the live screen if it has none). */
-static Img beam_copy; static int beam_copy_ok;
-static const Img *beam_slots(const Img *sb) {
-    if (msr_beams_held()) return beam_copy_ok && beam_copy.w == sb->w && beam_copy.h == sb->h ? &beam_copy : sb;
-    if (beam_copy.w != sb->w || beam_copy.h != sb->h) {
-        img_free(&beam_copy); beam_copy_ok = 0;
-        if (img_make(&beam_copy, sb->w, sb->h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) { memset(&beam_copy, 0, sizeof beam_copy); return sb; }
+/* Samus Returns: copies of the bottom screen for the compositor's quads that show it as it was (MsrQuad.source), at
+   the size of the bottom screen in use; such a quad samples the live screen while its copy has none at that size. */
+typedef struct { Img img; int ok; } BottomCopy;
+static void bottom_copy(BottomCopy *c, const Img *sb, uint32_t x0) {   /* columns x0 on, every row */
+    if (c->img.w != sb->w || c->img.h != sb->h) {
+        img_free(&c->img); c->ok = 0;
+        if (img_make(&c->img, sb->w, sb->h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) { memset(&c->img, 0, sizeof c->img); return; }
     }
-    const uint32_t x0 = sb->w * 250 / BOT_W;
     barrier_img(sb->img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-    barrier_img(beam_copy.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+    barrier_img(c->img.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
     VkImageCopy ic = { .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .srcOffset = { (int32_t)x0, 0, 0 },
                        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .dstOffset = { (int32_t)x0, 0, 0 }, .extent = { sb->w - x0, sb->h, 1 } };
-    vkCmdCopyImage(cmdbuf, sb->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, beam_copy.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+    vkCmdCopyImage(cmdbuf, sb->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, c->img.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
     barrier_img(sb->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT);
-    barrier_img(beam_copy.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-    beam_copy_ok = 1;
+    barrier_img(c->img.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    c->ok = 1;
+}
+static const Img *bottom_kept(const BottomCopy *c, const Img *sb) { return c->ok && c->img.w == sb->w && c->img.h == sb->h ? &c->img : sb; }
+/* R held (missiles): the HUD's beam slots from the bottom screen as it was before (msr_beams_held). Each frame R is not
+   held, the slots' column (x 250-320) is copied; while it is held, the beam slots' quads (source 1) sample the copy. */
+static BottomCopy beam_copy;
+static const Img *beam_slots(const Img *sb) {
+    if (msr_beams_held()) return bottom_kept(&beam_copy, sb);
+    bottom_copy(&beam_copy, sb, sb->w * 250 / BOT_W);
+    return sb;
+}
+/* The menus' panel: the bottom screen as it last read as a menu (msr_menu_live). Each frame it does, all of it is
+   copied; while it does not, the panel (source 2) samples the copy as it fades out. */
+static BottomCopy menu_copy;
+static const Img *menu_panel(const Img *sb) {
+    if (!msr_menu_live()) return bottom_kept(&menu_copy, sb);
+    bottom_copy(&menu_copy, sb, 0);
     return sb;
 }
 
@@ -1361,6 +1546,7 @@ static int gl_frame(int dw, int dh, const ScreenSource *top, const ScreenSource 
 #endif
 
 int video_frame(void) {
+    test_pad_frame();
     SDL_Event e; int bottom_click = 0;
     int ww, wh; SDL_GetWindowSize(win, &ww, &wh);
     Rect rt, rb; layout_rects(ww, wh, &rt, &rb);   /* window coordinates for touch; the drawing below uses drawable pixels */
@@ -1377,6 +1563,7 @@ int video_frame(void) {
             e.key.keysym.scancode = launcher ? SDL_SCANCODE_ESCAPE : SDL_SCANCODE_F1;
         }
 #endif
+        if (combo_event(&e)) continue;   /* Quick save or Quick load on a gamepad combo: its last button goes no further */
         /* the settings overlay: F1 and Select (its binding) open and close it; while it shows, or waits for a key or button to
            bind, it takes the input */
         if (!msr_overlay_capturing()) {
@@ -1385,7 +1572,8 @@ int video_frame(void) {
             int pad_toggle = (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) && !g_input_none &&
                              opt_select_layout == 2 && input_pad_control_now(e.cbutton.button) == C_SELECT;
             if (key_toggle || pad_toggle) {
-                if ((e.type == SDL_KEYDOWN && !e.key.repeat) || e.type == SDL_CONTROLLERBUTTONDOWN) msr_overlay_toggle();
+                if (pad_toggle ? select_acts(e.cbutton.button, e.type == SDL_CONTROLLERBUTTONDOWN) : e.type == SDL_KEYDOWN && !e.key.repeat)
+                    msr_overlay_toggle();
                 continue;
             }
         }
@@ -1425,7 +1613,7 @@ int video_frame(void) {
                 }
             }
             if (opt_select_layout == 1 && input_pad_control_now(e.cbutton.button) == C_SELECT) {
-                if (e.type == SDL_CONTROLLERBUTTONDOWN) next_layout(); break; }
+                if (select_acts(e.cbutton.button, e.type == SDL_CONTROLLERBUTTONDOWN)) next_layout(); break; }
             {   /* ZL and ZR bound to a button: the triggers' taps */
                 int c = input_pad_control_now(e.cbutton.button);
                 if (c == C_ZL || c == C_ZR) { if (e.type == SDL_CONTROLLERBUTTONDOWN) msr_trigger(c == C_ZR); break; }
@@ -1618,6 +1806,8 @@ int video_frame(void) {
 
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     vkResetCommandBuffer(cmdbuf, 0); vkBeginCommandBuffer(cmdbuf, &bi);
+    static uint32_t frame_mark; frame_mark++;
+    vk_mark(cmdbuf, VKM_FRAME, frame_mark);   /* (vk_diag.h: where the GPU was, if it is lost) */
     if (gpu_ok && vk_hw) pica_vk_scan_lock(1);   /* until submitted: a 3D resolution change must not free a scan-out image in use */
     if (gpu_ok) {
         float W = (float)sc_extent.width, H = (float)sc_extent.height;
@@ -1631,6 +1821,7 @@ int video_frame(void) {
         const Img *st = hi_screen(0, &top, TOP_W), *sb = hi_screen(1, &bottom, BOT_W);
         if (!st) st = &tex_top; if (!sb) sb = &tex_bot;
         const Img *sbeams = single ? beam_slots(sb) : sb;   /* R held: the beam slots before it (outside the passes) */
+        const Img *smenu = single ? menu_panel(sb) : sb;    /* the menu as last seen */
         if (toast_text && (toast_dirty || tex_toast.w != (uint32_t)(TOAST_W * ks))) {
             int w = TOAST_W * ks, h = TOAST_H * ks; ui_img(&tex_toast, w, h);
             fill(toast_px, w, 0, 0, w, h, 0x101820, 210);
@@ -1638,7 +1829,8 @@ int video_frame(void) {
             memcpy(up_ptr + UP_TOAST, toast_px, (size_t)w * h * 4); upload(&tex_toast, UP_TOAST); toast_dirty = 0;
         }
         int fsr = opt_filter == F_FSR;
-        if (fsr) { fsr_upscale(0, st, &rt); fsr_upscale(1, sb, &rb); }
+        if (fsr) { vk_mark(cmdbuf, VKM_FSR, frame_mark); fsr_upscale(0, st, &rt); fsr_upscale(1, sb, &rb); }
+        vk_mark(cmdbuf, VKM_SCREENS, frame_mark);
         begin_pass(&target, VK_ATTACHMENT_LOAD_OP_CLEAR);
         if (fsr) {
             float et[4] = { opt_sharp, 0, rt.x, rt.y }, eb[4] = { opt_sharp, 0, rb.x, rb.y };
@@ -1658,16 +1850,19 @@ int video_frame(void) {
             begin_pass_a(&ui_layer, VK_ATTACHMENT_LOAD_OP_CLEAR, 0);
         }
         if (mf.count) {
+            vk_mark(cmdbuf, VKM_HUD, frame_mark);
             vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_mode ? pipe_msr_ui : pipe_msr);
-            for (int i = 0; i < mf.count; i++) msr_quad(&mf.quads[i], mf.quads[i].source ? sbeams : sb, W, H);
+            for (int i = 0; i < mf.count; i++) msr_quad(&mf.quads[i], mf.quads[i].source == 1 ? sbeams : mf.quads[i].source == 2 ? smenu : sb, W, H);
         }
         if (!msr_overlay_visible() && now_s() < toast_until && tex_toast.img)   /* layout label, top centre (pixel for pixel) */
             gpu_quad(hdr_mode ? pipe_ui : pipe, &tex_toast, (Rect){ floorf((W - (float)tex_toast.w) / 2), 12, (float)tex_toast.w, (float)tex_toast.h, 1 }, W, H, 0, 1, NULL);
+        vk_mark(cmdbuf, VKM_MENU, frame_mark);
         msr_overlay_draw(cmdbuf, sc_extent.width, sc_extent.height);   /* the settings, the FPS counter, the hints: last */
         end_pass();
         if (hdr_mode) {
             barrier_img(ui_layer.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
             barrier_img(sc_images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+            vk_mark(cmdbuf, VKM_HDR, frame_mark);
             begin_pass_view(sc_views[idx], sc_format, sc_extent, VK_ATTACHMENT_LOAD_OP_DONT_CARE, 1);
             float pk, pp; msr_hdr(&pk, &pp); if (pk <= 0) pk = disp_peak; if (pp <= 0) pp = disp_paper;
             Push hp = { { -1, -1, 1, 1 }, { W, H, 1, 1 }, { hdr_mode, 0, 0, 0 }, { pp, pk > pp ? pk : pp, 0.5f, 0 } };
@@ -1695,21 +1890,39 @@ int video_frame(void) {
         vkCmdCopyBufferToImage(cmdbuf, stage, sc_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
     }
     barrier_img(sc_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
+    vk_mark(cmdbuf, VKM_FRAME_END, frame_mark);
     vkEndCommandBuffer(cmdbuf);
     VkPipelineStageFlags ws = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo sub = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem_acquire, .pWaitDstStageMask = &ws,
         .commandBufferCount = 1, .pCommandBuffers = &cmdbuf, .signalSemaphoreCount = 1, .pSignalSemaphores = &sem_done[idx] };
     stage_set(STAGE_MAIN, "waiting for the Vulkan queue (the GX thread submits on it too)");
-    pthread_mutex_lock(&queue_lock);
+    queue_acquire();   /* (any GX submissions kept go first, in order) */
     stage_set(STAGE_MAIN, "submitting the frame");
-    vkQueueSubmit(queue, 1, &sub, fence);
+    if (vkQueueSubmit(queue, 1, &sub, fence) == VK_ERROR_DEVICE_LOST) vk_diag_lost("a frame's submission");
     if (gpu_ok && vk_hw) pica_vk_scan_lock(0);
     VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem_done[idx], .swapchainCount = 1, .pSwapchains = &swap, .pImageIndices = &idx };
     double w2 = wait_clock();
     stage_set(STAGE_MAIN, "presenting the frame (vkQueuePresentKHR)");
     r = vkQueuePresentKHR(queue, &pi);
+    if (r == VK_ERROR_DEVICE_LOST) vk_diag_lost("the present");
+    {   /* PWR_PRESENT_HOLD_MS=<ms>: the queue held that much longer, as a driver that blocks in the present holds it (#49:
+           AMD's on Windows, ~15 ms at 60 Hz): the GX thread's kept submissions tested on any GPU */
+        static double hold = -1; if (hold < 0) { const char *e = getenv("PWR_PRESENT_HOLD_MS"); hold = e ? atof(e) : 0; }
+        if (hold > 0) k_sleep_ns((int64_t)(hold * 1e6));
+    }
+    {   /* how long presenting holds the queue, averaged over ~20 frames: over 2 ms, the GX thread's submissions are kept */
+        static double average; static int told = -1;
+        average += (wait_clock() - w2 - average) * .05;
+        present_slow = average > .002;
+        if (present_slow != told) {
+            if (told >= 0 || present_slow)
+                fprintf(stderr, "video: presenting holds the queue %.1f ms a frame: the GX thread's submissions %s\n", average * 1e3,
+                        present_slow ? "are kept meanwhile" : "wait for it");
+            told = present_slow;
+        }
+    }
     g_vid_wait_present += wait_clock() - w2;
-    pthread_mutex_unlock(&queue_lock);
+    queue_release();   /* (with what the GX thread submitted meanwhile) */
     stage_set(STAGE_MAIN, stage_was);
 #ifdef __ANDROID__
     if (r == VK_SUBOPTIMAL_KHR) r = VK_SUCCESS;   /* not pre-rotated (create_swapchain: the compositor turns it), every frame */
@@ -1723,21 +1936,64 @@ int video_vk(VkPhysicalDevice *p, VkDevice *d, VkQueue *q, uint32_t *family) {
     if (!dev || !vk_hw) return -1;
     *p = phys; *d = dev; *q = queue; *family = qfam; return 0;
 }
-/* the GX thread's submissions (pica_vk.c): its wait for the queue, which presenting holds (main.c's 2 s line) */
+/* the GX thread's use of the queue (pica_vk.c): its waits for it, which presenting holds (main.c's 2 s line) */
 double g_vid_wait_queue_gx;
 static const char *gx_stage_was;
 void video_queue_lock(void) {
     gx_stage_was = stage_set(STAGE_GX, "waiting for the Vulkan queue (presenting uses it too)");
     const double t0 = wait_clock();
-    pthread_mutex_lock(&queue_lock);
+    queue_acquire();
     g_vid_wait_queue_gx += wait_clock() - t0;
-    stage_set(STAGE_GX, "submitting to the Vulkan queue");
+    stage_set(STAGE_GX, "using the Vulkan queue");
 }
-void video_queue_unlock(void) { pthread_mutex_unlock(&queue_lock); stage_set(STAGE_GX, gx_stage_was); }
+void video_queue_unlock(void) { queue_release(); stage_set(STAGE_GX, gx_stage_was); }
+/* Presenting holds the queue long (video_frame: the present's time, averaged): only then are the GX thread's
+   submissions kept. Elsewhere (a present of 0.07 ms on an RTX 5090, mailbox) it waits for the queue as in 2.0.7: the
+   keeping is for the drivers that block in the present (#49), and a GPU lost on 2026-11-14 (an RTX 5090, 9x, HDR, a
+   texture pack: "submit failed (-4)" in play) came while submissions were kept, cause unknown. (present_slow, above)
+   A GX fence whose submission is kept: the main thread submits it later, and Vulkan lets no other thread use a fence
+   while it is being submitted. The GX thread asks before a wait or a status (pica_vk.c gx_fence_*). */
+int video_fence_kept(VkFence f) {
+    if (!f) return 0;
+    pthread_mutex_lock(&kept_lock);
+    int found = 0;
+    for (int i = 0; i < nkept && !found; i++) found = kept[i].fence == f;
+    pthread_mutex_unlock(&kept_lock);
+    return found;
+}
+void video_fence_submitted(VkFence f) {   /* before waiting on it: submitted first (its holder lets go of the queue) */
+    if (video_fence_kept(f)) { video_queue_lock(); video_queue_unlock(); }
+}
+/* the GX thread's submissions (up to two command buffers, no semaphores): at once while the queue is free, else kept for
+   its holder to submit (queue_lock, above) while presenting holds it long, else after a wait for it */
+VkResult video_queue_submit(uint32_t n, const VkCommandBuffer *cbs, VkFence f) {
+    static int wait = -1; if (wait < 0) wait = getenv("PWR_GX_SUBMIT_WAIT") != NULL;
+    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = n, .pCommandBuffers = cbs };
+    pthread_mutex_lock(&kept_lock);
+    if (pthread_mutex_trylock(&queue_lock) == 0) {
+        kept_submit();   /* (none: the last holder submitted them) */
+        VkResult r = vkQueueSubmit(queue, 1, &si, f);
+        pthread_mutex_unlock(&queue_lock); pthread_mutex_unlock(&kept_lock);
+        if (r == VK_ERROR_DEVICE_LOST) vk_diag_lost("a submission of the game's");
+        return r;
+    }
+    if (!wait && present_slow && n <= 2 && nkept < KEPT_MAX) {
+        kept[nkept].n = n; memcpy(kept[nkept].cbs, cbs, n * sizeof *cbs); kept[nkept].fence = f; nkept++;
+        g_vid_gx_kept++;
+        pthread_mutex_unlock(&kept_lock);
+        return VK_SUCCESS;
+    }
+    pthread_mutex_unlock(&kept_lock);   /* waiting for the queue (its holder takes kept_lock to let go) */
+    video_queue_lock();
+    VkResult r = vkQueueSubmit(queue, 1, &si, f);
+    video_queue_unlock();
+    if (r == VK_ERROR_DEVICE_LOST) vk_diag_lost("a submission of the game's");
+    return r;
+}
 
 void video_shutdown(void) {
     safe_end();
-    if (dev) { pthread_mutex_lock(&queue_lock); vk_wait_device(dev); pthread_mutex_unlock(&queue_lock); if (gpu_ok) msr_overlay_shutdown(); }
+    if (dev) { queue_acquire(); vk_wait_device(dev); queue_release(); if (gpu_ok) msr_overlay_shutdown(); }
 #ifdef MSR_OPENGL
     if (use_gl) vgl_shutdown();
 #endif

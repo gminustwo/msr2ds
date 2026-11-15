@@ -26,6 +26,13 @@ void input_bind_pad(int c, int sdl_button);
    travel) and let go under 60% of it; ZL and ZR's by default. Beyond SDL's buttons, so a pad button is never one. */
 #define PAD_TRIGGER_LEFT 100
 #define PAD_TRIGGER_RIGHT 101
+/* Gamepad combos for the settings' Quick save and Quick load: the buttons held together, a bit each (input_combo_bit),
+   0 for none; video.c sets them off in play */
+enum { COMBO_SAVE, COMBO_LOAD, COMBO_COUNT };
+unsigned input_combo_bit(int sdl_button);        /* an SDL_GameControllerButton or PAD_TRIGGER_*: its bit (0: none) */
+unsigned input_combo(int which);
+void input_set_combo(int which, unsigned mask);  /* taken from the other one if it had the same */
+void input_combo_text(int which, char *buf, size_t n);   /* "Back + LB", "" for none */
 void input_set_trigger_press(int percent);       /* 10..90 */
 int input_trigger_press(void);                    /* the press point, % */
 int input_trigger_pulled(int right, int value, int *held);   /* a trigger's axis (0..32767) -> pressed or not, with *held its state */

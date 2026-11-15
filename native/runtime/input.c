@@ -172,6 +172,36 @@ void input_bind_pad(int c, int button) {
     for (int o = 0; o < C_COUNT; o++) if (pad_bind[o] == button) pad_bind[o] = -1;
     pad_bind[c] = button; input_release_all();
 }
+/* Gamepad combos for Quick save and Quick load (2026-11-14, the user: "multiple button combos such as back+L on the
+   controller for save state and back+R to load state"; the settings' main and Controls tabs, which take whatever is
+   held when a 5 s count ends; settings.ini [native_controls] quick_save_combo, quick_load_combo): a bit per SDL
+   button, the triggers (past their press point) bits 24 and 25. video.c sets them off. */
+#define COMBO_LT (1u << 24)
+#define COMBO_RT (1u << 25)
+static unsigned combo[COMBO_COUNT] = { 1u << SDL_CONTROLLER_BUTTON_BACK | 1u << SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
+                                       1u << SDL_CONTROLLER_BUTTON_BACK | 1u << SDL_CONTROLLER_BUTTON_RIGHTSHOULDER };
+unsigned input_combo_bit(int b) {
+    if (b == PAD_TRIGGER_LEFT) return COMBO_LT;
+    if (b == PAD_TRIGGER_RIGHT) return COMBO_RT;
+    return b >= 0 && b < SDL_CONTROLLER_BUTTON_MAX && b < 24 ? 1u << b : 0;
+}
+unsigned input_combo(int i) { return i >= 0 && i < COMBO_COUNT ? combo[i] : 0; }
+void input_set_combo(int i, unsigned mask) {
+    if (i < 0 || i >= COMBO_COUNT) return;
+    for (int o = 0; o < COMBO_COUNT; o++) if (o != i && mask && combo[o] == mask) combo[o] = 0;
+    combo[i] = mask;
+}
+void input_combo_text(int i, char *buf, size_t n) {
+    const unsigned m = input_combo(i);
+    size_t len = 0;
+    if (n) buf[0] = 0;
+    for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX + 2; b++) {   /* SDL's order (Back before the shoulders), the triggers last */
+        const int button = b < SDL_CONTROLLER_BUTTON_MAX ? b : b == SDL_CONTROLLER_BUTTON_MAX ? PAD_TRIGGER_LEFT : PAD_TRIGGER_RIGHT;
+        if (!(m & input_combo_bit(button)) || len >= n) continue;
+        const int w = snprintf(buf + len, n - len, "%s%s", len ? " + " : "", pad_name(button));
+        if (w > 0) len += (size_t)w;
+    }
+}
 static void set_bit(int *v, int bit, int down) { *v = down ? *v | bit : *v & ~bit; }
 void input_key(int sym, int down) {
     int c = input_key_control(sym), bit = 1;

@@ -54,8 +54,7 @@ int pica_gl_scanout(uint32_t addr, GLuint *tex, uint32_t *w, uint32_t *h, GLsync
 void pica_gl_scan_shown(GLsync shown);
 static GLuint vao, ubo, fbo_draw, fbo_read;
 static GLuint prog_present, prog_msr, prog_easu, prog_rcas;
-static Tex tex_top, tex_bot, tex_toast, target, fsr_tmp[2], beam_copy, hi_scr[2];
-static int beam_copy_ok;
+static Tex tex_top, tex_bot, tex_toast, target, fsr_tmp[2], hi_scr[2];
 static GLint ubo_align = 256; static GLintptr ubo_off;
 #define UBO_SIZE (64 * 1024)
 
@@ -146,18 +145,30 @@ static void fsr_upscale(int i, const Tex *src, VidRect *r) {
     quad(prog_easu, src, (VidRect){ 0, 0, r->w, r->h, 1 }, r->w, r->h, 0, 0, ex);
 }
 
-/* Samus Returns, R held (missiles): the HUD's beam slots from the bottom screen as it was before (video.c beam_slots):
-   each frame R is not held, the slots' column (x 250-320) is copied into beam_copy */
-static const Tex *beam_slots(const Tex *sb) {
-    if (msr_beams_held()) return beam_copy_ok && beam_copy.w == sb->w && beam_copy.h == sb->h ? &beam_copy : sb;
-    if (tex_size(&beam_copy, sb->w, sb->h)) beam_copy_ok = 0;
-    const int x0 = sb->w * 250 / BOT_W;
+/* Samus Returns: copies of the bottom screen for the compositor's quads that show it as it was (video.c bottom_copy) */
+typedef struct { Tex tex; int ok; } BottomCopy;
+static void bottom_copy(BottomCopy *c, const Tex *sb, int x0) {   /* columns x0 on, every row */
+    if (tex_size(&c->tex, sb->w, sb->h)) c->ok = 0;
     glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_read);
     glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, sb->id, 0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo_draw);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, beam_copy.id, 0);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, c->tex.id, 0);
     glBlitFramebuffer(x0, 0, sb->w, sb->h, x0, 0, sb->w, sb->h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
-    beam_copy_ok = 1;
+    c->ok = 1;
+}
+static const Tex *bottom_kept(const BottomCopy *c, const Tex *sb) { return c->ok && c->tex.w == sb->w && c->tex.h == sb->h ? &c->tex : sb; }
+/* R held (missiles): the HUD's beam slots as they were before (video.c beam_slots) */
+static BottomCopy beam_copy;
+static const Tex *beam_slots(const Tex *sb) {
+    if (msr_beams_held()) return bottom_kept(&beam_copy, sb);
+    bottom_copy(&beam_copy, sb, sb->w * 250 / BOT_W);
+    return sb;
+}
+/* The menus' panel: the bottom screen as it last read as a menu (video.c menu_panel) */
+static BottomCopy menu_copy;
+static const Tex *menu_panel(const Tex *sb) {
+    if (!msr_menu_live()) return bottom_kept(&menu_copy, sb);
+    bottom_copy(&menu_copy, sb, 0);
     return sb;
 }
 
@@ -257,6 +268,7 @@ void vgl_frame(const VglFrame *f) {
         if (hb) sb = hb;
     }
     const Tex *sbeams = f->mf && f->mf->count ? beam_slots(sb) : sb;   /* R held: the beam slots before it */
+    const Tex *smenu = f->mf && f->mf->count ? menu_panel(sb) : sb;    /* the menu as last seen */
     VidRect rt = f->rt, rb = f->rb;
     /* the screens' passes: alpha comes from the source (the screens write 1), colour blends by it, as video.c's pipelines */
     glDisable(GL_BLEND);
@@ -280,7 +292,10 @@ void vgl_frame(const VglFrame *f) {
     }
     if (f->mf && f->mf->count) {
         glUseProgram(prog_msr);
-        for (int i = 0; i < f->mf->count; i++) msr_quad(&f->mf->quads[i], f->mf->quads[i].source ? sbeams : sb, W, H);
+        for (int i = 0; i < f->mf->count; i++) {
+            const int source = f->mf->quads[i].source;
+            msr_quad(&f->mf->quads[i], source == 1 ? sbeams : source == 2 ? smenu : sb, W, H);
+        }
     }
     if (f->toast_show && tex_toast.id)   /* the layout label, top centre (pixel for pixel) */
         quad(prog_present, &tex_toast, (VidRect){ floorf((W - (float)tex_toast.w) / 2), 12, (float)tex_toast.w, (float)tex_toast.h, 1 }, W, H, 0, 1, NULL);

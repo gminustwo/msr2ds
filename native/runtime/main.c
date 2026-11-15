@@ -751,11 +751,13 @@ int main(int argc, char **argv) {
                     g_frame_max_ms, g_frame_over[0], g_frame_over[1], g_frame_over[2]);
             load_line(t - last_stat, g_gsp_top_swaps - last_swaps, g_frame_max_ms, fps);
             {   /* the main thread's waits in presenting, per presented frame (video.c) */
-                extern double g_vid_wait_fence, g_vid_wait_acquire, g_vid_wait_present, g_vid_wait_queue_gx; static unsigned last_presented;
-                const unsigned np = g_vid_presented - last_presented; last_presented = g_vid_presented;
+                extern double g_vid_wait_fence, g_vid_wait_acquire, g_vid_wait_present, g_vid_wait_queue_gx; extern unsigned g_vid_gx_kept;
+                static unsigned last_presented, last_kept;
+                const unsigned np = g_vid_presented - last_presented, kept = g_vid_gx_kept - last_kept; last_presented = g_vid_presented; last_kept = g_vid_gx_kept;
                 if (np) fprintf(stderr, "native: presenting waits per frame: last frame's fence %.2f ms, next image %.2f ms, present %.2f ms; "
-                                "the GX thread's wait for the queue %.2f ms\n", g_vid_wait_fence * 1e3 / np, g_vid_wait_acquire * 1e3 / np,
-                                g_vid_wait_present * 1e3 / np, g_vid_wait_queue_gx * 1e3 / np);
+                                "the GX thread's wait for the queue %.2f ms (its submissions kept while the queue was in use: %.1f)\n",
+                                g_vid_wait_fence * 1e3 / np, g_vid_wait_acquire * 1e3 / np, g_vid_wait_present * 1e3 / np,
+                                g_vid_wait_queue_gx * 1e3 / np, (double)kept / np);
                 g_vid_wait_fence = g_vid_wait_acquire = g_vid_wait_present = g_vid_wait_queue_gx = 0;
             }
             g_frame_max_ms = 0; memset(g_frame_over, 0, sizeof g_frame_over);
@@ -776,6 +778,8 @@ int main(int argc, char **argv) {
             { extern void dsp_stats(void); dsp_stats(); extern void gsp_stats(void); gsp_stats(); }
             if (msr_textures_active()) { unsigned nt, nl, nf; msr_textures_stats(&nt, &nl, &nf);
                                          fprintf(stderr, "msr: texture pack: %u loaded of %u, %u unreadable\n", nl, nt, nf); }
+            { static unsigned told; const unsigned d = msr_textures_dumped();
+              if (d != told) { fprintf(stderr, "msr: %u textures dumped\n", d); told = d; } }
             if (getenv("PWR_PEEK")) {   /* PWR_PEEK=<hex guest addr>[,<words>]: print guest memory every stats interval */
                 unsigned pa = 0, pn = 8; sscanf(getenv("PWR_PEEK"), "%x,%u", &pa, &pn); fprintf(stderr, "peek %08x:", pa);
                 for (unsigned i = 0; i < pn && i < 512; i++) fprintf(stderr, " %08x", rd32(pa + 4 * i));

@@ -26,13 +26,20 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   `user/msr/settings.ini`, or `../msr/settings.ini` from `user/native`). Its frame rate applies unless `--fps` says.
 - The single 16:9 screen (`--layout=single`, F9 cycles to it): `compositor.cpp` ports the emulator build's compositor
   (renderer_vulkan.cpp DrawMsrScreens): the bottom screen is classified each frame (`bottom_classifier.h`) and its HUD
-  pieces (energy, beam slots, the minimap following Samus's marker: by its deep red, so a red map pin is not taken
-  for it, with the map's thin orange lines, the elevator shafts, left out (#40, #44), and taken far from its last place
-  only once it holds there 0.75 s; the counters), menus (a panel, the title menus without
+  pieces (energy, beam slots, the minimap following Samus's marker where the game's own minimap draws it: its icon's
+  place on the screen, read from the game's interface (`minimap.cpp`, 2026-11-12; found by its colour, a Missile
+  Reload Station's red icon once took its place). On another version of the game it is still found by its deep red,
+  so a red map pin is not taken for it, with the map's thin orange lines, the elevator shafts, left out (#40, #44), and
+  taken far from its last place only once it holds there 0.75 s; the counters), menus (a panel, the title menus without
   their backdrop), prompts and the gallery layout are drawn over the view by `msr.vert`/`msr.frag`. `pica_vk.c`
   squeezes the top screen's world draws to 16:9 and applies the camera zoom in clip space, and leaves out the title
-  menus' backdrop quads (out of play only: the map pins tool draws the same ones once a pin is placed, #43). The
-  mouse touches the panel while it shows. While R is held (missiles, Power Bombs) the HUD
+  menus' backdrop quads (out of play only: the map pins tool draws the same ones once a pin is placed, #43). When an
+  area's last Metroid dies, the DNA scanner has the game's map show the way on (the minimap's +0x22A, cleared by the
+  game's own time; `minimap.cpp msr_map_focus`, 2026-11-14): the whole bottom screen then shows over the view as an
+  elevator's map does, at most 15 s at a time (`PWR_TEST_DNA_SCAN=<s>` sets the minimap going so, that long into play;
+  its time is not counted down then). The mouse touches the panel while it shows. The map's brightness setting (1-2)
+  brightens the minimap's colours in `msr.frag`, scaled as a whole where one would pass 1 (for HDR, where it showed at
+  paper white beside the expanded highlights). While R is held (missiles, Power Bombs) the HUD
   keeps the beams in its beam slots (2026-11-03): the game draws the missiles in them then (the touch screen's choice
   of missile), so `video.c` draws the slots from its copy of the bottom screen's slot column, made each frame R is not
   held, from a press while the HUD shows until 350 ms after R comes up (the beams flash back in), and their
@@ -41,7 +48,9 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   (`bottom_classifier.h` ReadBeamSlots; before, the HUD kept its highlight on the old slot, over a dimmed icon, and
   RT tapped the same slot again). A picture on the bottom screen with a cyan edge, such as the ship's cockpit after a
   file's Continue, is not taken for a menu (it had shown as the panel, its outline over the view for about a second):
-  the pause menu's pages stand over its bottom bar, a rule in the last rows, which the picture lacks.
+  the pause menu's pages stand over its bottom bar, a rule in the last rows, which the picture lacks. The panel
+  shows the bottom screen only while it reads as a menu: when it stops, the panel holds and fades out on `video.c`'s
+  copy of the menu as last seen (2026-11-12; live, the cockpit picture flashed over the view for 0.2 s).
 - Fill 16:10 screens (2026-11-06, issue 38; on by default, `settings.ini` `fill_16_10`, never on without Widescreen,
   as Ultrawide): in play the view also takes a window's aspect when it is taller than 16:9, down to 16:10 (the Steam
   Deck, most laptops, a Mac in fullscreen below its notch), keeping 16:9's width and showing more above and below:
@@ -358,7 +367,17 @@ presenter run on Vulkan 1.1 (`g_vk_rp`, `vk_rp.h`). On a PC `--renderer=auto` st
   camera's own field of view, and the limits moved it).
 - The GX queue is never full for the game (gsp.c's enqueue hook waits for the worker): with two threads queueing, a
   failed enqueue let the other thread's command in first and the file select's bottom screen jittered at 144 FPS.
-- Not here: texture dumping, the randomizer's remote connection (Randovania's tracker: no `soc:U`).
+- Texture dumping (#64, msr/textures.cpp): the renderers offer each texture they draw with to `msr_texture_dump` when its
+  bytes are new or dumping started since (`g_msr_dump_gen`); the pack workers hash it as the packs are read and write
+  `tex1_<w>x<h>_<hash>_<fmt>_mip0.png` (powers of two only, as Azahar) with a `pack.json`, when no pack needs them.
+  A dump read back as a pack gives each texel of all 14 formats as the game's (checked offline, 2026-11-14).
+- A lost GPU explains itself (`vk_diag.c`, 2026-11-14: an RTX 5090 lost twice in play, the picture frozen while the
+  game and its sound went on, not reproduced with the same save, settings, fullscreen HDR10 and Steam's Vulkan layers):
+  where the driver has them (NVIDIA's), `VK_NV_device_diagnostic_checkpoints` markers on each batch, pass, copy,
+  read-back and part of a frame's presentation, and `VK_EXT_device_fault`; on the first `VK_ERROR_DEVICE_LOST` the log
+  lists the last markers reached (a pass with its target) and the driver's fault report. No measurable cost (144 FPS,
+  GPU 1.7 ms a frame either way); `PWR_VK_NO_DIAG=1` leaves both off.
+- Not here: the randomizer's remote connection (Randovania's tracker: no `soc:U`).
 - Linux: the public AppImage ships it (`tools/package/appimage.sh`, when Vulkan's headers and glslc or
   glslangValidator are there). Tested on a Steam Deck OLED (RADV, 2026-11-03), at the landing site with the 4x texture
   pack, `PWR_GX_STATS=1` and `--fps=144` for the most it does:

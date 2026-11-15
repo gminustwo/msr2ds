@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -14,6 +15,7 @@
 #include <QSettings>
 #endif
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <backends/imgui_impl_vulkan.h>
 #ifdef MSR_OPENGL
 #include <backends/imgui_impl_opengl3.h>
@@ -99,37 +101,217 @@ constexpr std::span<const ControlHint> HintSets[] = {
 };
 enum HintSet { PauseMap, PauseSamus, MapPins, FileList, FileOpen, Touch, MapPinsTouch };
 
-/// Dark style with the cyan of Samus Returns' own interface as the accent.
+/// The menu's look (2026-11-14, the user: "revamp the menu system. make it look more modern like we did for metroid
+/// other m, star wars rogue squadron 2, castlevania rondo of blood"): Other M's visor HUD (otherm-recomp hud_theme.cpp)
+/// in Samus Returns' cyan, orange marking what is chosen: a dark glass panel with cut corners, a glowing cyan edge,
+/// orange brackets on its two whole corners and faint scan lines, Bahnschrift, and switches for the on/off rows.
+/// Every colour here is multiplied by `alpha`: the menu fades in (DrawMenu).
+namespace Theme {
+constexpr ImU32 Cyan = IM_COL32(80, 220, 255, 255);
+constexpr ImU32 Orange = IM_COL32(255, 150, 40, 255);
+constexpr ImU32 TextDim = IM_COL32(130, 175, 205, 255);
+constexpr ImU32 PanelTop = IM_COL32(10, 30, 54, 255);   // (opaque: in HDR the game behind is far brighter than the glass)
+constexpr ImU32 PanelBottom = IM_COL32(3, 10, 24, 255);
+ImFont* title_font = nullptr;   // the UI font again at twice the size: the header stays sharp at 4K (Overlay())
+
+ImU32 Fade(ImU32 col, float alpha) {
+    const float a = static_cast<float>((col >> IM_COL32_A_SHIFT) & 0xFF) * std::clamp(alpha, 0.f, 1.f);
+    return (col & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a + .5f) << IM_COL32_A_SHIFT);
+}
+/// The six corners of a box from `a` to `b` with its top-left and bottom-right corners cut by `cut`.
+void ChamferPoints(ImVec2 a, ImVec2 b, float cut, ImVec2 out[6]) {
+    cut = std::min(cut, std::min(b.x - a.x, b.y - a.y) * .5f);
+    out[0] = {a.x + cut, a.y};
+    out[1] = {b.x, a.y};
+    out[2] = {b.x, b.y - cut};
+    out[3] = {b.x - cut, b.y};
+    out[4] = {a.x, b.y};
+    out[5] = {a.x, a.y + cut};
+}
+/// A panel of that shape: a vertical gradient, an edge with a soft glow outside it.
+void Panel(ImDrawList* draw, ImVec2 a, ImVec2 b, float cut, ImU32 top, ImU32 bottom, ImU32 edge, float thickness) {
+    if (b.x - a.x < 2.f || b.y - a.y < 2.f) return;
+    ImVec2 pts[6];
+    ChamferPoints(a, b, cut, pts);
+    const int start = draw->VtxBuffer.Size;
+    draw->AddConvexPolyFilled(pts, 6, top);
+    ImGui::ShadeVertsLinearColorGradientKeepAlpha(draw, start, draw->VtxBuffer.Size, a, {a.x, b.y}, top, bottom);
+    for (int i = 3; i >= 1; --i) {   // the glow: wider and fainter outward
+        draw->AddPolyline(pts, 6, Fade(edge, .07f * static_cast<float>(4 - i)), ImDrawFlags_Closed, thickness * (1.f + 2.5f * i));
+    }
+    draw->AddPolyline(pts, 6, edge, ImDrawFlags_Closed, thickness);
+}
+/// Horizontal lines every `step` pixels inside such a panel: the visor's scan lines.
+void Scanlines(ImDrawList* draw, ImVec2 a, ImVec2 b, float cut, float step, ImU32 col) {
+    step = std::max(2.f, step);
+    for (float y = std::floor(a.y) + .5f; y < b.y; y += step) {
+        const float l = a.x + std::max(0.f, cut - (y - a.y)), r = b.x - std::max(0.f, cut - (b.y - y));
+        if (r > l) draw->AddLine({l, y}, {r, y}, col, 1.f);
+    }
+}
+/// L-shaped brackets just outside the panel's whole corners (top right, bottom left).
+void CornerBrackets(ImDrawList* draw, ImVec2 a, ImVec2 b, float length, ImU32 col, float thickness) {
+    const float o = thickness * 2.5f;
+    const ImVec2 tr[3] = {{b.x - length, a.y - o}, {b.x + o, a.y - o}, {b.x + o, a.y + length}};
+    const ImVec2 bl[3] = {{a.x - o, b.y - length}, {a.x - o, b.y + o}, {a.x + length, b.y + o}};
+    draw->AddPolyline(tr, 3, col, ImDrawFlags_None, thickness);
+    draw->AddPolyline(bl, 3, col, ImDrawFlags_None, thickness);
+}
+/// Text `px` high with `tracking` pixels between letters, its left middle at `pos`; a `glow` haloes it. Its width.
+float Text(ImDrawList* draw, ImFont* font, float px, ImVec2 pos, ImU32 col, const char* text, float tracking,
+           ImU32 glow = 0) {
+    if (!font) font = ImGui::GetFont();
+    const float h = font->CalcTextSizeA(px, FLT_MAX, 0.f, "A").y;
+    const auto run = [&](ImVec2 at, ImU32 c) {
+        float x = at.x;
+        for (const char* p = text; *p; ++p) {
+            draw->AddText(font, px, {std::floor(x + .5f), std::floor(at.y - h * .5f + .5f)}, c, p, p + 1);
+            x += font->CalcTextSizeA(px, FLT_MAX, 0.f, p, p + 1).x + tracking;
+        }
+        return x - tracking - at.x;
+    };
+    if (glow) {
+        const float r = std::max(1.f, px * .07f);
+        for (int i = 0; i < 8; ++i) {
+            const float t = static_cast<float>(i) * .7854f;
+            run({pos.x + std::cos(t) * r, pos.y + std::sin(t) * r}, glow);
+        }
+    }
+    return run(pos, col);
+}
+/// The width Text would draw.
+float Measure(ImFont* font, float px, const char* text, float tracking) {
+    if (!font) font = ImGui::GetFont();
+    float w = 0.f;
+    for (const char* p = text; *p; ++p) w += font->CalcTextSizeA(px, FLT_MAX, 0.f, p, p + 1).x + (p[1] ? tracking : 0.f);
+    return w;
+}
+/// A line fading out to both ends, `y` high, from `x0` to `x1`.
+void Rule(ImDrawList* draw, float x0, float x1, float y, ImU32 col) {
+    const float mid = (x0 + x1) * .5f;
+    const ImU32 clear = Fade(col, 0.f);
+    draw->AddRectFilledMultiColor({x0, y}, {mid, y + 1.f}, clear, col, col, clear);
+    draw->AddRectFilledMultiColor({mid, y}, {x1, y + 1.f}, col, clear, clear, col);
+}
+} // namespace Theme
+
+/// The menu's ImGui colours, in Theme's scheme: dark glass, cyan lines, orange for what is chosen or focused.
 void ApplyStyle() {
     ImGui::StyleColorsDark();
     auto& style = ImGui::GetStyle();
-    style.WindowRounding = 6.f;
-    style.FrameRounding = 4.f;
-    style.GrabRounding = 4.f;
-    style.TabRounding = 4.f;
-    style.WindowBorderSize = 1.f;
-    style.WindowPadding = {18.f, 14.f};
-    style.FramePadding = {10.f, 6.f};
+    style.WindowRounding = 0.f;   // (the menu draws its own panel: Theme::Panel)
+    style.ChildRounding = 0.f;
+    style.FrameRounding = 2.f;
+    style.PopupRounding = 2.f;
+    style.GrabRounding = 2.f;
+    style.ScrollbarRounding = 2.f;
+    style.TabRounding = 0.f;
+    style.WindowBorderSize = 0.f;
+    style.FrameBorderSize = 0.f;
+    style.PopupBorderSize = 1.f;
+    style.TabBarBorderSize = 1.f;
+    style.TabBarOverlineSize = 2.f;
+    style.WindowPadding = {26.f, 18.f};
+    style.FramePadding = {12.f, 7.f};
     style.ItemSpacing = {10.f, 9.f};
-    auto* colors = style.Colors;
-    const ImVec4 accent{.24f, .66f, .86f, 1.f};
-    const ImVec4 accent_dim{.16f, .42f, .56f, 1.f};
-    colors[ImGuiCol_WindowBg] = {.03f, .07f, .11f, .94f};
-    colors[ImGuiCol_Border] = {.24f, .66f, .86f, .55f};
-    colors[ImGuiCol_TitleBg] = colors[ImGuiCol_TitleBgActive] = {.05f, .14f, .21f, 1.f};
-    colors[ImGuiCol_FrameBg] = {.08f, .17f, .25f, 1.f};
-    colors[ImGuiCol_FrameBgHovered] = colors[ImGuiCol_FrameBgActive] = accent_dim;
-    colors[ImGuiCol_Button] = {.08f, .2f, .3f, 1.f};
-    colors[ImGuiCol_ButtonHovered] = accent_dim;
-    colors[ImGuiCol_ButtonActive] = accent;
-    colors[ImGuiCol_Tab] = {.06f, .15f, .22f, 1.f};
-    colors[ImGuiCol_TabHovered] = accent_dim;
-    colors[ImGuiCol_TabSelected] = {.12f, .34f, .48f, 1.f};
-    colors[ImGuiCol_SliderGrab] = colors[ImGuiCol_CheckMark] = accent;
-    colors[ImGuiCol_SliderGrabActive] = {.5f, .85f, 1.f, 1.f};
-    colors[ImGuiCol_Header] = colors[ImGuiCol_HeaderHovered] = accent_dim;
-    colors[ImGuiCol_NavCursor] = {.6f, .9f, 1.f, 1.f};
-    colors[ImGuiCol_PlotHistogram] = accent;   // the launcher's build progress
+    style.ItemInnerSpacing = {10.f, 6.f};
+    style.ScrollbarSize = 10.f;
+    style.GrabMinSize = 14.f;
+    auto* c = style.Colors;
+    const ImVec4 cyan{.31f, .86f, 1.f, 1.f}, orange{1.f, .59f, .16f, 1.f};
+    const auto a = [](ImVec4 v, float alpha) { v.w = alpha; return v; };
+    c[ImGuiCol_Text] = {.88f, .96f, 1.f, 1.f};
+    c[ImGuiCol_TextDisabled] = {.51f, .69f, .80f, 1.f};
+    c[ImGuiCol_WindowBg] = {0.f, 0.f, 0.f, 0.f};
+    c[ImGuiCol_ChildBg] = {0.f, 0.f, 0.f, 0.f};
+    c[ImGuiCol_PopupBg] = {.03f, .08f, .15f, 1.f};
+    c[ImGuiCol_Border] = a(cyan, .45f);
+    c[ImGuiCol_BorderShadow] = {0.f, 0.f, 0.f, 0.f};
+    c[ImGuiCol_FrameBg] = {.06f, .17f, .27f, .85f};
+    c[ImGuiCol_FrameBgHovered] = a(cyan, .25f);
+    c[ImGuiCol_FrameBgActive] = a(cyan, .40f);
+    c[ImGuiCol_TitleBg] = c[ImGuiCol_TitleBgActive] = {.05f, .16f, .27f, 1.f};
+    c[ImGuiCol_ScrollbarBg] = {.02f, .05f, .10f, .40f};
+    c[ImGuiCol_ScrollbarGrab] = a(cyan, .30f);
+    c[ImGuiCol_ScrollbarGrabHovered] = a(cyan, .50f);
+    c[ImGuiCol_ScrollbarGrabActive] = a(cyan, .70f);
+    c[ImGuiCol_CheckMark] = orange;
+    c[ImGuiCol_SliderGrab] = a(cyan, .80f);
+    c[ImGuiCol_SliderGrabActive] = orange;
+    c[ImGuiCol_Button] = {.07f, .22f, .35f, .90f};
+    c[ImGuiCol_ButtonHovered] = a(cyan, .40f);
+    c[ImGuiCol_ButtonActive] = a(orange, .70f);
+    c[ImGuiCol_Header] = a(cyan, .22f);
+    c[ImGuiCol_HeaderHovered] = a(cyan, .38f);
+    c[ImGuiCol_HeaderActive] = a(cyan, .55f);
+    c[ImGuiCol_Separator] = a(cyan, .35f);
+    c[ImGuiCol_Tab] = {0.f, 0.f, 0.f, 0.f};
+    c[ImGuiCol_TabHovered] = a(cyan, .22f);
+    c[ImGuiCol_TabSelected] = a(cyan, .14f);
+    c[ImGuiCol_TabSelectedOverline] = orange;
+    c[ImGuiCol_TabDimmed] = {0.f, 0.f, 0.f, 0.f};
+    c[ImGuiCol_TabDimmedSelected] = a(cyan, .10f);
+    c[ImGuiCol_TabDimmedSelectedOverline] = a(orange, .6f);
+    c[ImGuiCol_NavCursor] = orange;
+    c[ImGuiCol_PlotHistogram] = cyan;   // the launcher's build progress
+    c[ImGuiCol_TextSelectedBg] = a(cyan, .35f);
+    c[ImGuiCol_ModalWindowDimBg] = {.01f, .03f, .07f, .60f};
+}
+
+/// A switch in place of a checkbox (the menu's on/off rows), as ImGui::Checkbox is called: a pill whose knob slides
+/// right and lights it cyan when on; text before a "##" follows it, wrapped to the width there is.
+bool OnOff(const char* label, bool* value) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems) return false;
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const ImGuiID id = window->GetID(label);
+    const float h = ImGui::GetFrameHeight(), w = h * 1.75f;
+    const ImVec2 pos = window->DC.CursorPos;
+    const char* label_end = ImGui::FindRenderedTextEnd(label);
+    const float wrap = std::max(1.f, ImGui::GetContentRegionAvail().x - w - style.ItemInnerSpacing.x);
+    const ImVec2 label_size = ImGui::CalcTextSize(label, label_end, false, wrap);
+    const float height = std::max(h, label_size.y + style.FramePadding.y * 2.f);
+    const ImRect bb(pos, {pos.x + w + (label_size.x > 0.f ? style.ItemInnerSpacing.x + label_size.x : 0.f), pos.y + height});
+    ImGui::ItemSize(bb, style.FramePadding.y);
+    if (!ImGui::ItemAdd(bb, id)) return false;
+    bool hovered = false, held = false;
+    const bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
+    if (pressed) {
+        *value = !*value;
+        ImGui::MarkItemEdited(id);
+    }
+    // the knob's place, eased toward on or off (kept with the switch's other state in ImGui's storage)
+    float* t = ImGui::GetStateStorage()->GetFloatRef(id ^ 0x70661eu, *value ? 1.f : 0.f);
+    *t += ((*value ? 1.f : 0.f) - *t) * std::min(1.f, ImGui::GetIO().DeltaTime * 16.f);
+    ImDrawList* draw = window->DrawList;
+    const float th = h * .64f, r = th * .5f;
+    const ImVec2 a{pos.x + 1.f, pos.y + (h - th) * .5f}, b{pos.x + w - 1.f, a.y + th};
+    const ImVec4 off = ImGui::GetStyleColorVec4(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+    const ImVec4 on{.31f, .86f, 1.f, hovered ? .95f : .80f};
+    const ImVec4 track{off.x + (on.x - off.x) * *t, off.y + (on.y - off.y) * *t, off.z + (on.z - off.z) * *t,
+                       off.w + (on.w - off.w) * *t};
+    draw->AddRectFilled(a, b, ImGui::GetColorU32(track), r);
+    draw->AddRect(a, b, ImGui::GetColorU32({.31f, .86f, 1.f, .35f + .3f * *t}), r, 0, 1.f);
+    const ImVec2 knob{a.x + r + (b.x - a.x - 2.f * r) * *t, a.y + r};
+    draw->AddCircleFilled(knob, r - 2.5f, ImGui::GetColorU32(ImVec4{.88f + .12f * *t, .96f + .04f * *t, 1.f, .75f + .25f * *t}));
+    ImGui::RenderNavCursor(bb, id);
+    if (label_size.x > 0.f) {
+        ImGui::RenderTextWrapped({pos.x + w + style.ItemInnerSpacing.x, pos.y + style.FramePadding.y}, label, label_end, wrap);
+    }
+    return pressed;
+}
+
+/// A heading inside a page: its title in small spaced capitals, a rule running on to the right edge.
+void Section(const char* title) {
+    const float px = ImGui::GetFontSize() * .72f, tracking = px * .18f, h = ImGui::GetFontSize() * 1.6f;
+    if (ImGui::GetCursorPosY() > ImGui::GetStyle().ItemSpacing.y * 2.f) ImGui::Dummy({0.f, ImGui::GetFontSize() * .35f});
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float right = at.x + ImGui::GetContentRegionAvail().x, mid = at.y + h * .5f;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const float w = Theme::Text(draw, Theme::title_font, px, {at.x, mid}, ImGui::GetColorU32(ImVec4{.31f, .86f, 1.f, .85f}), title, tracking);
+    const ImU32 line = ImGui::GetColorU32(ImVec4{.31f, .86f, 1.f, .35f}), clear = ImGui::GetColorU32(ImVec4{.31f, .86f, 1.f, 0.f});
+    draw->AddRectFilledMultiColor({at.x + w + px, mid}, {right, mid + 1.f}, line, clear, clear, line);   // fading out to the right
+    ImGui::Dummy({0.f, h});
 }
 
 /// A row's label, wrapped before `column` (window local) so no font runs it under the row's
@@ -229,6 +411,7 @@ void PlayerSettings::Load(const QString& path) {
     show_minimap = file.value(QStringLiteral("show_minimap"), show_minimap).toBool();
     minimap_size = file.value(QStringLiteral("minimap_size"), minimap_size).toFloat();
     minimap_opacity = file.value(QStringLiteral("minimap_opacity"), minimap_opacity).toFloat();
+    minimap_brightness = file.value(QStringLiteral("minimap_brightness"), minimap_brightness).toFloat();
     show_counters = file.value(QStringLiteral("show_counters"), show_counters).toBool();
     show_abilities = file.value(QStringLiteral("show_abilities"), show_abilities).toBool();
     hud_within_16_9 = file.value(QStringLiteral("hud_within_16_9"), hud_within_16_9).toBool();
@@ -271,6 +454,7 @@ void PlayerSettings::Save(const QString& path) const {
     file.setValue(QStringLiteral("show_minimap"), show_minimap);
     file.setValue(QStringLiteral("minimap_size"), minimap_size);
     file.setValue(QStringLiteral("minimap_opacity"), minimap_opacity);
+    file.setValue(QStringLiteral("minimap_brightness"), minimap_brightness);
     file.setValue(QStringLiteral("show_counters"), show_counters);
     file.setValue(QStringLiteral("show_abilities"), show_abilities);
     file.setValue(QStringLiteral("hud_within_16_9"), hud_within_16_9);
@@ -311,6 +495,7 @@ void PlayerSettings::Publish() const {
     P::show_minimap = show_minimap;
     P::minimap_size = minimap_size;
     P::minimap_opacity = minimap_opacity;
+    P::minimap_brightness = minimap_brightness;
     P::show_counters = show_counters;
     P::show_abilities = show_abilities;
     P::hud_within_16_9 = hud_within_16_9;
@@ -350,9 +535,11 @@ Overlay::Overlay() {
     io.ConfigNavCursorVisibleAuto = true;
     ApplyStyle();
 
-    // A large font, scaled down per frame, stays sharp from 720p to 4K. Linux distributions keep
-    // the same fonts in different folders: SteamOS and Arch, Debian and Ubuntu, then Fedora.
-    const char* const fonts[] = {"C:/Windows/Fonts/segoeui.ttf",
+    // A large font, scaled down per frame, stays sharp from 720p to 4K. Bahnschrift first (Windows 10 and later), the
+    // menus' face in the other ports (Theme). Linux distributions keep the same fonts in different folders: SteamOS and
+    // Arch, Debian and Ubuntu, then Fedora.
+    const char* const fonts[] = {"C:/Windows/Fonts/bahnschrift.ttf",
+                                 "C:/Windows/Fonts/segoeui.ttf",
                                  "C:/Windows/Fonts/arial.ttf",
                                  "/usr/share/fonts/noto/NotoSans-Regular.ttf",
                                  "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
@@ -366,6 +553,7 @@ Overlay::Overlay() {
         if (std::filesystem::exists(path, error)) {
             font = io.Fonts->AddFontFromFileTTF(path, font_size);
             if (font) {
+                Theme::title_font = io.Fonts->AddFontFromFileTTF(path, font_size * 2.f);   // the menu's header
                 break;
             }
         }
@@ -623,11 +811,11 @@ void Overlay::BuildFrame(std::uint32_t width, std::uint32_t height, void (*new_f
     }
 
     // Sizes follow the view: designed at 1080p, scaled by the menu size setting, and small enough
-    // for the 780 x 640 menu to fit in the view with a margin.
+    // for the 780 x 700 menu to fit in the view with a margin.
     const float scale =
         std::min(std::clamp(static_cast<float>(height) / 1080.f, .6f, 3.f) *
                      GetPlayerSettings().menu_scale,
-                 std::min(static_cast<float>(width) / 820.f, static_cast<float>(height) / 680.f));
+                 std::min(static_cast<float>(width) / 820.f, static_cast<float>(height) / 740.f));
     static const ImGuiStyle base_style = ImGui::GetStyle();
     ImGui::GetStyle() = base_style;
     ImGui::GetStyle().ScaleAllSizes(scale);
@@ -683,9 +871,9 @@ void Overlay::DrawHint(float scale, float width, float height) {
 
 void Overlay::DrawControlHints(float width, float height) {
     namespace P = Presentation;
-    // (not a menu beside the view: the game's own screen over play, whose buttons are not the pause menu's)
+    // (not a menu that no Start press opened: the game's own screen over play, whose buttons are not the pause menu's)
     const bool menu = static_cast<P::Bottom>(P::bottom.load()) == P::Bottom::Menu &&
-                      P::panel_visible.load() && !P::menu_beside.load();
+                      P::panel_visible.load() && !P::menu_unasked.load();
     const auto page = static_cast<P::Page>(P::page.load());
     // The menu's "Menu help text" option turns off every set, touch mode's too.
     const bool enabled = GetPlayerSettings().control_hints;
@@ -766,6 +954,18 @@ void Overlay::DrawControlHints(float width, float height) {
     }
 }
 
+/// msr-native: a gamepad combo's capture (Quick save, Quick load) counting down to when it takes what is held. `until`
+/// is on the host's clock (steady_clock, seconds).
+static std::string ComboPrompt(double until, bool brief) {
+    const double now =
+        std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const int left = std::max(0, static_cast<int>(std::ceil(until - now)));
+    char text[96];
+    std::snprintf(text, sizeof(text),
+                  brief ? "Hold the buttons: %d" : "Hold two gamepad buttons or more: %d   (Esc cancels)", left);
+    return text;
+}
+
 void Overlay::DrawControls(float scale, float label_width,
                            const std::function<void()>& default_focus) {
     ControlsSnapshot snapshot;
@@ -773,23 +973,29 @@ void Overlay::DrawControls(float scale, float label_width,
         std::scoped_lock lock{mutex};
         snapshot = controls;
     }
-    ImGui::TextDisabled("Profile: %s", snapshot.profile.c_str());
+    // One page that scrolls as a whole, in sections (2026-11-14, the user: "the controls is not right. I can't really see
+    // much of what I'm seeing when I scroll down on the page": the bindings scrolled in a region two rows high, between
+    // the options above and the reference below)
+    const bool native = snapshot.profile == "msr-native";
+    if (!native) ImGui::TextDisabled("Profile: %s", snapshot.profile.c_str());
+    Section("LAYOUT");
     const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2.f;
     ImGui::BeginDisabled(!snapshot.controller_connected);
     if (ImGui::Button("Gamepad layout", {half, 0.f})) {
         Act(OverlayAction::Kind::GamepadLayout);
     }
     ImGui::EndDisabled();
-    default_focus();
+    if (snapshot.controller_connected) default_focus();
     ImGui::SameLine();
     if (ImGui::Button("Keyboard layout", {half, 0.f})) {
         Act(OverlayAction::Kind::KeyboardLayout);
     }
+    if (!snapshot.controller_connected) default_focus();   // (focus stays off a disabled button)
     // msr-native: the Aeion abilities (the 3DS D-pad) on the right stick, the pad's D-pad moving
     // Samus as the left stick does
     if (snapshot.right_stick_option) {
         bool on = snapshot.right_stick_dpad;
-        if (ImGui::Checkbox("Aeion abilities on the right stick (the D-pad moves)", &on)) {
+        if (OnOff("Aeion abilities on the right stick (the D-pad moves)", &on)) {
             Act(OverlayAction::Kind::RightStickDpad, on ? 1 : 0);
         }
     }
@@ -797,7 +1003,7 @@ void Overlay::DrawControls(float scale, float label_width,
     // Cross, the bottom button (off, the default)
     if (snapshot.menu_layout_option) {
         bool on = snapshot.menu_confirm_right;
-        if (ImGui::Checkbox("Nintendo menu layout (the game's A confirms, as bound below)", &on)) {
+        if (OnOff("Nintendo menu layout (the game's A confirms, as bound below)", &on)) {
             Act(OverlayAction::Kind::MenuConfirmRight, on ? 1 : 0);
         }
     }
@@ -816,9 +1022,8 @@ void Overlay::DrawControls(float scale, float label_width,
         }
     }
 
-    // The bindings scroll in their own region; the reference stays below them. msr-native names
-    // the keys or buttons of the device in use (ButtonGlyphs::Keys) and aims with the mouse (video.c).
-    const bool native = snapshot.profile == "msr-native";
+    // The reference, at the page's end: msr-native names the keys or buttons of the device in use (ButtonGlyphs::Keys)
+    // and aims with the mouse (video.c).
     std::vector<std::string> reference;
     if (native) {
         reference = {
@@ -844,22 +1049,16 @@ void Overlay::DrawControls(float scale, float label_width,
             "Touch navigation: Tab, or L3 in menus",
         };
     }
-    float reference_height = 0.f;
-    for (const auto& line : reference) {
-        reference_height += NoteHeight(line.c_str());
-    }
-    const float height =
-        std::max(80.f * scale, ImGui::GetContentRegionAvail().y - reference_height);
-    ImGui::BeginChild("##bindings", {0.f, height}, ImGuiChildFlags_NavFlattened);
-    for (const auto& row : snapshot.rows) {
+    const auto bind_row = [&](const ControlsSnapshot::Row& row) {
         ImGui::PushID(row.id);
         Label(row.label.c_str(), label_width);
         if (snapshot.capturing == row.id) {
-            const char* prompt = row.id >= 100 ? "Move a stick...   (Esc cancels)"
-                                               : "Press a button, trigger or key...   (Esc cancels)";
+            const std::string prompt = row.id >= ControlsSnapshot::ComboRow ? ComboPrompt(snapshot.combo_until, false)
+                                       : row.id >= 100 ? "Move a stick...   (Esc cancels)"
+                                                       : "Press a button, trigger or key...   (Esc cancels)";
             // The same ID whatever the label, so focus stays on the row while it changes.
             ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-            if (ImGui::Button((std::string(prompt) + "###bind").c_str(), {-FLT_MIN, 0.f})) {
+            if (ImGui::Button((prompt + "###bind").c_str(), {-FLT_MIN, 0.f})) {
                 Act(OverlayAction::Kind::CancelBind);
             }
             ImGui::PopStyleColor();
@@ -867,9 +1066,18 @@ void Overlay::DrawControls(float scale, float label_width,
             Act(OverlayAction::Kind::Bind, row.id);
         }
         ImGui::PopID();
+    };
+    Section("BUTTONS");
+    for (const auto& row : snapshot.rows) {
+        if (row.id < ControlsSnapshot::ComboRow) bind_row(row);
     }
-    ImGui::EndChild();
-
+    if (native) {
+        Section("QUICK SAVE AND LOAD");
+        for (const auto& row : snapshot.rows) {
+            if (row.id >= ControlsSnapshot::ComboRow) bind_row(row);
+        }
+    }
+    Section("REFERENCE");
     for (const auto& line : reference) {
         Note(line.c_str());
     }
@@ -902,7 +1110,7 @@ int Overlay::DrawModList(const ModsSnapshot& snapshot,
         // By name, so the cursor stays with an entry as it moves.
         ImGui::PushID(entry.name.c_str());
         bool enabled = entry.enabled;
-        if (ImGui::Checkbox(entry.name.c_str(), &enabled)) {
+        if (OnOff(entry.name.c_str(), &enabled)) {
             ChangeMods(toggle, i,
                        [list, i, enabled](ModsSnapshot& m) { (m.*list)[i].enabled = enabled; });
         }
@@ -1001,8 +1209,17 @@ void Overlay::DrawTexturePacks(float label_width, const std::function<void()>& d
     // Below the list: the folder button, two options and a line about restarting.
     const char* const packs_note =
         "Packs load when the game starts. Dumps go to user/dump/textures.";
+    // msr-native, while dumping (#64): how many so far, and a button to their folder
+    char dump_note[160] = "";
+    if (snapshot.dump && !snapshot.dump_folder.empty()) {
+        std::snprintf(dump_note, sizeof(dump_note), "%u textures dumped so far, as the game draws them.", snapshot.dumped);
+    }
     const float footer =
-        ImGui::GetFrameHeightWithSpacing() * 3.f +
+#ifdef __ANDROID__
+        ImGui::GetFrameHeightWithSpacing() * 3.f + (*dump_note ? NoteHeight(dump_note) : 0.f) +
+#else
+        ImGui::GetFrameHeightWithSpacing() * (*dump_note ? 4.f : 3.f) + (*dump_note ? NoteHeight(dump_note) : 0.f) +
+#endif
         (snapshot.restart_needed ? ImGui::GetTextLineHeightWithSpacing() : NoteHeight(packs_note));
     const float height = std::max(ImGui::GetFrameHeightWithSpacing() * 2.f,
                                   ImGui::GetContentRegionAvail().y - footer);
@@ -1027,16 +1244,26 @@ void Overlay::DrawTexturePacks(float label_width, const std::function<void()>& d
     const auto toggle = [&](const char* label, const char* id, bool value, OverlayAction::Kind kind,
                             bool ModsSnapshot::*field) {
         Label(label, label_width);
-        if (ImGui::Checkbox(id, &value)) {
+        if (OnOff(id, &value)) {
             ChangeMods(kind, value ? 1 : 0, [field, value](ModsSnapshot& m) { m.*field = value; });
         }
     };
     ImGui::BeginDisabled(!snapshot.texture_options);
     toggle("Preload textures", "##preload", snapshot.preload, OverlayAction::Kind::PreloadTextures,
            &ModsSnapshot::preload);
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!snapshot.dump_option);
     toggle("Dump game textures", "##dump", snapshot.dump, OverlayAction::Kind::DumpTextures,
            &ModsSnapshot::dump);
     ImGui::EndDisabled();
+    if (*dump_note) {
+        Note(dump_note);
+#ifndef __ANDROID__
+        if (ImGui::Button("Open the dumped textures folder", {-FLT_MIN, 0.f})) {
+            Act(OverlayAction::Kind::DumpFolder);
+        }
+#endif
+    }
     DrawModsFooter(snapshot, packs_note);
 }
 
@@ -1077,15 +1304,60 @@ void Overlay::DrawMenu(float scale, bool appearing) {
         requested_tab = (tab + 1) % TabCount;
     }
 
-    const ImVec2 size{780.f * scale, 640.f * scale};
-    ImGui::SetNextWindowPos({io.DisplaySize.x * .5f, io.DisplaySize.y * .5f}, ImGuiCond_Always,
-                            {.5f, .5f});
+    // The menu fades in and rises a little as it opens (0.18 s), the view behind it dimmed (Theme).
+    static double opened_at = 0.0;
+    if (appearing) opened_at = Now();
+    const float rise = static_cast<float>(std::clamp((Now() - opened_at) / .18, 0.0, 1.0));
+    const float ease = rise * rise * (3.f - 2.f * rise);
+    ImDrawList* back = ImGui::GetBackgroundDrawList();
+    if (l.active) {   // the launcher, no game behind it: a deep navy field, faint scan lines and a slow sweep down it
+        const ImVec2 d = io.DisplaySize;
+        back->AddRectFilledMultiColor({0.f, 0.f}, d, IM_COL32(9, 24, 44, 255), IM_COL32(9, 24, 44, 255),
+                                      IM_COL32(2, 6, 14, 255), IM_COL32(2, 6, 14, 255));
+        for (float y = .5f; y < d.y; y += std::max(3.f, 4.f * scale)) back->AddLine({0.f, y}, {d.x, y}, IM_COL32(80, 220, 255, 6));
+        const float sweep = static_cast<float>(std::fmod(Now(), 7.0) / 7.0), band = .12f * d.y,
+                    y = -band + (d.y + 2.f * band) * sweep;
+        const ImU32 clear = IM_COL32(80, 220, 255, 0), lit = IM_COL32(80, 220, 255, 14);
+        back->AddRectFilledMultiColor({0.f, y - band}, {d.x, y}, clear, clear, lit, lit);
+        back->AddRectFilledMultiColor({0.f, y}, {d.x, y + band}, lit, lit, clear, clear);
+        back->AddLine({0.f, y}, {d.x, y}, IM_COL32(80, 220, 255, 28), 1.f);
+    } else {
+        back->AddRectFilled({0.f, 0.f}, io.DisplaySize, IM_COL32(0, 4, 12, static_cast<int>(120.f * ease)));
+    }
+
+    const ImVec2 size{780.f * scale, 700.f * scale};   // (the header and the tabs: 60 more than before)
+    ImGui::SetNextWindowPos({io.DisplaySize.x * .5f, io.DisplaySize.y * .5f + (1.f - ease) * 16.f * scale},
+                            ImGuiCond_Always, {.5f, .5f});
     ImGui::SetNextWindowSize(size, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(.94f);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ease);
     ImGui::Begin("Metroid: Samus Returns##settings", nullptr,
-                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                     ImGuiWindowFlags_NoScrollbar);
+                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar |
+                     ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar);
+    {   // the panel under everything the window draws, then the header: METROID / SAMUS RETURNS over a fading rule
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImVec2 a = ImGui::GetWindowPos(), b{a.x + size.x, a.y + size.y};
+        const float cut = 26.f * scale;
+        draw->PushClipRectFullScreen();   // (the edge's glow and the brackets stand outside the window)
+        Theme::Panel(draw, a, b, cut, Theme::Fade(Theme::PanelTop, ease), Theme::Fade(Theme::PanelBottom, ease),
+                     Theme::Fade(Theme::Cyan, .75f * ease), 1.5f * scale);
+        Theme::Scanlines(draw, a, b, cut, 3.f * scale, Theme::Fade(Theme::Cyan, .035f * ease));
+        Theme::CornerBrackets(draw, a, b, 38.f * scale, Theme::Fade(Theme::Orange, .9f * ease), 2.f * scale);
+        draw->PopClipRect();
+        const ImVec2 pad = ImGui::GetStyle().WindowPadding;
+        const float header = 44.f * scale, mid = a.y + pad.y + header * .5f;
+        const float title = Theme::Text(draw, Theme::title_font, 32.f * scale, {a.x + pad.x + 6.f * scale, mid},
+                                        Theme::Fade(Theme::Cyan, ease), "METROID", 5.f * scale,
+                                        Theme::Fade(Theme::Cyan, .14f * ease));
+        Theme::Text(draw, Theme::title_font, 17.f * scale, {a.x + pad.x + 6.f * scale + title + 16.f * scale, mid + 4.f * scale},
+                    Theme::Fade(Theme::TextDim, ease), "SAMUS RETURNS", 4.f * scale);
+        const char* page = l.active ? "LAUNCHER" : "SETTINGS";
+        const float page_w = Theme::Measure(Theme::title_font, 15.f * scale, page, 3.f * scale);
+        Theme::Text(draw, Theme::title_font, 15.f * scale, {b.x - pad.x - page_w, mid + 4.f * scale},
+                    Theme::Fade(Theme::Orange, .85f * ease), page, 3.f * scale);
+        Theme::Rule(draw, a.x + pad.x, b.x - pad.x, a.y + pad.y + header + 2.f * scale, Theme::Fade(Theme::Cyan, .6f * ease));
+        ImGui::Dummy({0.f, header + 6.f * scale});
+    }
 
     // Labels take 40% of the width and wrap when they need more. Each tab is a page that
     // scrolls above the footer (a separator and a line of text) when the view is too short.
@@ -1096,24 +1368,65 @@ void Overlay::DrawMenu(float scale, bool appearing) {
         Label(label, label_width);
         ImGui::SetNextItemWidth(-FLT_MIN);
     };
-    const auto tab_item = [&](const char* name, int index) {
-        const ImGuiTabItemFlags flags = requested_tab == index ? ImGuiTabItemFlags_SetSelected : 0;
-        const bool open = ImGui::BeginTabItem(name, nullptr, flags);
-        if (open) {
-            tab = index;
-            ImGui::BeginChild("##page", {0.f, -footer}, ImGuiChildFlags_NavFlattened);
+    // The pages' tabs: a strip of their names in capitals, the page shown lit with an orange bar under it. LB / RB,
+    // PageUp / PageDown (above) or a click change it; focus stays in the page.
+    if (requested_tab >= 0) tab = requested_tab;
+    {
+        static constexpr const char* names[TabCount] = {"GAME", "DISPLAY", "HUD", "CONTROLS", "MODS", "TEXTURES", "CHEATS"};
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const float px = 17.f * scale, track = 2.5f * scale, pad = 14.f * scale, h = 36.f * scale;
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        const float avail = ImGui::GetContentRegionAvail().x;
+        float widths[TabCount], total = 0.f;
+        for (int i = 0; i < TabCount; ++i) total += widths[i] = Theme::Measure(Theme::title_font, px, names[i], track);
+        const float gap = std::max(pad * 2.f, (avail - total) / TabCount);   // the strip spans the panel
+        float x = start.x;
+        ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+        for (int i = 0; i < TabCount; ++i) {
+            const float w = widths[i] + gap;
+            ImGui::SetCursorScreenPos({x, start.y});
+            ImGui::PushID(i);
+            if (ImGui::InvisibleButton("##tab", {w, h})) tab = i;
+            const bool hovered = ImGui::IsItemHovered();
+            ImGui::PopID();
+            const bool on = tab == i;
+            if (on || hovered) {
+                draw->AddRectFilledMultiColor({x, start.y}, {x + w, start.y + h}, Theme::Fade(Theme::Cyan, 0.f),
+                                              Theme::Fade(Theme::Cyan, 0.f), Theme::Fade(Theme::Cyan, (on ? .22f : .10f) * ease),
+                                              Theme::Fade(Theme::Cyan, (on ? .22f : .10f) * ease));
+            }
+            if (on) draw->AddRectFilled({x + 4.f * scale, start.y + h - 3.f * scale}, {x + w - 4.f * scale, start.y + h},
+                                        Theme::Fade(Theme::Orange, ease));
+            Theme::Text(draw, Theme::title_font, px, {x + gap * .5f, start.y + h * .5f},
+                        Theme::Fade(on ? Theme::Cyan : Theme::TextDim, ease), names[i], track,
+                        on ? Theme::Fade(Theme::Cyan, .12f * ease) : 0);
+            x += w;
         }
-        return open;
+        ImGui::PopItemFlag();
+        Theme::Rule(draw, start.x, start.x + avail, start.y + h + 1.f, Theme::Fade(Theme::Cyan, .35f * ease));
+        ImGui::SetCursorScreenPos({start.x, start.y + h + 8.f * scale});
+    }
+    // A page newly shown (the menu opened, or another tab) focuses the row it names (default_focus). Opening the menu
+    // starts its navigation; another tab moves the focus there itself (ImGui kept it near the old page's focused row).
+    static int shown_tab = -1;
+    const bool fresh = appearing || shown_tab != tab;
+    shown_tab = tab;
+    if (fresh && !appearing) ImGui::NavMoveRequestCancel();   // (ImGui's own PageUp / PageDown: a page up or down)
+    const auto tab_item = [&](const char*, int index) {
+        if (index != tab) return false;
+        ImGui::BeginChild("##page", {0.f, -footer}, ImGuiChildFlags_NavFlattened);
+        if (fresh && !appearing) ImGui::SetScrollY(0.f);   // (one scrolling region for every page: from its top)
+        return true;
     };
-    const auto end_tab_item = [] {
-        ImGui::EndChild();
-        ImGui::EndTabItem();
-    };
+    const auto end_tab_item = [] { ImGui::EndChild(); };
 
-    if (ImGui::BeginTabBar("##tabs")) {
+    {
         const auto default_focus = [&] {
             if (appearing) {
                 ImGui::SetItemDefaultFocus();
+            } else if (fresh) {   // (near the page's top, where tab_item scrolled it)
+                ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+                ImGui::SetNavCursorVisible(true);
             }
         };
         if (tab_item("Game", 0)) {
@@ -1141,22 +1454,22 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             row("Volume");
             emulator_changed |= ImGui::SliderInt("##volume", &e.volume, 0, 100, "%d%%");
             row("Unlock amiibo galleries");
-            player_changed |= ImGui::Checkbox("##galleries", &p.unlock_galleries);
+            player_changed |= OnOff("##galleries", &p.unlock_galleries);
             row("Unlock Fusion Mode");
-            player_changed |= ImGui::Checkbox("##fusionmode", &p.unlock_fusion_mode);
+            player_changed |= OnOff("##fusionmode", &p.unlock_fusion_mode);
             row("Hard Mode from the start");
-            player_changed |= ImGui::Checkbox("##hardmode", &p.unlock_hard_mode);
+            player_changed |= OnOff("##hardmode", &p.unlock_hard_mode);
             Note("A new file and every New Game offer Normal and Hard (Fusion too).");
             row("Fusion suit, any difficulty");
             if (Cheats::randomizer.load(std::memory_order_relaxed)) {
                 // The randomizer has its own Fusion suit option (msr/cheats.h): kept off.
                 bool off = false;
                 ImGui::BeginDisabled();
-                ImGui::Checkbox("##fusionsuit", &off);
+                OnOff("##fusionsuit", &off);
                 ImGui::EndDisabled();
                 Note("Off with the randomizer. Fusion Mode: chosen when a game starts.");
             } else {
-                player_changed |= ImGui::Checkbox("##fusionsuit", &p.fusion_suit);
+                player_changed |= OnOff("##fusionsuit", &p.fusion_suit);
                 Note("Fusion Mode: chosen when a game starts. The suit switches at once.");
             }
             ImGui::Spacing();
@@ -1179,14 +1492,39 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 }
                 default_focus();
                 ImGui::BeginDisabled(!e.quick_saves);
-                if (ImGui::Button("Quick save", button)) {
-                    Act(OverlayAction::Kind::QuickSave);
-                    SetVisible(false);
+                // msr-native: beside each, its gamepad combo (Back + LB, Back + RB by default); choosing it counts down
+                // five seconds and takes what is held then (overlay_host.cpp)
+                ControlsSnapshot c;
+                {
+                    std::scoped_lock lock{mutex};
+                    c = controls;
                 }
-                if (ImGui::Button("Quick load", button)) {
-                    Act(OverlayAction::Kind::QuickLoad);
-                    SetVisible(false);
-                }
+                const float spacing = ImGui::GetStyle().ItemSpacing.x;
+                const float combo_width = std::floor((ImGui::GetContentRegionAvail().x - spacing) * 0.45f);
+                const auto quick = [&](const char* label, OverlayAction::Kind kind, int i) {
+                    if (ImGui::Button(label, {ImGui::GetContentRegionAvail().x - combo_width - spacing, 0.f})) {
+                        Act(kind);
+                        SetVisible(false);
+                    }
+                    ImGui::SameLine();
+                    const int row = ControlsSnapshot::ComboRow + i;
+                    ImGui::PushID(row);
+                    if (c.capturing == row) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                        if (ImGui::Button((ComboPrompt(c.combo_until, true) + "###combo").c_str(), {-FLT_MIN, 0.f})) {
+                            Act(OverlayAction::Kind::CancelBind);
+                        }
+                        ImGui::PopStyleColor();
+                    } else {
+                        const std::string text = c.combos[i].empty() ? "Set a gamepad combo" : "Gamepad " + c.combos[i];
+                        if (ImGui::Button((text + "###combo").c_str(), {-FLT_MIN, 0.f})) {
+                            Act(OverlayAction::Kind::Bind, row);
+                        }
+                    }
+                    ImGui::PopID();
+                };
+                quick("Quick save", OverlayAction::Kind::QuickSave, 0);
+                quick("Quick load", OverlayAction::Kind::QuickLoad, 1);
                 ImGui::EndDisabled();
                 if (ImGui::Button("Restart", button)) {
                     Act(OverlayAction::Kind::Restart);
@@ -1264,17 +1602,17 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                            "you choose a preset: Custom brings them back.");
             }
             row("Fullscreen");
-            emulator_changed |= ImGui::Checkbox("##fullscreen", &e.fullscreen);
+            emulator_changed |= OnOff("##fullscreen", &e.fullscreen);
             // Ultrawide widens the 16:9 view: on, it turns Widescreen on; Widescreen off turns it off
             row("Widescreen (16:9)");
-            if (ImGui::Checkbox("##widescreen", &p.widescreen)) {
+            if (OnOff("##widescreen", &p.widescreen)) {
                 player_changed = true;
                 p.ultrawide = p.ultrawide && p.widescreen;
                 p.fill_16_10 = p.fill_16_10 && p.widescreen;
             }
             if (e.ultrawide_option) {
                 row("Ultrawide (up to 32:9)");
-                if (ImGui::Checkbox("##ultrawide", &p.ultrawide)) {
+                if (OnOff("##ultrawide", &p.ultrawide)) {
                     player_changed = true;
                     p.widescreen = p.widescreen || p.ultrawide;
                 }
@@ -1282,7 +1620,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                      "(16:9), which it turns on.");
                 // #38: the same below 16:9, down to 16:10
                 row("Fill 16:10 screens");
-                if (ImGui::Checkbox("##fill1610", &p.fill_16_10)) {
+                if (OnOff("##fill1610", &p.fill_16_10)) {
                     player_changed = true;
                     p.widescreen = p.widescreen || p.fill_16_10;
                 }
@@ -1305,7 +1643,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 row("HDR");
                 bool hdr = p.hdr && e.hdr_option == 2;
                 ImGui::BeginDisabled(e.hdr_option < 2);
-                if (ImGui::Checkbox("##hdr", &hdr)) {
+                if (OnOff("##hdr", &hdr)) {
                     p.hdr = hdr;
                     player_changed = true;
                 }
@@ -1331,11 +1669,11 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             }
             if (e.bloom_option) {   // msr-native's picture: anti-aliasing, texture packs' filtering, colour (#51, #25)
                 row("Anti-aliasing (FXAA)");
-                player_changed |= ImGui::Checkbox("##fxaa", &p.fxaa);
+                player_changed |= OnOff("##fxaa", &p.fxaa);
                 Note("Smooths the game's jagged edges, before the picture is scaled to the window. A higher internal "
                      "resolution smooths them too, at a higher cost.");
                 row("Smooth texture packs");
-                player_changed |= ImGui::Checkbox("##smoothpacks", &p.smooth_packs);
+                player_changed |= OnOff("##smoothpacks", &p.smooth_packs);
                 Note("A texture pack's textures filtered smoothly, also where the game shows its own with sharp "
                      "pixels.");
                 auto percent = [&](const char* label, const char* id, float& value) {
@@ -1395,23 +1733,23 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 player_changed = true;
             }
             row("V-Sync");
-            emulator_changed |= ImGui::Checkbox("##vsync", &e.vsync);
+            emulator_changed |= OnOff("##vsync", &e.vsync);
             row("Show FPS");
-            player_changed |= ImGui::Checkbox("##fps", &p.show_fps);
+            player_changed |= OnOff("##fps", &p.show_fps);
             row("Menu size");
             player_changed |= ImGui::SliderFloat("##menu", &p.menu_scale, .7f, 1.5f, "%.2f");
             if (e.performance_options) {
                 ImGui::Spacing();
                 ImGui::SeparatorText("For slower computers");
                 row("Power-saving waits");
-                emulator_changed |= ImGui::Checkbox("##powersaving", &e.power_saving);
+                emulator_changed |= OnOff("##powersaving", &e.power_saving);
                 Note("While the game waits (for the next frame, for the graphics), it sleeps instead of checking in a "
                      "loop: more of a slow processor for the game, and on a handheld or laptop more power for the "
                      "graphics. On by default with 4 processor threads or fewer.");
                 // checked lightens the load, as the row above: the setting kept is wide_culling, its opposite
                 row("Draw only the 3DS's view");
                 bool only_3ds = !p.wide_culling;
-                if (ImGui::Checkbox("##only3ds", &only_3ds)) {
+                if (OnOff("##only3ds", &only_3ds)) {
                     p.wide_culling = !only_3ds;
                     player_changed = true;
                 }
@@ -1468,18 +1806,20 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             row("HUD opacity");
             player_changed |= ImGui::SliderFloat("##hudopacity", &p.hud_opacity, .3f, 1.f, "%.2f");
             row("Map");
-            player_changed |= ImGui::Checkbox("##map", &p.show_minimap);
+            player_changed |= OnOff("##map", &p.show_minimap);
             row("Map size");
             player_changed |= ImGui::SliderFloat("##mapsize", &p.minimap_size, .6f, 1.8f, "%.2f");
             row("Map opacity");
             player_changed |= ImGui::SliderFloat("##mapopacity", &p.minimap_opacity, .3f, 1.f, "%.2f");
+            row("Map brightness");
+            player_changed |= ImGui::SliderFloat("##mapbrightness", &p.minimap_brightness, 1.f, 2.f, "%.2f");
             row("DNA and Metroid counters");
-            player_changed |= ImGui::Checkbox("##counters", &p.show_counters);
+            player_changed |= OnOff("##counters", &p.show_counters);
             row("Aeion abilities");
-            player_changed |= ImGui::Checkbox("##abilities", &p.show_abilities);
+            player_changed |= OnOff("##abilities", &p.show_abilities);
             if (e.ultrawide_option) {
                 row("HUD within 16:9");
-                player_changed |= ImGui::Checkbox("##hud169", &p.hud_within_16_9);
+                player_changed |= OnOff("##hud169", &p.hud_within_16_9);
                 Note("On an ultrawide screen, the HUD nearer the middle.");
             }
             row("Menu panel size");
@@ -1487,7 +1827,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             row("Title menu background");
             player_changed |= ImGui::SliderFloat("##backdrop", &p.menu_backdrop, 0.f, 1.f, "%.2f");
             row("Menu help text");
-            player_changed |= ImGui::Checkbox("##hints", &p.control_hints);
+            player_changed |= OnOff("##hints", &p.control_hints);
             Note("Help text beside the pause menu and file select, and in touch mode.");
             end_tab_item();
         }
@@ -1505,25 +1845,30 @@ void Overlay::DrawMenu(float scale, bool appearing) {
         }
         if (tab_item("Cheats", 6)) {
             row("Infinite energy");
-            player_changed |= ImGui::Checkbox("##energy", &p.infinite_energy);
+            player_changed |= OnOff("##energy", &p.infinite_energy);
             default_focus();
             row("Unlimited missiles");
-            player_changed |= ImGui::Checkbox("##missiles", &p.infinite_missiles);
+            player_changed |= OnOff("##missiles", &p.infinite_missiles);
             row("Unlimited Aeion");
-            player_changed |= ImGui::Checkbox("##aeion", &p.infinite_aeion);
+            player_changed |= OnOff("##aeion", &p.infinite_aeion);
             Note("Kept full every frame. Missiles include Super Missiles and Power Bombs. A save "
                  "keeps what you have when you save.");
             end_tab_item();
         }
-        ImGui::EndTabBar();
     }
     requested_tab = -1;
 
-    ImGui::Separator();
-    const std::string help = ButtonGlyphs::Keys(l.active ? "{Choose} choose   {Tabs} tabs"
-                                                         : "{Choose} choose   {Back} back   {Tabs} tabs   {Close} close");
+    {   // the footer: a fading rule, then the controls
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        Theme::Rule(ImGui::GetWindowDrawList(), at.x, at.x + ImGui::GetContentRegionAvail().x, at.y,
+                    Theme::Fade(Theme::Cyan, .45f * ease));
+        ImGui::Dummy({0.f, 1.f});
+    }
+    const std::string help = ButtonGlyphs::Keys(l.active ? "{Choose} choose     {Tabs} tabs"
+                                                         : "{Choose} choose     {Back} back     {Tabs} tabs     {Close} close");
     ImGui::TextDisabled("%s", help.c_str());
     ImGui::End();
+    ImGui::PopStyleVar();
 
     // Video settings that make no preset are the player's own (set by hand, the Steam Deck button, an older version's
     // settings.ini): kept, so the Video preset row's Custom brings them back after a preset replaced them

@@ -62,7 +62,8 @@ typedef struct {
     float style[4];   /* opacity, key low (mode 3: gain), key high, mode */
     int feather;      /* soft edge in percent of the quad; bits 8-11 keep the left, top, right, bottom edges hard */
     int circle;       /* circular mask radius in percent (0: none) */
-    int source;       /* 1: the beam slots as held (video.c's copy of the bottom screen before R, msr_beams_held) */
+    int source;       /* 1: the beam slots as held (video.c's copy of the bottom screen before R, msr_beams_held);
+                         2: the menu as last seen (video.c's copy of the bottom screen while it read as one, msr_menu_live) */
     int pad;
     float color[4];   /* fill colour */
 } MsrQuad;
@@ -83,6 +84,9 @@ void msr_single_layout(float ww, float wh, float top[4], float panel[4]);
 /* R held (missiles): the HUD's beam slots come from video.c's copy of the bottom screen made before (quads with
    source 1); video.c copies the slots' column each frame this is 0 */
 int  msr_beams_held(void);
+/* The bottom screen reads as a menu this frame: video.c copies it, and the panel's quads with source 2 sample that copy
+   while it does not (the panel fading out as the game draws something else there) */
+int  msr_menu_live(void);
 int  msr_panel_visible(void);
 /* pica_vk: the clip-space scale of the top screen's world draws (x down the screen, y across: widescreen and zoom) */
 void msr_world_scale(float *sx, float *sy);
@@ -90,6 +94,8 @@ int msr_world_in_play(void);   /* the compositor's "in play" (the zoom applies) 
 void msr_camera_frame(double now);   /* each VBlank: the game's camera gets the field of view the zoomed view needs (camera_fov.cpp) */
 float msr_fov_gain(float px);   /* the renderer: how much wider than the game's that field of view is, for a draw with the camera's projection (x scale px) */
 int msr_samus_view(float *h, float *v);   /* Samus on the top screen in the game's own view (5:3, zoom 1): h right, v up, -1..1; 0 if none */
+int msr_map_marker(float *x, float *y);   /* minimap.cpp: her marker on the HUD's map as the game draws it (bottom screen pixels); 0 if none */
+int msr_map_focus(void);   /* minimap.cpp: the game's map shows a place of its own (1: the DNA scanner's way, 2: another); 0 if not */
 int msr_input_pad_active(void);   /* the last input came from a gamepad (glyphs.cpp) */
 void msr_input_device(int pad, int sdl_type);   /* video.c: the input just used (0 = keyboard/mouse), for the button names and icons (glyphs.cpp) */
 void msr_input_bindings_changed(void);
@@ -129,6 +135,7 @@ int  msr_input_blocked(void);            /* the game gets no pad input (touch na
 
 /* ---- cheats (cheats.cpp; the emulator-based build's ApplyMsrRefills) ---- */
 void msr_cheats_frame(double now);   /* each VBlank: the extras' patches follow the settings, refills, setter calls queued */
+float msr_item(uint32_t key, const char *name);   /* cheats.cpp: Samus's item by key global and name; -1: cannot tell */
 struct CPU;
 int msr_game_hook(struct CPU *c);
 
@@ -140,6 +147,13 @@ int  msr_textures_active(void);
    a pack replaces it (its PNG then loads on a worker), else 0. *pending: not known yet (a worker works out the legacy
    hash); ask again later with the same content. */
 uint64_t msr_texture_find(const uint8_t *level0, uint32_t w, uint32_t h, int fmt, uint64_t content, int *pending);
+/* "Dump game textures" (#64, settings.ini [native] dump_textures; the game's start reads it): the renderers offer a
+   texture to msr_texture_dump (as msr_texture_find) when its bytes are new or its dump_gen is not g_msr_dump_gen, which
+   is 0 while not dumping and changes each time dumping starts. Each is written once, on a worker. */
+extern volatile unsigned g_msr_dump_gen;
+void msr_textures_set_dump(int on);
+void msr_texture_dump(const uint8_t *level0, uint32_t w, uint32_t h, int fmt, uint64_t content);
+unsigned msr_textures_dumped(void);   /* this session's, including those already in the folder */
 /* pica_vk: what prepares a replacement's upload on the workers (make: pixels -> its own handle, any thread; drop: a
    handle never taken). Not with PWR_TEXPACK_SYNC=1. */
 void msr_textures_set_stager(void *(*make)(const uint8_t *rgba, uint32_t w, uint32_t h), void (*drop)(void *staged));
