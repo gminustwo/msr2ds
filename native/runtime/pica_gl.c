@@ -768,14 +768,20 @@ static GLuint sampler_for(int unit) {
    be used. Until then a draw takes the same vertex shader with the generic fragment shader if that is ready, else the
    interpreter's or pica.vert's with it (made at the start), as pica_vk.c falls back to its generic pipeline. The
    translations and the programs (with their binaries where the driver gives them: glGetProgramBinary) are kept in
-   pwr_gl_programs.bin, read at the next start and made again (from the binaries: no compiling) before they are wanted. */
+   pwr_gl_programs.bin, read at the next start and made again (from the binaries: no compiling) before they are wanted.
+   A full table takes no new entry (a new translation: the interpreter; a new program: the generic one), so the file
+   keeps only the CACHE_KEEP most recently used programs, a quarter of the table, and the translations they use; the
+   programs not used in a run keep their order from the file and fall off its end in time (#62, as pica_vk.c's
+   pwr_shaders.bin: every one was kept, and once the table had been filled each run started full). */
 #define NSC 30
 enum { VS_CPU, VS_INTERP, VS_GEN };
 typedef struct { uint64_t key; char *text; GLuint sh; atomic_int state; } Gen;   /* state 0 not compiled yet, 1 compiled (sh), -1 failed */
 typedef struct { uint32_t vs; int nd, spec; uint64_t fs; uint32_t sc[NSC]; GLuint prog; GLsync done; atomic_int state;
-                 void *bin; GLsizei bin_len; GLenum bin_fmt; } Prog;   /* state 0 queued, 1 made (done: its fence), 2 ready, -1 failed */
-#define MAX_GEN 4096
-#define MAX_PROG 8192
+                 void *bin; GLsizei bin_len; GLenum bin_fmt; atomic_ullong used; } Prog;   /* state 0 queued, 1 made (done: its fence), 2 ready, -1 failed; used: use_clock at its last draw (0: not in this run) */
+#define MAX_GEN 16384
+#define MAX_PROG 16384
+#define CACHE_KEEP 4096
+static uint64_t use_clock;   /* (the GX thread's) */
 static Gen gens[MAX_GEN]; static atomic_int ngen; static int gen_hash[2 * MAX_GEN];   /* open addressing: index + 1 */
 static Prog progs[MAX_PROG]; static atomic_int nprog; static int prog_hash[2 * MAX_PROG];
 static int jq[MAX_PROG + 1], jq_head, jq_tail;   /* the compile thread's queue of programs */
@@ -824,7 +830,11 @@ static int gen_find(uint64_t key, const char *text, size_t len) {
     uint32_t j = (uint32_t)(key ^ key >> 32) & (2 * MAX_GEN - 1);
     for (; gen_hash[j]; j = (j + 1) & (2 * MAX_GEN - 1)) if (gens[gen_hash[j] - 1].key == key) return gen_hash[j] - 1;
     const int i = atomic_load(&ngen);
-    if (!text || i >= MAX_GEN) return -1;
+    if (!text) return -1;
+    if (i >= MAX_GEN) {
+        static int told; if (!told) { told = 1; fprintf(stderr, "pica_gl: the translation table is full (%d): new vertex shaders run in the interpreter\n", MAX_GEN); }
+        return -1;
+    }
     Gen *g = &gens[i];
     if (!(g->text = malloc(len + 1))) return -1;
     memcpy(g->text, text, len); g->text[len] = 0;
@@ -846,10 +856,14 @@ static int prog_find(uint32_t vs, uint64_t fs, int nd, const uint32_t *sc, int a
     uint32_t j = (uint32_t)(k ^ k >> 32) & (2 * MAX_PROG - 1);
     for (; prog_hash[j]; j = (j + 1) & (2 * MAX_PROG - 1)) { const Prog *p = &progs[prog_hash[j] - 1]; if (p->vs == vs && p->fs == fs) return prog_hash[j] - 1; }
     const int i = atomic_load(&nprog);
-    if (!add || i >= MAX_PROG || atomic_load(&compiler_dead)) return -1;
+    if (!add || atomic_load(&compiler_dead)) return -1;
+    if (i >= MAX_PROG) {
+        static int told; if (!told) { told = 1; fprintf(stderr, "pica_gl: the program table is full (%d): new effects draw with their generic program\n", MAX_PROG); }
+        return -1;
+    }
     Prog *p = &progs[i];
     p->vs = vs; p->fs = fs; p->nd = nd; p->spec = sc != NULL; if (sc) memcpy(p->sc, sc, sizeof p->sc); else memset(p->sc, 0, sizeof p->sc);
-    p->prog = 0; p->done = NULL; p->bin = NULL; p->bin_len = 0; p->bin_fmt = 0; atomic_store(&p->state, 0);
+    p->prog = 0; p->done = NULL; p->bin = NULL; p->bin_len = 0; p->bin_fmt = 0; atomic_store(&p->used, 0); atomic_store(&p->state, 0);
     prog_hash[j] = i + 1;
     atomic_store(&nprog, i + 1);
     return i;
@@ -867,6 +881,7 @@ static GLuint prog_ready(uint32_t vs, uint64_t fs, int nd, const uint32_t *sc) {
         last_vs = vs; last_fs = fs; last_i = i;
     }
     Prog *p = &progs[i];
+    atomic_store_explicit(&p->used, ++use_clock, memory_order_relaxed);
     int st = atomic_load(&p->state);
     if (st == 1) {   /* made: usable here once its fence has signalled */
         const GLenum r = glClientWaitSync(p->done, 0, 0);
@@ -896,30 +911,41 @@ static int gen_current(void) {
     return i >= 0 && atomic_load(&gens[i].state) >= 0 ? i : -1;
 }
 
-/* writes pwr_gl_programs.bin: the translations, then every program made (its shaders' keys and its binary) */
+/* (last use, index) pairs: the most recently used first, the rest (unused in this run) in the file's order */
+static int keep_cmp(const void *a, const void *b) {
+    const uint64_t *x = a, *y = b;
+    if (x[0] != y[0]) return x[0] > y[0] ? -1 : 1;
+    return x[1] < y[1] ? -1 : x[1] > y[1];
+}
+/* writes pwr_gl_programs.bin: the translations the kept programs use, then those programs (the CACHE_KEEP most recently
+   used of those made: their shaders' keys and their binaries) */
 static void cache_save(void) {
     if (!preload_on) return;
     pthread_mutex_lock(&save_lock);
     atomic_store(&cache_dirty, 0);
-    FILE *f = fopen(CACHE_FILE ".tmp", "wb");
-    if (!f) { pthread_mutex_unlock(&save_lock); return; }
-    const int ng = atomic_load(&ngen), np = atomic_load(&nprog);
+    const int np = atomic_load(&nprog), ng = atomic_load(&ngen);   /* (in this order: every program below np has its translation below ng) */
+    uint64_t (*ord)[2] = malloc((size_t)(np ? np : 1) * sizeof *ord); unsigned char *gen_kept = calloc((size_t)(ng ? ng : 1), 1);
+    FILE *f = ord && gen_kept ? fopen(CACHE_FILE ".tmp", "wb") : NULL;
+    if (!f) { free(ord); free(gen_kept); pthread_mutex_unlock(&save_lock); return; }
+    uint32_t nk = 0;   /* (the uses read once, as the GX thread goes on stamping them) */
+    for (int i = 0; i < np; i++) if (atomic_load(&progs[i].state) >= 1) { ord[nk][0] = atomic_load_explicit(&progs[i].used, memory_order_relaxed); ord[nk][1] = (uint64_t)i; nk++; }
+    qsort(ord, nk, sizeof *ord, keep_cmp);
+    if (nk > CACHE_KEEP) nk = CACHE_KEEP;
+    for (uint32_t k = 0; k < nk; k++) { const uint32_t vs = progs[ord[k][1]].vs; if (vs >= VS_GEN && vs - VS_GEN < (uint32_t)ng) gen_kept[vs - VS_GEN] = 1; }
     uint32_t n = 0;
     fwrite(CACHE_MAGIC, 1, 8, f); fwrite(cache_stamp, 1, sizeof cache_stamp, f);
-    for (int i = 0; i < ng; i++) n += gens[i].text && atomic_load(&gens[i].state) >= 0;
+    for (int i = 0; i < ng; i++) n += gen_kept[i] && gens[i].text && atomic_load(&gens[i].state) >= 0;
     fwrite(&n, 4, 1, f);
     for (int i = 0; i < ng; i++) {
         const Gen *g = &gens[i];
-        if (!g->text || atomic_load(&gens[i].state) < 0) continue;
+        if (!gen_kept[i] || !g->text || atomic_load(&gens[i].state) < 0) continue;
         const uint32_t len = (uint32_t)strlen(g->text);
         fwrite(&g->key, 8, 1, f); fwrite(&len, 4, 1, f); fwrite(g->text, 1, len, f);
     }
-    n = 0;
-    for (int i = 0; i < np; i++) n += atomic_load(&progs[i].state) >= 1;
+    n = nk;
     fwrite(&n, 4, 1, f);
-    for (int i = 0; i < np; i++) {
-        Prog *p = &progs[i];
-        if (atomic_load(&p->state) < 1) continue;
+    for (uint32_t k = 0; k < nk; k++) {
+        Prog *p = &progs[ord[k][1]];
         const uint32_t kind = p->vs >= VS_GEN ? VS_GEN : p->vs, nd = (uint32_t)p->nd, spec = (uint32_t)p->spec, fmt = (uint32_t)p->bin_fmt, len = p->bin ? (uint32_t)p->bin_len : 0;
         const uint64_t vkey = p->vs >= VS_GEN ? gens[p->vs - VS_GEN].key : 0;
         fwrite(&kind, 4, 1, f); fwrite(&vkey, 8, 1, f); fwrite(&p->fs, 8, 1, f); fwrite(&nd, 4, 1, f); fwrite(&spec, 4, 1, f);
@@ -927,6 +953,7 @@ static void cache_save(void) {
     }
     const int ok = !ferror(f); fclose(f);
     if (ok) rt_replace_file(CACHE_FILE ".tmp", CACHE_FILE); else remove(CACHE_FILE ".tmp");
+    free(ord); free(gen_kept);
     pthread_mutex_unlock(&save_lock);
 }
 /* at exit (main thread): what the compiles made since the last save */
