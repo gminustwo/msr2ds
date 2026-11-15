@@ -2240,6 +2240,8 @@ int Launcher() {
     Publish();
 #ifndef __ANDROID__
     S.update_checker = std::thread([] { CleanUpdate(); CheckForUpdate(); });   // a newer release (the updates section)
+#else
+    auto code_checked = std::chrono::steady_clock::now();   // (the native code's last look, below)
 #endif
     for (;;) {
         bool playing;
@@ -2263,6 +2265,14 @@ int Launcher() {
             CheckCode();
             video_show(1);
         }
+#ifdef __ANDROID__
+        // The native code comes from a PC, often copied in while the launcher is open (or in the background, where
+        // coming back to it resumes it): looked for again every 2 s (#58, #63: "Not built yet" until the app started again)
+        if (const auto now = std::chrono::steady_clock::now(); now - code_checked >= std::chrono::seconds(2)) {
+            code_checked = now;
+            CheckCode();
+        }
+#endif
         Publish();
         if (!video_frame()) break;   // the window was closed
         std::this_thread::sleep_for(std::chrono::milliseconds(4));   // the presentation paces it; without V-Sync too
