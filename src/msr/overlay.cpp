@@ -1689,7 +1689,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 percent("Saturation", "##saturation", p.saturation);
                 if (p.brightness != 1.f || p.contrast != 1.f || p.saturation != 1.f) {
                     row("");
-                    if (ImGui::Button("Colours as the game draws them", {ImGui::GetContentRegionAvail().x, 0.f})) {
+                    if (ImGui::Button("Colors as the game draws them", {ImGui::GetContentRegionAvail().x, 0.f})) {
                         p.brightness = p.contrast = p.saturation = 1.f;
                         player_changed = true;
                     }

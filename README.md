@@ -284,9 +284,9 @@ same `settings.ini`; LB and RB switch tabs.
 
   Medium, High and Ultra keep a faster frame rate you chose (90-144, for a faster
   display), and leave Power-saving waits as they are (it follows the processor).
-  Changing any of these yourself makes it **Custom**: choosing a preset afterwards
+  Changing any of these yourself makes it **Custom**: choosing a preset afterward
   keeps your values, and choosing Custom brings them back. Bloom, V-Sync, HDR,
-  anti-aliasing and the colours stay as you set them. On a Steam Deck, the **Steam Deck: 60 FPS with texture
+  anti-aliasing and the colors stay as you set them. On a Steam Deck, the **Steam Deck: 60 FPS with texture
   packs** button above the presets is still there.
 
   **Power-saving waits:** while the game waits (for the next frame, for the
@@ -551,7 +551,7 @@ reads the GitHub releases of `MSR_UPDATE_REPO` (`gminustwo/msr2ds`, in
 another name (`msr2ds-<version>-...`) as long as the ending stays. The packages
 hold no user folder and nothing from the game.
 
-## Licence
+## License
 
 `native/` (from Woohoo! Flight School) is GPL-3.0-or-later (`native/LICENSE`);
 `src/` and `tools/`, from the emulator-based port, stay GPL-2.0-or-later
