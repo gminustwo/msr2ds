@@ -4,14 +4,12 @@
 > **Windows users:**
 > 
 > It would be very helpful to upload your log file. This can be found under user/msr-native.log
-> 
-> **Texture packs:**
-> 
-> I don't provide the HD texture pack. For one, I didn't create them. Secondly, it would make the download over a GB.
-> You can find them at the link below. Don't trust the link? No problem, Google where to find it yourself.
 >
-> > HD Texture Pack link: https://drive.google.com/file/d/1GxvnzsPQznZ_v_6s-YMgETyLe5rN2Fak/view
-
+> **Android users:**
+>
+> Android support is difficult. We don't have an Android device to physically test on. Building an Android image is easy, but testing it on real hardware is a different story.
+> Android support can only continue with a back and forth from the community unless someone wants to put in a pull request to fix whatever is the performance issues being seen there.
+> 
 > **No game files are included.**
 
 *Metroid: Samus Returns* as a native, single-screen PC game. This is a full PC Port. It is no longer built on emulation.
