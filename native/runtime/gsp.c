@@ -46,9 +46,18 @@ unsigned g_gsp_top_swaps;   /* top-screen framebuffer swaps = game frames */
 /* frame times between top-screen swaps, for main.c's 2 s line (stutter: the longest, how many over 10/20/50 ms) */
 double g_frame_max_ms; unsigned g_frame_over[3];
 double g_main_iter_max_ms, g_main_part_max[5];   /* main.c: its longest loop pass since the last frame, and of its parts (input, VBlank, cheats, video) (PWR_HITCH) */
+/* main.c's long-frame lines (its watchdog thread samples what each thread does while a frame takes long): when the last
+   frame ended (CLOCK_MONOTONIC, ms), and each frame over 200 ms, its length and the swap that ended it */
+volatile double g_frame_last_ms, g_long_frame_ms;
+volatile unsigned g_long_frame_end, g_long_frames;
 static void frame_time_note(void) {
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     double now = (double)ts.tv_sec * 1e3 + ts.tv_nsec * 1e-6; static double last;
+    if (last > 0 && now - last > 200) {
+        g_long_frame_ms = now - last; g_long_frame_end = g_gsp_top_swaps;
+        __atomic_add_fetch(&g_long_frames, 1, __ATOMIC_RELEASE);
+    }
+    g_frame_last_ms = now;
     /* PWR_HITCH=<ms>: each frame longer than that, with what the GX worker did meanwhile */
     static double hitch = -1; if (hitch < 0) { const char *h = getenv("PWR_HITCH"); hitch = h ? atof(h) : 0; }
     extern unsigned long long g_prof_list_ns, g_prof_fence_ns, g_prof_hash_ns, g_prof_wb_ns, g_prof_flush_ns, g_prof_draw_ns;
@@ -344,8 +353,8 @@ void gsp_gx_enqueue_hook(CPU *c) {   /* r0 -> pointer to the queue header, r1 = 
        keeps the queue near its 15 commands). On a 3DS the GPU empties the queue long before that. So the game waits here
        until the worker has taken a command, as it waits for the GPU anyway (at most ~0.2 s). */
     for (int rounds = 0; rd8(q + 1) >= 15 && rounds < 20; rounds++) {   /* checked again once this thread runs again */
-        extern void k_wait_outside_begin(void), k_wait_outside_end(void);
-        k_wait_outside_begin();   /* the game's other threads run meanwhile */
+        extern void k_wait_outside_begin(const char *what), k_wait_outside_end(void);
+        k_wait_outside_begin("waiting for room in the GX command queue (the GX thread behind)");   /* the game's other threads run meanwhile */
         pthread_mutex_lock(&G);
         for (int tries = 0; rd8(q + 1) >= 15 && tries < 10; tries++) {
             if (!gx_busy) { gx_pending = 1; pthread_cond_signal(&gx_wake); }

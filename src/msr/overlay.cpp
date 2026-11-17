@@ -1665,6 +1665,21 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                         player_changed = true;
                     }
                     Note("Highlights: the brightest lights and glows. Paper white: the game's white, menus and HUD.");
+                    // 2026-11-15, the user: a reset to the defaults (0: the display's peak up to 1000 nits, and the
+                    // brightness Windows gives SDR content)
+                    if (p.hdr_peak > 0.f || p.hdr_paper > 0.f) {
+                        row("");
+                        if (ImGui::Button("Reset HDR to the defaults", {ImGui::GetContentRegionAvail().x, 0.f})) {
+                            p.hdr_peak = p.hdr_paper = 0.f;
+                            player_changed = true;
+                        }
+                        char note[160];
+                        std::snprintf(note, sizeof note,
+                                      "The defaults: highlights at %d nits (the display's peak, up to 1000), paper white "
+                                      "at %d nits (Windows' SDR content brightness).",
+                                      static_cast<int>(e.display_peak), static_cast<int>(e.display_paper));
+                        Note(note);
+                    }
                 }
             }
             if (e.bloom_option) {   // msr-native's picture: anti-aliasing, texture packs' filtering, colour (#51, #25)
@@ -1689,7 +1704,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 percent("Saturation", "##saturation", p.saturation);
                 if (p.brightness != 1.f || p.contrast != 1.f || p.saturation != 1.f) {
                     row("");
-                    if (ImGui::Button("Colours as the game draws them", {ImGui::GetContentRegionAvail().x, 0.f})) {
+                    if (ImGui::Button("Colors as the game draws them", {ImGui::GetContentRegionAvail().x, 0.f})) {
                         p.brightness = p.contrast = p.saturation = 1.f;
                         player_changed = true;
                     }

@@ -1393,6 +1393,7 @@ static int init(void) {
         if (no_interp) fprintf(stderr, "pica_vk: vertex shaders not yet translated run on the CPU (no GPU interpreter)\n");
     }
     VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D32_SFLOAT_S8_UINT, &fp);
+    if (getenv("PWR_VK_NO_D32S8")) fp.optimalTilingFeatures = 0;   /* PWR_VK_NO_D32S8=1: as a GPU without it (Adreno's, #53), on any GPU */
     if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) { depth_format = VK_FORMAT_D32_SFLOAT_S8_UINT; has_stencil = 1; }
     else {
         vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D32_SFLOAT, &fp);

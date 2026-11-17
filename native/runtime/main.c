@@ -316,16 +316,76 @@ static void stages_print(void) {
         fputc('\n', stderr);
     }
 }
+/* Frames over 200 ms, in every log (2026-11-15: freezes of 0.3-0.5 s in play, the main loop and the game's thread both
+   stopped with little processor use, which the 2 s lines could not place): from 50 ms into a frame, every 25 ms, what the
+   main thread, the GX thread and the game's frame thread are doing (their stages; kernel.c k_frame_where); a frame that
+   ends over 200 ms gets a line with each one's share. At most 40 lines a run. */
+#define LF_KINDS 4
+#define LF_TEXT 200
+typedef struct { unsigned frame; int samples; struct { char what[LF_KINDS][LF_TEXT]; double ms[LF_KINDS], other; } th[3]; } LfSamples;
+static LfSamples lf_now, lf_prev;   /* the frame being sampled, and the one before (the line may come a tick late) */
+static void lf_add(LfSamples *s, int th, const char *what, double ms) {
+    for (int k = 0; k < LF_KINDS; k++) {
+        if (s->th[th].ms[k] > 0 && strcmp(s->th[th].what[k], what)) continue;
+        if (s->th[th].ms[k] <= 0) snprintf(s->th[th].what[k], LF_TEXT, "%s", what);
+        s->th[th].ms[k] += ms;
+        return;
+    }
+    s->th[th].other += ms;
+}
+static void long_frames(double t) {
+    extern volatile double g_frame_last_ms, g_long_frame_ms; extern volatile unsigned g_long_frame_end, g_long_frames;
+    extern unsigned g_gsp_top_swaps;
+    static unsigned seen; static int told;
+    const unsigned longs = __atomic_load_n(&g_long_frames, __ATOMIC_ACQUIRE);
+    if (longs != seen) {   /* a frame over 200 ms ended: its samples, taken while it ran (the frame before swap g_long_frame_end) */
+        seen = longs;
+        const unsigned end = g_long_frame_end; const double ms = g_long_frame_ms;
+        LfSamples *s = lf_now.frame + 1 == end ? &lf_now : lf_prev.frame + 1 == end ? &lf_prev : NULL;
+        if (told < 40 && s && s->samples) {
+            static const char *const who[3] = { "the main thread", "the GX thread", "the game's thread" };
+            char line[4096]; size_t at = 0;   /* one write: other threads log meanwhile */
+#define LF_PUT(...) do { if (at < sizeof line) { int w_ = snprintf(line + at, sizeof line - at, __VA_ARGS__); if (w_ > 0) at += (size_t)w_; } } while (0)
+            LF_PUT("native: a frame took %.0f ms (frame %u):", ms, end);
+            for (int th = 0; th < 3; th++) {
+                LF_PUT("%s %s:", th ? ";" : "", who[th]);
+                const char *sep = " ";
+                for (int k = 0; k < LF_KINDS && s->th[th].ms[k] > 0; k++) { LF_PUT("%s%s ~%.0f ms", sep, s->th[th].what[k], s->th[th].ms[k]); sep = ", "; }
+                if (s->th[th].other > 0) LF_PUT("%sother things ~%.0f ms", sep, s->th[th].other);
+            }
+#undef LF_PUT
+            fprintf(stderr, "%s\n", line);
+            if (++told == 40) fprintf(stderr, "native: frames over 200 ms from here on are not listed\n");
+        }
+    }
+    const unsigned frame = g_gsp_top_swaps;
+    if (frame != lf_now.frame) { lf_prev = lf_now; memset(&lf_now, 0, sizeof lf_now); lf_now.frame = frame; }
+    /* each sample stands for the time since the one before (25 ms as asked, longer if this thread waited), from 50 ms into
+       the frame */
+    static double prev; const double since = (t - prev) * 1e3; prev = t;
+    const double into = t * 1e3 - g_frame_last_ms;
+    if (g_frame_last_ms <= 0 || into < 50) return;
+    double ms = since < into - 50 ? since : into - 50; if (ms > 100) ms = 100;
+    if (ms <= 0) return;
+    const char *m = stages[STAGE_MAIN].what, *g = stages[STAGE_GX].what;
+    lf_add(&lf_now, 0, m ? m : "waiting for the next VBlank tick", ms);
+    lf_add(&lf_now, 1, g ? g : "idle (no GX command to run)", ms);
+    char where[LF_TEXT]; k_frame_where(where, sizeof where);
+    lf_add(&lf_now, 2, where, ms);
+    lf_now.samples++;
+}
+
 static void *watchdog(void *arg) {
     (void)arg;
     double told[STAGE_COUNT] = { 0 }; int times[STAGE_COUNT] = { 0 };
-    for (;;) {
+    for (;;) {   /* every 25 ms: the long-frame samples; the stage checks below count in seconds */
 #ifdef _WIN32
-        Sleep(500);
+        Sleep(25);
 #else
-        usleep(500000);
+        usleep(25000);
 #endif
         const double t = now_s();
+        if (g_booted) long_frames(t);
         for (int i = 0; i < STAGE_COUNT; i++) {
             const char *w = stages[i].what; const double since = stages[i].since;
             if (!w) continue;
@@ -741,11 +801,14 @@ int main(int argc, char **argv) {
         pt4 = now_s();
         { double d[4] = { pt1 - pt0, pt2 - pt1, pt3 - pt2, pt4 - pt3 }; for (int i = 0; i < 4; i++) if (d[i] * 1e3 > g_main_part_max[i]) g_main_part_max[i] = d[i] * 1e3; }
         frames++;
+        stage_set(STAGE_MAIN, "timing the next tick (the display's refresh, DWM)");
         next = next_tick(next, fps);   /* VBlank at the frame rate above 60 (the game waits for it); the display's when that is the rate */
+        stage_set(STAGE_MAIN, NULL);
         double t = now_s();
         if (next > t) k_sleep_ns((int64_t)((next - t) * 1e9));   /* to the microsecond: the game's frame limiter wakes just before it */
         else if (t - next > 0.25) next = t;          /* fell behind: don't try to catch up */
         if (t - last_stat >= 2.0) {
+            stage_set(STAGE_MAIN, "writing the 2 s stats and the log");
             uint32_t lists, draws; pica_stats(&lists, &draws);
             extern unsigned g_vid_acquire_fail, g_vid_present_fail, g_vid_presented; extern int g_vid_last_err;
             extern unsigned g_gsp_top_swaps; static unsigned last_swaps;
@@ -804,6 +867,7 @@ int main(int argc, char **argv) {
             { extern unsigned long long g_gs_draws; if (g_gs_draws) fprintf(stderr, "native: geometry-shader draws=%llu (not implemented)\n", g_gs_draws); }
             fflush(stderr);   /* the log, in one write (log_buffered) */
             last_stat = t;
+            stage_set(STAGE_MAIN, NULL);
         }
     }
     stage_set(STAGE_MAIN, "closing the game");

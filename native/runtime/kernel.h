@@ -2,6 +2,7 @@
 #ifndef PWR_KERNEL_H
 #define PWR_KERNEL_H
 #include "cpu.h"
+#include <stddef.h>
 
 /* guest memory map (old-3DS application layout) */
 #define VA_HEAP        0x08000000u
@@ -50,6 +51,8 @@ typedef struct KThread {
     int prio;             /* 0 = highest, as on the 3DS */
     int ready;            /* runnable and waiting for the run token */
     int in_svc; uint32_t svc_num, svc_r[6], svc_lr, svc_cmd;   /* the svc it is in (k_hang_report) */
+    const char *svc_ipc;          /* SendSyncRequest's service (k_frame_where) */
+    const char *volatile outside; /* waiting outside the kernel (k_wait_outside_begin): for what */
     volatile int preempt; /* a higher-priority thread became ready while this one ran guest code (k_preempt_take) */
     /* save states (state.h): abandon = a state is loading, leave rt_run and park (thread_body); dead = the state has no such
        thread, end; parked = waiting for the new state; spawn = a new host thread is needed; nest = rt_run depth (a nested
@@ -78,6 +81,9 @@ int k_run_main(uint32_t entry);               /* run the main guest thread on th
 volatile int *k_start_main(uint32_t entry);   /* ...or on a new host thread; returns its done flag */
 void k_trace(const char *fmt, ...);
 void k_hang_report(void);                     /* every guest thread and what it waits on (stderr) */
+void k_frame_where(char *out, size_t n);      /* what the game's frame thread is doing now (main.c's long-frame lines) */
+void k_wait_outside_begin(const char *what);  /* a guest thread waits outside the kernel: the others run meanwhile */
+void k_wait_outside_end(void);
 uint64_t k_ticks(void);                       /* ARM11 system ticks (268 MHz) since boot */
 void k_sleep_ns(int64_t ns);                   /* sleep to within microseconds (svcSleepThread, the VBlank tick) */
 void k_set_power_saving(int on);               /* k_sleep_ns waits on the timer alone, without its last-millisecond loop */

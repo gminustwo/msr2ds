@@ -775,7 +775,7 @@ std::string Build(const std::string& game, bool android) {
                 Status(std::string("Downloading ") + d.what, d.size ? 0.f : -1.f);
                 if (!RunTool({curl, "-sSfL", "--retry", "2", "--connect-timeout", "30", "-o", Utf8(file), d.url}, {},
                              file, d.size, d.what)) {
-                    if (Cancelled()) return "Cancelled.";
+                    if (Cancelled()) return "Canceled.";
                     return Fail(std::string("The ") + d.what + " download failed. Check the internet connection.");
                 }
                 const std::string actual = Sha256(file);
@@ -784,7 +784,7 @@ std::string Build(const std::string& game, bool android) {
                     return Fail(std::string("The ") + d.what + " download is not the expected file (SHA-256 " + actual.substr(0, 16) + "...).");
                 }
             }
-            if (Cancelled()) return "Cancelled.";
+            if (Cancelled()) return "Canceled.";
             if (is_python) {
                 const fs::path target = KitFolder() / "python";
                 fs::remove_all(target, e);
@@ -829,7 +829,7 @@ std::string Build(const std::string& game, bool android) {
         WriteText(KitFolder() / "kit.json", "{\n \"kit\": " + std::to_string(KitVersion) + ",\n \"python\": \"" + JsonEscape(python) + "\"\n}\n");
         fs::remove_all(downloads, e);
     }
-    if (Cancelled()) return "Cancelled.";
+    if (Cancelled()) return "Canceled.";
     Status("Starting the recompiler");
     std::string dump = game;   // a compressed game file: the start of its image, decompressed (WriteImageStart)
     const fs::path image_start = S.user / "msr" / "recomp-image-start.cci";
@@ -876,7 +876,7 @@ std::string Build(const std::string& game, bool android) {
             error = line.substr(7);
         }
     });
-    if (Cancelled()) return "Cancelled.";
+    if (Cancelled()) return "Canceled.";
     if (!ok) return Fail(error.empty() ? "The recompiler stopped with an error: see user/msr/recomp-build.log." : error);
     Log("\n=== done\n");
     return {};
