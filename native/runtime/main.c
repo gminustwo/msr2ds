@@ -654,6 +654,25 @@ int main(int argc, char **argv) {
     log_buffered();
     if (argc == 1 || (argc == 2 && !strcmp(argv[1], "--launcher"))) return msr_launcher_main();
     if (argc == 2 && !strcmp(argv[1], "--direct")) return msr_launcher_direct();
+    /* the log's first line: which release and package this is (a player's log said nothing of it; launcher.log does) */
+    fprintf(stderr, "native: msr-native %s, %s\n", MSR_NATIVE_VERSION,
+#if defined(__ANDROID__)
+            "Android"
+#elif defined(_WIN32)
+            "Windows"
+#elif defined(__APPLE__)
+            "macOS"
+#else
+            "Linux"
+#endif
+#if defined(__aarch64__) || defined(_M_ARM64)
+            " arm64"
+#elif defined(__x86_64__) || defined(_M_X64)
+            " x64"
+#else
+            ""
+#endif
+            );
     int scale = 2, fps = 0, volume = 100, packs_given = 0, saving = -1;
     const char *dump = getenv("MSR_DUMP"), *module = NULL, *settings = NULL;
     static char game_path[4096], module_path[4096], save_path[4096];
