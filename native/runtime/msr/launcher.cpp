@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -637,12 +638,68 @@ std::string WriteImageStart(DumpFile* d, const fs::path& out) {
     return f ? std::string{} : "Could not write " + Utf8(out) + ".";
 }
 
+#ifdef __ANDROID__
+// #58: on an Odin 3 (Android 13), a recomp-android folder copied in from a PC stayed "Not built yet" in 2.0.8, and the
+// player's file manager needed root to open it, though not user/msr. A folder made by a PC's copy can belong to
+// another owner than this app, while a file copied into a folder of the app's own (the game file, in user/) can be
+// read. So the app makes the folder itself, and a PC's copy of the folder goes into that one (Windows merges a folder
+// into one of the same name); a copy dropped inside it (recomp-android/recomp-android) is moved up. Whether the native
+// code can be read; what was found goes to launcher.log once for each change, and `note` says what to do when Android
+// doesn't let the app read it.
+bool CodeReadable(std::string& note) {
+    std::error_code e;
+    const fs::path dir = S.user / "msr" / CodeFolder, inner = dir / CodeFolder;
+    if (!fs::exists(dir, e)) fs::create_directories(dir, e);
+    if (fs::is_regular_file(inner / Library, e) && !fs::exists(LibraryPath(), e)) {
+        for (const char* name : {Library, "module.json"}) {
+            std::error_code m;
+            fs::rename(inner / name, dir / name, m);
+            if (m) fs::copy_file(inner / name, dir / name, fs::copy_options::overwrite_existing, m);
+            std::fprintf(stderr, "launcher: %s moved up from %s%s\n", name, Utf8(inner).c_str(), m ? (": " + m.message()).c_str() : "");
+        }
+    }
+    const std::string lib = Utf8(LibraryPath()), folder = Utf8(dir);
+    std::string seen;
+    struct stat ls{}, ds{};
+    bool denied = false;
+    if (!stat(lib.c_str(), &ls) && S_ISREG(ls.st_mode) && !access(lib.c_str(), R_OK)) {}
+    else if (stat(folder.c_str(), &ds)) seen = "no " + folder + " (" + std::strerror(errno) + ")";
+    else {
+        const int err = stat(lib.c_str(), &ls) ? errno : S_ISREG(ls.st_mode) && access(lib.c_str(), R_OK) ? errno : 0;
+        char who[96];
+        std::snprintf(who, sizeof who, "owner %u, mode %03o; this app is %u", static_cast<unsigned>(ds.st_uid),
+                      static_cast<unsigned>(ds.st_mode & 0777), static_cast<unsigned>(getuid()));
+        seen = std::string(Library) + ": " + (err ? std::strerror(err) : "not a file") + " (the folder's " + who + "; in it:";
+        std::error_code l;
+        int n = 0;
+        for (fs::directory_iterator it(dir, l), end; !l && it != end && n < 8; it.increment(l), n++) seen += " " + Utf8(it->path().filename());
+        seen += l ? " cannot be listed, " + l.message() + ")" : n ? ")" : " nothing)";
+        denied = err == EACCES || err == EPERM || l == std::errc::permission_denied || l == std::errc::operation_not_permitted;
+    }
+    static std::string told = "-";
+    if (seen != told) {
+        if (!seen.empty()) std::fprintf(stderr, "launcher: native code: %s\n", seen.c_str());
+        told = seen;
+    }
+    if (denied)
+        note = "Android doesn't let msr-native read the recomp-android folder copied in. From the PC, delete that folder: "
+               "msr-native then makes an empty one of its own in its place (press F5 on the PC to see it). Copy the two "
+               "files from the PC's recomp-android folder, libmsr_aot.so and module.json, into that one.";
+    return seen.empty();
+}
+#endif
+
 // The native code's state, from module.json beside it
 void CheckCode() {
     std::error_code e;
     Code code = Code::Missing;
     std::string note;
-    if (fs::is_regular_file(LibraryPath(), e)) {
+#ifdef __ANDROID__
+    const bool readable = CodeReadable(note);
+#else
+    const bool readable = true;
+#endif
+    if (readable && fs::is_regular_file(LibraryPath(), e)) {
         const std::string json = ReadText(S.user / "msr" / CodeFolder / "module.json");
         const std::string runtime = JsonValue(json, "runtime_sha256"), built = JsonValue(json, "built");
         code = runtime == MSR_AOT_RUNTIME_SHA256 ? Code::Ready : Code::Outdated;

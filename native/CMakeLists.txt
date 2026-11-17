@@ -125,6 +125,7 @@ foreach(sh pica.vert pica_vs.vert pica.frag)
 endforeach()
 msr_shader(pica_nd.frag.inc pica.frag vulkan1.3 -DNO_FRAG_DEPTH)
 msr_shader(pica_nd.frag.11.inc pica.frag vulkan1.1 -DNO_FRAG_DEPTH)
+msr_shader(pica_simple.frag.inc pica_simple.frag vulkan1.1)   # PWR_VK_DBG=simplefs (a GPU cost test), for both modes
 foreach(sh present.vert present.frag fsr_easu.frag fsr_rcas.frag msr.vert msr.frag hdr.frag)
   msr_shader(${sh}.inc ${sh} vulkan1.1)
 endforeach()
@@ -162,7 +163,7 @@ set(MSR_NATIVE_SOURCES
   ${SHO}/pica.vert.inc ${SHO}/pica_vs.vert.inc ${SHO}/pica.frag.inc
   ${SHO}/present.vert.inc ${SHO}/present.frag.inc
   ${SHO}/fsr_easu.frag.inc ${SHO}/fsr_rcas.frag.inc ${SHO}/pica_nd.frag.inc ${SHO}/msr.vert.inc ${SHO}/msr.frag.inc
-  ${SHO}/hdr.frag.inc ${SHO}/pica.vert.11.inc ${SHO}/pica_vs.vert.11.inc ${SHO}/pica.frag.11.inc ${SHO}/pica_nd.frag.11.inc
+  ${SHO}/hdr.frag.inc ${SHO}/pica.vert.11.inc ${SHO}/pica_vs.vert.11.inc ${SHO}/pica.frag.11.inc ${SHO}/pica_nd.frag.11.inc ${SHO}/pica_simple.frag.inc
   ${MSR_GL_SOURCES})
 if (ANDROID)
     # The Android app (native/android): this program as libmain.so, which SDL's Java side loads and runs (SDL_main);
