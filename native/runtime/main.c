@@ -865,6 +865,21 @@ int main(int argc, char **argv) {
             extern int pica_vk_npipes(void);
             fprintf(stderr, "native: vk draws=%llu batches=%llu target-uploads=%llu tex-uploads=%llu vs-compiled=%u vs-failed=%u passes=%llu (%llu without depth) gpu-ms=%llu (passes with depth %llu, without %llu) fence-wait-ms=%llu verts=%llu idx=%llu pipelines=%d\n", g_vk_draws, g_vk_batches, g_vk_uploads, g_vk_tex_uploads, g_vsgen_compiled, g_vsgen_failed, g_vk_passes, g_vk_passes_flat, g_vk_gpu_us / 1000, g_vk_gpu_depth_us / 1000, g_vk_gpu_flat_us / 1000, g_vk_wait_us / 1000, g_vk_verts, g_vk_idx, pica_vk_npipes());
             { extern unsigned long long g_gs_draws; if (g_gs_draws) fprintf(stderr, "native: geometry-shader draws=%llu (not implemented)\n", g_gs_draws); }
+#ifdef __linux__
+            {   /* memory (#66: a phone with 12 GB ran out of it during the opening and froze): this program's resident set and
+                   what the device has left, which on a phone also holds the GPU's memory */
+                long pages = 0, total = 0, avail = -1; FILE *f;
+                if ((f = fopen("/proc/self/statm", "r"))) { long size; if (fscanf(f, "%ld %ld", &size, &pages) != 2) pages = 0; fclose(f); }
+                if ((f = fopen("/proc/meminfo", "r"))) {
+                    char l[128];
+                    while (fgets(l, sizeof l, f)) { sscanf(l, "MemTotal: %ld kB", &total); sscanf(l, "MemAvailable: %ld kB", &avail); }
+                    fclose(f);
+                }
+                const long rss_mb = (long)((long long)pages * sysconf(_SC_PAGESIZE) >> 20);
+                if (avail >= 0) fprintf(stderr, "native: memory: this program %ld MB resident; the device %ld of %ld MB available\n", rss_mb, avail >> 10, total >> 10);
+                else fprintf(stderr, "native: memory: this program %ld MB resident\n", rss_mb);
+            }
+#endif
             fflush(stderr);   /* the log, in one write (log_buffered) */
             last_stat = t;
             stage_set(STAGE_MAIN, NULL);

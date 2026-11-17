@@ -765,7 +765,7 @@ static GLuint sampler_for(int unit) {
 
 /* ---------------- programs ----------------
    A program is a vertex shader (VS_CPU: pica.vert for CPU-shaded vertices; VS_INTERP: the interpreter; VS_GEN + i: the
-   translation gens[i]) with pica.frag, specialised for a draw's configuration (pica_vk.c's 30 specialisation constants
+   translation gens[i]) with pica.frag, specialized for a draw's configuration (pica_vk.c's 38 specialization constants
    from draw_sc, as GLSL constants) or generic (SC_ON 0: its key is nd). The GX thread asks for the programs its draws
    want; they are compiled and linked on a thread of their own, in a context of their own, a fence saying when one can
    be used. Until then a draw takes the same vertex shader with the generic fragment shader if that is ready, else the
@@ -776,7 +776,7 @@ static GLuint sampler_for(int unit) {
    keeps only the CACHE_KEEP most recently used programs, a quarter of the table, and the translations they use; the
    programs not used in a run keep their order from the file and fall off its end in time (#62, as pica_vk.c's
    pwr_shaders.bin: every one was kept, and once the table had been filled each run started full). */
-#define NSC 30
+#define NSC 38
 enum { VS_CPU, VS_INTERP, VS_GEN };
 typedef struct { uint64_t key; char *text; GLuint sh; atomic_int state; } Gen;   /* state 0 not compiled yet, 1 compiled (sh), -1 failed */
 typedef struct { uint32_t vs; int nd, spec; uint64_t fs; uint32_t sc[NSC]; GLuint prog; GLsync done; atomic_int state;
@@ -801,7 +801,8 @@ static void vs_header(char *h, size_t n) { snprintf(h, n, "#version 330 core\n#d
 static void fs_header(char *h, size_t n, int nd, const uint32_t *sc) {
     static const char *const names[NSC] = { "SC_ON", "SC_SRC0", "SC_SRC1", "SC_SRC2", "SC_SRC3", "SC_SRC4", "SC_SRC5",
         "SC_OPS0", "SC_OPS1", "SC_OPS2", "SC_OPS3", "SC_OPS4", "SC_OPS5", "SC_CMB0", "SC_CMB1", "SC_CMB2", "SC_CMB3", "SC_CMB4", "SC_CMB5",
-        "SC_SCL0", "SC_SCL1", "SC_SCL2", "SC_SCL3", "SC_SCL4", "SC_SCL5", "SC_BUFCFG", "SC_ALPHA", "SC_TEXEN", "SC_LIGHT", "SC_ZBUF" };
+        "SC_SCL0", "SC_SCL1", "SC_SCL2", "SC_SCL3", "SC_SCL4", "SC_SCL5", "SC_BUFCFG", "SC_ALPHA", "SC_TEXEN", "SC_LIGHT", "SC_ZBUF",
+        "SC_LC0", "SC_LC1", "SC_LNUM", "SC_LPERM", "SC_LABS", "SC_LIN", "SC_LSCL", "SC_LCFG" };
     int k = snprintf(h, n, "#version 330 core\n#define UNROLL\n%sconst uint", nd ? "#define NO_FRAG_DEPTH\n" : "");
     for (int i = 0; i < NSC && k > 0 && (size_t)k < n; i++) k += snprintf(h + k, n - (size_t)k, "%s %s = 0x%Xu", i ? "," : "", names[i], sc ? sc[i] : 0u);
     if (k > 0 && (size_t)k < n) snprintf(h + k, n - (size_t)k, ";");
@@ -821,6 +822,7 @@ static void draw_sc(uint32_t *sc) {
     for (int i = 0; i < 6; i++) { sc[1 + i] = R(tb[i]) & 0x0FFF0FFF; sc[7 + i] = R(tb[i] + 1) & 0x777FFF; sc[13 + i] = R(tb[i] + 2) & 0x000F000F; sc[19 + i] = R(tb[i] + 4) & 0x00030003; }
     sc[25] = R(0x0E0) & 0x1FF07; sc[26] = R(0x104) & 0x71; sc[27] = pica_sc_texen();
     sc[28] = (R(0x08F) & 1) && !(R(0x1C6) & 1); sc[29] = R(0x06D) & 1;
+    if (sc[28]) pica_sc_light(&sc[30]); else memset(&sc[30], 0, 8 * sizeof *sc);   /* the material's lighting setup (#37) */
 }
 static uint64_t spec_key(const uint32_t *sc, int nd) {
     uint64_t h = 0xcbf29ce484222325ull ^ (uint64_t)nd;

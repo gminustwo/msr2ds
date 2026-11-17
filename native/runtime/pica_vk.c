@@ -83,6 +83,17 @@ static const uint32_t frag_spv11[] =
 static const uint32_t frag_nd_spv11[] =
 #include "pica_nd.frag.11.inc"
 ;
+static const uint32_t frag_simple_spv[] =   /* PWR_VK_DBG=simplefs, in both modes (SPIR-V 1.3) */
+#include "pica_simple.frag.inc"
+;
+/* GPU-cost tests, PWR_VK_DBG (the picture is wrong; the log's GPU times say what the left-out part cost, #37):
+   scissor: a 1x1 scissor (no pixels), nodraw: state and descriptors only, half: every second draw, simplefs: a fragment
+   shader that only passes the vertex color on (the pixels without pica.frag's shading), nolight: no fragment
+   lighting, notex: no texture units (in the specialized pipelines: the generic ones, used while those compile, as ever),
+   nofragdepth: no gl_FragDepth write (the world's W-buffered depth is then wrong: what losing the depth test before the
+   shader costs; on a Ryzen's integrated Radeon at 4x, 4.2 of 18.4 ms a frame) */
+enum { DBG_NONE, DBG_SCISSOR, DBG_NODRAW, DBG_HALF, DBG_SIMPLEFS, DBG_NOLIGHT, DBG_NOTEX, DBG_NOFRAGDEPTH };
+static int vk_dbg;
 
 static VkPhysicalDevice phys; static VkDevice dev; static VkQueue queue; static uint32_t qfam;
 /* This thread's fences, whose submission video.c may still hold (video_queue_submit): a wait has it submitted first, a
@@ -106,9 +117,14 @@ static int gpu_vs = 1;
    has no GPU interpreter at all. On Android; PWR_VK_GPU_INTERP=1 or 0 forces it either way. */
 extern int g_vk_driver_id;   /* video.c */
 static int static_ds, no_interp;
+/* The depth targets' format (init): D32_SFLOAT_S8_UINT where the GPU has it, else D24_UNORM_S8_UINT (Adreno 6xx has
+   only that one with stencil, and Azahar uses it there), else D32_SFLOAT without the stencil test. Up to 2.0.8 a GPU
+   without D32S8 went straight to D32_SFLOAT: #53, an Adreno 640 (Vulkan 1.1 mode) crashed in vkCreateFramebuffer at the
+   first pass with such a depth attachment, and the game's stencil test was off there. depth_d24: the depth aspect's
+   bytes are 24-bit unsigned in 32 (the top byte unused), not a float (surf_upload_, surf_detile). */
 static VkFormat depth_format;
-static int has_stencil; static VkImageAspectFlags ds_aspect;
-static int depth_blit;   /* the depth format can be blitted: a depth target is written back from a 1x copy (nearest) */   /* D32_SFLOAT_S8_UINT when available: stencil for D24S8 targets */
+static int has_stencil, depth_d24; static VkImageAspectFlags ds_aspect;
+static int depth_blit;   /* the depth format can be blitted: a depth target is written back from a 1x copy (nearest) */
 static int state = -1;   /* -1 unknown, 0 off, 1 on */
 static int vtrace;       /* PWR_VK_TRACE=1: log target uploads and fills */
 static int q_res = 1, q_aniso = 1;   /* video.c settings: 3D internal resolution, anisotropic filtering (1 = off) */
@@ -125,6 +141,7 @@ static uint32_t mem_type(uint32_t bits, VkMemoryPropertyFlags want) {
 }
 typedef struct { VkBuffer buf; VkDeviceMemory mem; uint8_t *ptr; VkDeviceSize size, used; } Ring;
 static int ring_init(Ring *r, VkDeviceSize size, VkBufferUsageFlags usage, int cached) {
+    memset(r, 0, sizeof *r);
     VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = usage };
     if (vkCreateBuffer(dev, &bi, NULL, &r->buf)) return -1;
     VkMemoryRequirements mr; vkGetBufferMemoryRequirements(dev, r->buf, &mr);
@@ -136,6 +153,18 @@ static int ring_init(Ring *r, VkDeviceSize size, VkBufferUsageFlags usage, int c
     if (vkMapMemory(dev, r->mem, 0, size, 0, (void **)&r->ptr)) return -1;
     r->size = size; r->used = 0; return 0;
 }
+static void ring_free(Ring *r) {   /* (also a ring_init that failed part of the way) */
+    if (r->ptr) vkUnmapMemory(dev, r->mem);
+    if (r->buf) vkDestroyBuffer(dev, r->buf, NULL);
+    if (r->mem) vkFreeMemory(dev, r->mem, NULL);
+    memset(r, 0, sizeof *r);
+}
+/* A set's download ring at internal resolution S: 8 MB (color targets come down at 1x, depth too where its format can
+   be blitted), plus room for two depth targets (400x240, 4 + 1 bytes a pixel) at S where it cannot: 104 MB at 10x.
+   Sized for the resolution in use (rescale makes them again), not for 10x from the start: on a phone, where the GPU's
+   memory is the device's, twelve sets of 104 MB took 1.2 GB before the game drew anything (#66: a phone with 12 GB ran
+   out of memory and froze). */
+static VkDeviceSize dl_size(int S) { return (8u << 20) + (depth_blit ? 0 : (VkDeviceSize)2 * 400 * 240 * 5 * (VkDeviceSize)(S * S)); }
 /* space in a ring for this batch, or UINT64_MAX when full (caller flushes and retries) */
 static VkDeviceSize ring_alloc(Ring *r, VkDeviceSize n, VkDeviceSize align) {
     VkDeviceSize o = (r->used + align - 1) / align * align;
@@ -387,7 +416,11 @@ static int surf_upload_(Surf *s) {
     uint8_t *d = up_alloc((VkDeviceSize)w * h * 4 * S * S, &ub, &off);
     if (!d) return -1;
     for (uint32_t y = 0; y < h; y++) for (uint32_t x = 0; x < w; x++) {
-        uint8_t px[4]; decode_px(s, g_mem + s->addr + fb_off(x, y, w, h, bpp), px);
+        uint8_t px[4]; const uint8_t *p = g_mem + s->addr + fb_off(x, y, w, h, bpp);
+        if (s->depth && depth_d24) {   /* D24_UNORM_S8_UINT's depth aspect: 24 bits in 32 (D16's scaled to 24) */
+            uint32_t v = s->fmt == 0 ? (uint32_t)(((uint64_t)(p[0] | p[1] << 8) * 16777215u + 32767u) / 65535u) : (uint32_t)(p[0] | p[1] << 8 | p[2] << 16);
+            memcpy(px, &v, 4);
+        } else decode_px(s, p, px);
         for (uint32_t j = 0; j < S; j++) for (uint32_t i = 0; i < S; i++) memcpy(d + ((size_t)(y * S + j) * W + x * S + i) * 4, px, 4);
     }
     VkBufferImageCopy cp = { .bufferOffset = off, .imageSubresource = { s->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .imageExtent = { W, h * S, 1 } };
@@ -411,16 +444,23 @@ static int surf_upload_(Surf *s) {
 /* a download -> the guest's tiled layout at dst (guest memory: to_guest, which also notes its hash) */
 static void surf_detile(Surf *s, const uint8_t *src, uint8_t *dst, int to_guest) {
     uint32_t w = s->w, h = s->h, bpp = surf_bpp(s);
-    if (s->depth) {   /* float depth (+ stencil bytes after it) at the download's scale -> D16 / D24 / D24S8 */
+    if (s->depth) {   /* depth (a float, or 24 bits in 32: depth_d24) + stencil bytes after it, at the download's scale -> D16 / D24 / D24S8 */
         uint32_t S = (uint32_t)(s->wb_scale > 0 ? s->wb_scale : cur_scale), W = w * S;
         const uint8_t *st = src + (size_t)W * h * S * 4;
         for (uint32_t y = 0; y < h; y++) for (uint32_t x = 0; x < w; x++) {
             size_t k = (size_t)y * S * W + (size_t)x * S;
-            float z; memcpy(&z, src + k * 4, 4);
-            z = z < 0 ? 0 : z > 1 ? 1 : z;
             uint8_t *q = dst + fb_off(x, y, w, h, bpp);
-            if (s->fmt == 0) { uint32_t v = (uint32_t)(z * 65535.f + .5f); q[0] = (uint8_t)v; q[1] = (uint8_t)(v >> 8); }
-            else { uint32_t v = (uint32_t)(z * 16777215.f + .5f); q[0] = (uint8_t)v; q[1] = (uint8_t)(v >> 8); q[2] = (uint8_t)(v >> 16); }
+            uint32_t v;
+            if (depth_d24) {
+                uint32_t d; memcpy(&d, src + k * 4, 4); d &= 0xFFFFFFu;
+                v = s->fmt == 0 ? (uint32_t)(((uint64_t)d * 65535u + 8388607u) / 16777215u) : d;
+            } else {
+                float z; memcpy(&z, src + k * 4, 4);
+                z = z < 0 ? 0 : z > 1 ? 1 : z;
+                v = (uint32_t)(z * (s->fmt == 0 ? 65535.f : 16777215.f) + .5f);
+            }
+            q[0] = (uint8_t)v; q[1] = (uint8_t)(v >> 8);
+            if (s->fmt != 0) q[2] = (uint8_t)(v >> 16);
             if (s->fmt == 3) q[3] = has_stencil ? st[k] : 0;
         }
         if (to_guest) { s->hash = hash_mem(s->addr, surf_size(s)); s->synced = 1; }
@@ -1031,13 +1071,15 @@ static VkSampler sampler_for(int unit) {
 }
 
 /* vs: VkShaderModule. nd: the fragment shader without its depth write. sc: the fragment shader's specialisation constants
-   (pica.frag SC_*: [0] on, then the 6 TEV stages' sources, operands, combiners, scales, 0x0E0, 0x104, 0x080, lighting, Z-buffer).
+   (pica.frag SC_*: [0] on, then the 6 TEV stages' sources, operands, combiners, scales, 0x0E0, 0x104, 0x080, lighting, Z-buffer,
+   then 30-37 the lighting setup: pica_int.h pica_sc_light, 0 when lighting is off).
    Built with memset so the padding compares equal. ds: the Vulkan 1.1 mode's depth, stencil and culling state (ds_pack),
-   dynamic state with Vulkan 1.3, where it stays 0 (in what was the struct's padding: the keys pwr_shaders.bin holds keep
-   their size). */
-#define NSC 30
+   dynamic state with Vulkan 1.3, where it stays 0 (in what was the struct's padding). Up to 2.0.8 sc had 30 entries
+   (PKey30: pwr_shaders.bin's keys then, read by seed_load as unlit keys; #37 added the lighting setup). */
+#define NSC 38
 typedef struct { uint64_t vs; uint32_t blend; uint8_t blend_on, cmask, has_depth, gpu_vs, nd, pad[3]; uint32_t sc[NSC]; uint32_t ds; } PKey;
-_Static_assert(sizeof(PKey) == 144, "PKey's size is in pwr_shaders.bin: a new field goes in place of pad");
+typedef struct { uint64_t vs; uint32_t blend; uint8_t blend_on, cmask, has_depth, gpu_vs, nd, pad[3]; uint32_t sc[30]; uint32_t ds; } PKey30;
+_Static_assert(sizeof(PKey) == 176 && sizeof(PKey30) == 144, "PKey's size is in pwr_shaders.bin");
 /* a draw's depth, stencil and culling state (draw_ds) */
 typedef struct { VkCullModeFlags cull; VkCompareOp dop, sfn; VkStencilOp sop[3]; uint8_t dt, dw, ste, sref, scmask, swmask; } DsState;   /* sop: fail, depth fail, pass */
 /* the part of it a Vulkan 1.1 pipeline holds (the stencil reference and masks stay dynamic): the compare op only with the
@@ -1298,7 +1340,7 @@ static void seed_load(void) {
         fprintf(stderr, "pica_vk: pwr_shaders.bin is from another build: shaders are built when needed and saved again\n");
         fclose(f); return;
     }
-    if (fread(&pk, 4, 1, f) != 1 || pk != sizeof(PKey) ||
+    if (fread(&pk, 4, 1, f) != 1 || (pk != sizeof(PKey) && pk != sizeof(PKey30)) ||
         fread(&nvs, 4, 1, f) != 1 || fread(&np, 4, 1, f) != 1 || nvs > 65536 || np > MAX_PIPES) { fclose(f); return; }
     uint32_t vs_ok = 0;
     for (uint32_t i = 0; i < nvs; i++) {
@@ -1312,7 +1354,15 @@ static void seed_load(void) {
     preload_idx = calloc(np ? np : 1, sizeof *preload_idx); preload_n = 0;
     for (uint32_t i = 0; i < np; i++) {
         uint32_t kind; uint64_t vkey; PKey k;
-        if (fread(&kind, 4, 1, f) != 1 || fread(&vkey, 8, 1, f) != 1 || fread(&k, sizeof k, 1, f) != 1) break;
+        if (fread(&kind, 4, 1, f) != 1 || fread(&vkey, 8, 1, f) != 1) break;
+        if (pk == sizeof(PKey30)) {   /* 2.0.8's keys: the same without the lighting setup, so only the unlit ones still fit */
+            PKey30 o;
+            if (fread(&o, sizeof o, 1, f) != 1) break;
+            if (o.sc[28]) continue;
+            memset(&k, 0, sizeof k);
+            k.vs = o.vs; k.blend = o.blend; k.blend_on = o.blend_on; k.cmask = o.cmask; k.has_depth = o.has_depth; k.gpu_vs = o.gpu_vs; k.nd = o.nd;
+            memcpy(k.sc, o.sc, sizeof o.sc); k.ds = o.ds;
+        } else if (fread(&k, sizeof k, 1, f) != 1) break;
         VkShaderModule m = kind == 0 ? vs_mod : kind == 1 ? vsi_mod : pica_vsgen_preload(dev, vkey, NULL, 0);
         if (!m) continue;
         k.vs = (uint64_t)(uintptr_t)m;
@@ -1392,17 +1442,29 @@ static int init(void) {
         if (static_ds && !g_vk_rp) fprintf(stderr, "pica_vk: depth and stencil state in the pipelines (not dynamic state)\n");
         if (no_interp) fprintf(stderr, "pica_vk: vertex shaders not yet translated run on the CPU (no GPU interpreter)\n");
     }
-    VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D32_SFLOAT_S8_UINT, &fp);
-    if (getenv("PWR_VK_NO_D32S8")) fp.optimalTilingFeatures = 0;   /* PWR_VK_NO_D32S8=1: as a GPU without it (Adreno's, #53), on any GPU */
-    if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) { depth_format = VK_FORMAT_D32_SFLOAT_S8_UINT; has_stencil = 1; }
-    else {
-        vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D32_SFLOAT, &fp);
-        if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) return -1;
-        depth_format = VK_FORMAT_D32_SFLOAT; fprintf(stderr, "pica_vk: no D32_SFLOAT_S8_UINT: stencil test unavailable\n");
+    {   /* the depth format (depth_format, above). PWR_VK_NO_D32S8=1: as a GPU without D32S8 (Adreno 6xx's, #53), on any
+           GPU; PWR_VK_DEPTH=d32s8, d24s8 or d32: that format if the GPU has it (A/B) */
+        const char *force = getenv("PWR_VK_DEPTH");
+        static const struct { VkFormat f; const char *name; int stencil, d24; } fmts[] = {
+            { VK_FORMAT_D32_SFLOAT_S8_UINT, "d32s8", 1, 0 }, { VK_FORMAT_D24_UNORM_S8_UINT, "d24s8", 1, 1 }, { VK_FORMAT_D32_SFLOAT, "d32", 0, 0 } };
+        depth_format = VK_FORMAT_UNDEFINED;
+        for (int i = 0; i < 3 && depth_format == VK_FORMAT_UNDEFINED; i++) {
+            if (force && *force && strcmp(force, fmts[i].name)) continue;
+            if (i == 0 && getenv("PWR_VK_NO_D32S8")) continue;
+            /* (the uploads and write-backs copy it too; asked of the new D24S8 only, the others' check is as in 2.0.8) */
+            const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | (fmts[i].d24 ? VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT : 0);
+            VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(phys, fmts[i].f, &fp);
+            if ((fp.optimalTilingFeatures & need) != need) continue;
+            depth_format = fmts[i].f; has_stencil = fmts[i].stencil; depth_d24 = fmts[i].d24;
+        }
+        if (depth_format == VK_FORMAT_UNDEFINED) { fprintf(stderr, "pica_vk: no depth format for the targets%s\n", force ? " (PWR_VK_DEPTH)" : ""); return -1; }
+        if (depth_format == VK_FORMAT_D24_UNORM_S8_UINT) fprintf(stderr, "pica_vk: depth targets in D24_UNORM_S8_UINT%s\n", force ? " (PWR_VK_DEPTH)" : " (no D32_SFLOAT_S8_UINT)");
+        if (!has_stencil) fprintf(stderr, "pica_vk: depth targets in D32_SFLOAT: stencil test unavailable\n");
     }
     ds_aspect = VK_IMAGE_ASPECT_DEPTH_BIT | (has_stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
     { VkFormatProperties dp; vkGetPhysicalDeviceFormatProperties(phys, depth_format, &dp);
-      depth_blit = (dp.optimalTilingFeatures & (VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT)) == (VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT); }
+      depth_blit = (dp.optimalTilingFeatures & (VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT)) == (VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT);
+      if (getenv("PWR_VK_NO_DEPTH_BLIT")) depth_blit = 0; }   /* PWR_VK_NO_DEPTH_BLIT=1: as a GPU that can't (phones'), on any GPU */
     VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = qfam };
     if (vkCreateCommandPool(dev, &pci, NULL, &cpool)) return -1;
     VkCommandBufferAllocateInfo cai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cpool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 2 * MAX_PARTS };
@@ -1439,6 +1501,17 @@ static int init(void) {
     if (vkCreateShaderModule(dev, &sci, NULL, &fs_mod)) return -1;
     sci.codeSize = v11 ? sizeof frag_nd_spv11 : sizeof frag_nd_spv; sci.pCode = v11 ? frag_nd_spv11 : frag_nd_spv;
     if (vkCreateShaderModule(dev, &sci, NULL, &fs_nd_mod)) return -1;
+    {
+        static const char *const dbg_names[] = { "", "scissor", "nodraw", "half", "simplefs", "nolight", "notex", "nofragdepth" };
+        const char *e = getenv("PWR_VK_DBG");
+        for (int i = 1; e && i < (int)(sizeof dbg_names / sizeof *dbg_names); i++) if (!strcmp(e, dbg_names[i])) vk_dbg = i;
+        if (vk_dbg) fprintf(stderr, "pica_vk: PWR_VK_DBG=%s: a GPU cost test, the picture is wrong\n", dbg_names[vk_dbg]);
+        if (vk_dbg == DBG_SIMPLEFS) {
+            VkShaderModule m;
+            sci.codeSize = sizeof frag_simple_spv; sci.pCode = frag_simple_spv;
+            if (!vkCreateShaderModule(dev, &sci, NULL, &m)) fs_mod = fs_nd_mod = m;
+        }
+    }
     {   /* pipelines compiled in earlier runs (the driver checks that the data fits this GPU and driver) */
         size_t n = 0; void *data = NULL; FILE *f = fopen("pwr_pipelines.bin", "rb");
         if (f) { fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET); if (sz > 0 && (data = malloc((size_t)sz)) && fread(data, 1, (size_t)sz, f) == (size_t)sz) n = (size_t)sz; fclose(f); }
@@ -1448,10 +1521,10 @@ static int init(void) {
     }
     for (int k = NSETS - 1; k >= 0; k--) {   /* each set's rings (set 0's left current) */
         /* sizes for one batch, 5-10x what a gameplay batch uses (a full ring ends it early); a big upload gets its own
-           buffer (up_alloc); downloads are at 1x, except a depth target's when its format cannot be blitted (10x: 48 MB) */
+           buffer (up_alloc); downloads are at 1x, except a depth target's when its format cannot be blitted (dl_size) */
         if (ring_init(&vbuf, 4u << 20, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 0) || ring_init(&ibuf, 4u << 20, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 0) ||
             ring_init(&ubuf, 4u << 20, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 0) || ring_init(&lbuf, 2u << 20, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0) ||
-            ring_init(&upbuf, 8u << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 0) || ring_init(&dlbuf, depth_blit ? 8u << 20 : 104u << 20, VK_BUFFER_USAGE_TRANSFER_DST_BIT, 1) ||
+            ring_init(&upbuf, 8u << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 0) || ring_init(&dlbuf, dl_size(cur_scale), VK_BUFFER_USAGE_TRANSFER_DST_BIT, 1) ||
             ring_init(&abuf, 8u << 20, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0) || ring_init(&pbuf, 2u << 20, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0)) return -1;
         for (int r = 0; r < 8; r++) sets[k].rings[r] = *set_ring_ptr[r];
     }
@@ -1505,15 +1578,14 @@ typedef struct {
 static DrawRec *recs; static uint32_t nrec, caprec, seg = 1;
 
 static void replay(const DrawRec *r, VkPipeline *bound) {
-    /* GPU-cost experiments: PWR_VK_DBG=scissor (1x1 scissor: no fragment work), nodraw (state and descriptors only), half (every second draw) */
-    static int dbg = -1; static unsigned dn; if (dbg < 0) { const char *e = getenv("PWR_VK_DBG"); dbg = !e ? 0 : !strcmp(e, "scissor") ? 1 : !strcmp(e, "nodraw") ? 2 : !strcmp(e, "half") ? 3 : 0; }
-    if (dbg == 3 && (dn++ & 1)) return;
+    static unsigned dn; const int dbg = vk_dbg;   /* (GPU-cost tests: vk_dbg, above) */
+    if (dbg == DBG_HALF && (dn++ & 1)) return;
     VkRect2D one = { { 0, 0 }, { 1, 1 } };
     if (r->p != *bound) { vkCmdBindPipeline(cb_draw, VK_PIPELINE_BIND_POINT_GRAPHICS, r->p); *bound = r->p; }
     /* dynamic state: only what changed since the previous draw of this command buffer (st_valid is cleared when a command buffer begins) */
     static VkViewport lvp; static VkRect2D lsc; static float lbc[4]; static VkCullModeFlags lcull; static VkCompareOp ldop; static uint8_t ldt, ldw;
     if (!st_valid || memcmp(&lvp, &r->vp, sizeof lvp)) { vkCmdSetViewport(cb_draw, 0, 1, &r->vp); lvp = r->vp; }
-    if (!st_valid || memcmp(&lsc, &r->sc, sizeof lsc)) { vkCmdSetScissor(cb_draw, 0, 1, dbg == 1 ? &one : &r->sc); lsc = r->sc; }
+    if (!st_valid || memcmp(&lsc, &r->sc, sizeof lsc)) { vkCmdSetScissor(cb_draw, 0, 1, dbg == DBG_SCISSOR ? &one : &r->sc); lsc = r->sc; }
     if (!st_valid || memcmp(lbc, r->bc, sizeof lbc)) { vkCmdSetBlendConstants(cb_draw, r->bc); memcpy(lbc, r->bc, sizeof lbc); }
     static uint8_t lste, lsref, lscm, lswm; static VkCompareOp lsfn; static VkStencilOp lsop[3];
     if (!static_ds) {   /* (static_ds: in the pipeline) */
@@ -1544,7 +1616,7 @@ static void replay(const DrawRec *r, VkPipeline *bound) {
     vk_push(&sets[cur_set].push, cb_draw, VK_PIPELINE_BIND_POINT_GRAPHICS, playout, 0, r->gpu ? 8 : 5, w);
     if (!r->gpu) vkCmdBindVertexBuffers(cb_draw, 0, 1, &vbuf.buf, &r->voff);
     vkCmdBindIndexBuffer(cb_draw, ibuf.buf, r->ioff, VK_INDEX_TYPE_UINT32);
-    if (dbg != 2) vkCmdDrawIndexed(cb_draw, r->nidx, 1, 0, 0, 0);
+    if (dbg != DBG_NODRAW) vkCmdDrawIndexed(cb_draw, r->nidx, 1, 0, 0, 0);
 }
 
 /* A pass whose draws neither test nor write depth or stencil (the game's full-screen effects: four in five passes, with
@@ -1781,7 +1853,20 @@ static void rescale(void) {
     scanouts_drop();
     aliases_drop();
     cur_scale = q_res;
-    fprintf(stderr, "pica_vk: 3D resolution %dx\n", cur_scale);
+    /* the download rings for this resolution (dl_size): every set is idle and its write-backs have landed */
+    const VkDeviceSize want = dl_size(cur_scale);
+    for (int k = 0; k < 8; k++) sets[cur_set].rings[k] = *set_ring_ptr[k];   /* (the current set's rings, as set_next keeps them) */
+    int remade = 0;
+    for (int k = 0; k < NSETS; k++) {
+        Ring *r = &sets[k].rings[5], n;
+        if (r->size == want) continue;
+        if (ring_init(&n, want, VK_BUFFER_USAGE_TRANSFER_DST_BIT, 1)) { ring_free(&n); continue; }   /* (the old one stays) */
+        ring_free(r); *r = n; remade++;
+    }
+    dlbuf = sets[cur_set].rings[5];
+    fprintf(stderr, "pica_vk: 3D resolution %dx", cur_scale);
+    if (remade) fprintf(stderr, " (download rings %u MB each%s)", (unsigned)(want >> 20), depth_blit ? "" : ": depth written back at the internal resolution");
+    fprintf(stderr, "\n");
 }
 
 /* a save state was loaded: every render target and copy is made again from guest memory at its next use (textures are
@@ -2097,6 +2182,7 @@ static void draw_pkey(PKey *k, VkShaderModule vsm, int gpu) {
     k->cmask = (uint8_t)(color_on ? (om >> 8) & 15 : 0); k->has_depth = (uint8_t)(cur_d != NULL); k->gpu_vs = (uint8_t)gpu;
     /* the game's usual depth mapping (Z-buffer, scale -1, offset 0) is exactly the rasterizer's depth: no gl_FragDepth write */
     k->nd = (uint8_t)((R(0x06D) & 1) && (R(0x04D) & 0xffffff) == 0xBF0000 && (R(0x04E) & 0x7fffff) == 0);
+    if (vk_dbg == DBG_NOFRAGDEPTH) k->nd = 1;
     static int nospec = -1; if (nospec < 0) nospec = getenv("PWR_VK_NOSPEC") != NULL;   /* A/B: one generic fragment shader */
     if (!nospec) {
         static const int tb[6] = { 0x0C0, 0x0C8, 0x0D0, 0x0D8, 0x0F0, 0x0F8 };
@@ -2104,6 +2190,9 @@ static void draw_pkey(PKey *k, VkShaderModule vsm, int gpu) {
         for (int i = 0; i < 6; i++) { k->sc[1 + i] = R(tb[i]) & 0x0FFF0FFF; k->sc[7 + i] = R(tb[i] + 1) & 0x777FFF; k->sc[13 + i] = R(tb[i] + 2) & 0x000F000F; k->sc[19 + i] = R(tb[i] + 4) & 0x00030003; }
         k->sc[25] = R(0x0E0) & 0x1FF07; k->sc[26] = R(0x104) & 0x71;   /* alpha test enable + function: the animated reference stays a uniform */ k->sc[27] = pica_sc_texen();
         k->sc[28] = (R(0x08F) & 1) && !(R(0x1C6) & 1); k->sc[29] = R(0x06D) & 1;
+        if (k->sc[28]) pica_sc_light(&k->sc[30]);   /* the material's lighting setup (#37) */
+        if (vk_dbg == DBG_NOLIGHT) { k->sc[28] = 0; memset(&k->sc[30], 0, 8 * sizeof k->sc[0]); }
+        if (vk_dbg == DBG_NOTEX) k->sc[27] = 0;
     }
     if (static_ds) { DsState s; draw_ds(&s); k->ds = ds_pack(&s); }   /* static_ds: in the pipeline */
 }

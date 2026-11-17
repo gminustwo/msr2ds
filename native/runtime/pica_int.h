@@ -22,7 +22,37 @@ static inline uint32_t pica_sc_texen(void) {
     }
     return sc;
 }
-extern uint32_t light_lut[24][256];     /* 0-6 D0 D1 - FR RB RG RR, 8-15 spot per light, 16-23 distance per light */
+/* The fragment shader's lighting constants SC_LC0..SC_LCFG (pica_vk.c, pica_gl.c; shaders/pica.frag fragment_light),
+   given that lighting is on: the lighting setup of a material, folded into its pipeline as Azahar builds a shader for
+   each (#37: on phones the lighting read its whole setup from the uniforms every pixel, the largest per-pixel cost of
+   the scene's passes). Each word keeps only the bits the shader reads for this setup, so setups that light the same
+   share a pipeline: out[0] 0x1C3, [1] 0x1C4, [2] 0x1C2's light count - 1, [3] 0x1D9's light ids, [4] 0x1D0 (absolute
+   inputs), [5] 0x1D1 (input selectors), [6] 0x1D2 (scales), [7] each light's 0x149 bits 0-3 at nibble id. */
+static inline void pica_sc_light(uint32_t out[8]) {
+    static const uint8_t ok[9] = { 0x41, 0x49, 0x43, 0x4a, 0, 0x73, 0x79, 0x4b, 0x7b };   /* LUTs each 0x1C3 configuration has (pica.frag sampler_ok) */
+    static const uint8_t dis_bit[7] = { 16, 17, 18, 19, 22, 21, 20 };                    /* 0x1C4: each LUT's off bit */
+    const uint32_t c0 = pica_regs[0x1C3], c1 = pica_regs[0x1C4], cfg = c0 >> 4 & 15, n = (pica_regs[0x1C2] & 7) + 1;
+    uint32_t have = 0, nib = 0, perm = 0, lcfg = 0, c1m = 0;
+    for (unsigned s = 0; s < 7; s++) {
+        if (s == 2 || cfg >= 9 || !(ok[cfg] >> s & 1)) continue;   /* a LUT this configuration lacks: its bits unread */
+        c1m |= 1u << dis_bit[s];   /* (read either way: set, it turns the LUT off) */
+        if (!(c1 >> dis_bit[s] & 1)) { have |= 1u << s; nib |= 0xFu << 4 * s; }
+    }
+    for (unsigned li = 0; li < n; li++) {
+        const uint32_t id = pica_regs[0x1D9] >> 4 * li & 7;
+        perm |= id << 4 * li;
+        lcfg |= (pica_regs[0x149 + 0x10 * id] & 15) << 4 * id;
+        c1m |= 1u << (8 + id) | 1u << (24 + id);
+        if (!(c1 >> (8 + id) & 1)) nib |= 0xFu << 8;   /* the spot LUT's input (nibble 2) */
+    }
+    uint32_t c0m = 0x080000FC;   /* Fresnel alpha (2, 3), the configuration (4-7), clamp highlights (27) */
+    if (c0 >> 28 & 3) c0m |= 0x70C00000;   /* bump: its mode (28, 29), unit (22, 23) and renormalization (30) */
+    if (!(have >> 3 & 1)) c0m &= ~0xCu;   /* no Fresnel LUT: its alpha bits unused */
+    out[0] = c0 & c0m; out[1] = c1 & c1m; out[2] = n - 1; out[3] = perm;
+    out[4] = pica_regs[0x1D0] & nib & 0x2222222; out[5] = pica_regs[0x1D1] & nib & 0x7777777; out[6] = pica_regs[0x1D2] & nib & 0x7777777;
+    out[7] = lcfg;
+}
+extern uint32_t light_lut[24][256];    /* 0-6 D0 D1 - FR RB RG RR, 8-15 spot per light, 16-23 distance per light */
 extern uint32_t light_lut_version;      /* bumped on every LUT write (lighting or fog) */
 extern uint32_t fog_lut[128];           /* 0x0E8-0x0EF: bits 13-23 value, 0-12 signed difference (both /2047), index 0x0E6 */
 
