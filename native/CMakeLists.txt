@@ -131,12 +131,21 @@ endfunction()
 # The PICA renderer's shaders twice: for Vulkan 1.3 (SPIR-V 1.6; pica.frag's discard becomes a demote to helper
 # invocation) and for the Vulkan 1.1 mode (SPIR-V 1.3, *.11.inc; runtime/vk_rp.h). The presenter's are the same for both
 # (SPIR-V 1.3: they use nothing newer).
-foreach(sh pica.vert pica_vs.vert pica.frag)
+# On Macs pica.frag's generic pipeline makes its selections with selects (pica.frag GENERIC_SELECTS: Apple's GPUs ran it
+# about 13 times as long as a specialised pipeline); elsewhere its SPIR-V is as before.
+if (APPLE)
+  set(MSR_FRAG_DEFS -DGENERIC_SELECTS)
+else()
+  set(MSR_FRAG_DEFS "")
+endif()
+foreach(sh pica.vert pica_vs.vert)
   msr_shader(${sh}.inc ${sh} vulkan1.3)
   msr_shader(${sh}.11.inc ${sh} vulkan1.1)
 endforeach()
-msr_shader(pica_nd.frag.inc pica.frag vulkan1.3 -DNO_FRAG_DEPTH)
-msr_shader(pica_nd.frag.11.inc pica.frag vulkan1.1 -DNO_FRAG_DEPTH)
+msr_shader(pica.frag.inc pica.frag vulkan1.3 ${MSR_FRAG_DEFS})
+msr_shader(pica.frag.11.inc pica.frag vulkan1.1 ${MSR_FRAG_DEFS})
+msr_shader(pica_nd.frag.inc pica.frag vulkan1.3 -DNO_FRAG_DEPTH ${MSR_FRAG_DEFS})
+msr_shader(pica_nd.frag.11.inc pica.frag vulkan1.1 -DNO_FRAG_DEPTH ${MSR_FRAG_DEFS})
 msr_shader(pica_simple.frag.inc pica_simple.frag vulkan1.1)   # PWR_VK_DBG=simplefs (a GPU cost test), for both modes
 foreach(sh present.vert present.frag fsr_easu.frag fsr_rcas.frag msr.vert msr.frag hdr.frag)
   msr_shader(${sh}.inc ${sh} vulkan1.1)
