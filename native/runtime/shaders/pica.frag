@@ -100,15 +100,18 @@ float lut_scale(uint s) { return s == 0u ? 1.0 : s == 1u ? 2.0 : s == 2u ? 4.0 :
 vec3 qrot(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + v * q.w); }
 
 // The lighting setup, specialized (a pipeline per material's setup, as Azahar's shader per setup: with the light count and
-// ids constants the loop below unrolls and every register read in it is at a fixed place; #37) or from the registers
-uint L_C0() { return SC_ON != 0u ? SC_LC0 : R(0x1C3u); }
-uint L_C1() { return SC_ON != 0u ? SC_LC1 : R(0x1C4u); }
-uint L_N() { return SC_ON != 0u ? SC_LNUM + 1u : (R(0x1C2u) & 7u) + 1u; }
-uint L_ID(uint li) { return ((SC_ON != 0u ? SC_LPERM : R(0x1D9u)) >> (4u * li)) & 7u; }
-uint L_CFG(uint id) { return SC_ON != 0u ? (SC_LCFG >> (4u * id)) & 15u : R(0x149u + 0x10u * id) & 15u; }
+// ids constants the light loop unrolls and every register read in it is at a fixed place; #37), or from the registers:
+// SC_ON = 0, or SC_LNUM's bit 31 (pica_vk.c leaves it to the registers on Adreno GPUs, whose shader compiler crashed on
+// the specialized setup in 2.0.9: #37, #58; there the shader is 2.0.8's)
+bool L_SPEC() { return SC_ON != 0u && SC_LNUM < 0x80000000u; }
+uint L_C0() { return L_SPEC() ? SC_LC0 : R(0x1C3u); }
+uint L_C1() { return L_SPEC() ? SC_LC1 : R(0x1C4u); }
+uint L_N() { return L_SPEC() ? SC_LNUM + 1u : (R(0x1C2u) & 7u) + 1u; }
+uint L_ID(uint li) { return ((L_SPEC() ? SC_LPERM : R(0x1D9u)) >> (4u * li)) & 7u; }
+uint L_CFG(uint id) { return L_SPEC() ? (SC_LCFG >> (4u * id)) & 15u : R(0x149u + 0x10u * id) & 15u; }
 
 float lut_value(uint nib, uint lut_id, vec3 normal, vec3 nview, vec3 lv, vec3 half_v, vec3 tangent, uint lid, bool two_sided) {
-    uint inr = SC_ON != 0u ? SC_LIN : R(0x1D1u), absr = SC_ON != 0u ? SC_LABS : R(0x1D0u), scr = SC_ON != 0u ? SC_LSCL : R(0x1D2u);
+    uint inr = L_SPEC() ? SC_LIN : R(0x1D1u), absr = L_SPEC() ? SC_LABS : R(0x1D0u), scr = L_SPEC() ? SC_LSCL : R(0x1D2u);
     uint input_sel = (inr >> (4u * nib)) & 7u;
     bool use_abs = ((absr >> (1u + 4u * nib)) & 1u) == 0u;
     float r;
@@ -123,48 +126,6 @@ float lut_value(uint nib, uint lut_id, vec3 normal, vec3 nview, vec3 lv, vec3 ha
     if (use_abs) { r = two_sided ? abs(r) : max(r, 0.0); float fl = clamp(floor(r * 256.0), 0.0, 255.0); idx = uint(fl); dl = r * 256.0 - fl; }
     else { float fl = clamp(floor(r * 128.0), -128.0, 127.0); idx = uint(int(fl)) & 255u; dl = r * 128.0 - fl; }
     return lut_lookup(lut_id, idx, dl) * lut_scale((scr >> (4u * nib)) & 7u);
-}
-
-// one light (the li-th of the setup) added to the sums
-void light_one(uint li, uint c0, uint c1, bool have[7], vec3 normal, vec3 tangent, vec3 view, vec3 nview,
-               inout vec3 dsum, inout vec3 ssum, inout float dalpha, inout float salpha) {
-    uint id = L_ID(li), b = 0x140u + 0x10u * id;
-    uint lcfg = L_CFG(id);
-    bool directional = (lcfg & 1u) != 0u, two_sided = ((lcfg >> 1) & 1u) != 0u;
-    vec3 pos = u.lpos[id].xyz;
-    vec3 lv = normalize(directional ? pos : pos + view);
-    vec3 half_v = nview + lv;
-    float dist_att = 1.0, spot_att = 1.0;
-    if (((c1 >> (24u + id)) & 1u) == 0u) {
-        float d = length(view + pos);
-        float sm = clamp(u.latt[id].y * d + u.latt[id].x, 0.0, 1.0);
-        float fl = min(floor(sm * 256.0), 255.0);
-        dist_att = lut_lookup(16u + id, uint(fl), sm * 256.0 - fl);
-    }
-    if (((c1 >> (8u + id)) & 1u) == 0u) spot_att = lut_value(2u, 8u + id, normal, nview, lv, half_v, tangent, id, two_sided);
-    float d0 = 1.0, d1 = 1.0; vec3 refl;
-    if (have[0]) d0 = lut_value(0u, 0u, normal, nview, lv, half_v, tangent, id, two_sided);
-    refl.x = have[6] ? lut_value(6u, 6u, normal, nview, lv, half_v, tangent, id, two_sided) : 1.0;
-    refl.y = have[5] ? lut_value(5u, 5u, normal, nview, lv, half_v, tangent, id, two_sided) : refl.x;
-    refl.z = have[4] ? lut_value(4u, 4u, normal, nview, lv, half_v, tangent, id, two_sided) : refl.x;
-    if (have[1]) d1 = lut_value(1u, 1u, normal, nview, lv, half_v, tangent, id, two_sided);
-    if (have[3]) {
-        float fr = lut_value(3u, 3u, normal, nview, lv, half_v, tangent, id, two_sided);
-        if (((c0 >> 2) & 1u) != 0u) dalpha = fr;
-        if (((c0 >> 3) & 1u) != 0u) salpha = fr;
-    }
-    vec3 spec0 = light_color(R(b)) * d0;
-    vec3 spec1 = light_color(R(b + 1u)) * refl * d1;
-    float ndl = dot(lv, normal); ndl = two_sided ? abs(ndl) : max(ndl, 0.0);
-    float clamp_h = ((c0 >> 27) & 1u) != 0u ? (ndl == 0.0 ? 0.0 : 1.0) : 1.0;
-    if (((lcfg >> 2) & 3u) != 0u) {
-        float g = dot(half_v, half_v); g = g == 0.0 ? 0.0 : min(ndl / g, 1.0);
-        if (((lcfg >> 2) & 1u) != 0u) spec0 *= g;
-        if (((lcfg >> 3) & 1u) != 0u) spec1 *= g;
-    }
-    float att = dist_att * spot_att;
-    dsum += (light_color(R(b + 2u)) * ndl + light_color(R(b + 3u))) * att;
-    ssum += (spec0 + spec1) * clamp_h * att;
 }
 
 void fragment_light(vec4 tex[3], out vec4 prim, out vec4 sec) {
@@ -183,12 +144,51 @@ void fragment_light(vec4 tex[3], out vec4 prim, out vec4 sec) {
     float dalpha = 1.0, salpha = 1.0;
     uint nlights = L_N();
     const uint dis_bit[7] = uint[7](16u, 17u, 18u, 19u, 22u, 21u, 20u);
-    bool have[7];   // the LUTs in use (the same for every light)
-    UNROLL for (uint s = 0u; s < 7u; s++) have[s] = s != 2u && ((c1 >> dis_bit[s]) & 1u) == 0u && sampler_ok(cfg, s);
-    // specialized, the light count is a constant: the driver unrolls the loop (the hint), and each light's id, its register
-    // reads and its LUTs become constants. (Unrolled to 8 here, the SPIR-V was 2.6 times as big, all of it for the driver
-    // to read at each pipeline.)
-    UNROLL for (uint li = 0u; li < nlights; li++) light_one(li, c0, c1, have, normal, tangent, view, nview, dsum, ssum, dalpha, salpha);
+    // The loop as 2.0.8 wrote it, its reads of the setup through L_*(): specialized, the light count is a constant and the
+    // driver unrolls it, each light's id, register reads and LUTs constants. (2.0.9 moved its body into a function taking
+    // the LUT array, with unroll hints on this loop and the one over the LUTs; Adreno 830's compiler crashed on that, #37,
+    // #58, so no hints or functions here.)
+    for (uint li = 0u; li < nlights; li++) {
+        uint id = L_ID(li), b = 0x140u + 0x10u * id;
+        uint lcfg = L_CFG(id);
+        bool directional = (lcfg & 1u) != 0u, two_sided = ((lcfg >> 1) & 1u) != 0u;
+        vec3 pos = u.lpos[id].xyz;
+        vec3 lv = normalize(directional ? pos : pos + view);
+        vec3 half_v = nview + lv;
+        bool have[7];
+        for (uint s = 0u; s < 7u; s++) have[s] = s != 2u && ((c1 >> dis_bit[s]) & 1u) == 0u && sampler_ok(cfg, s);
+        float dist_att = 1.0, spot_att = 1.0;
+        if (((c1 >> (24u + id)) & 1u) == 0u) {
+            float d = length(view + pos);
+            float sm = clamp(u.latt[id].y * d + u.latt[id].x, 0.0, 1.0);
+            float fl = min(floor(sm * 256.0), 255.0);
+            dist_att = lut_lookup(16u + id, uint(fl), sm * 256.0 - fl);
+        }
+        if (((c1 >> (8u + id)) & 1u) == 0u) spot_att = lut_value(2u, 8u + id, normal, nview, lv, half_v, tangent, id, two_sided);
+        float d0 = 1.0, d1 = 1.0; vec3 refl;
+        if (have[0]) d0 = lut_value(0u, 0u, normal, nview, lv, half_v, tangent, id, two_sided);
+        refl.x = have[6] ? lut_value(6u, 6u, normal, nview, lv, half_v, tangent, id, two_sided) : 1.0;
+        refl.y = have[5] ? lut_value(5u, 5u, normal, nview, lv, half_v, tangent, id, two_sided) : refl.x;
+        refl.z = have[4] ? lut_value(4u, 4u, normal, nview, lv, half_v, tangent, id, two_sided) : refl.x;
+        if (have[1]) d1 = lut_value(1u, 1u, normal, nview, lv, half_v, tangent, id, two_sided);
+        if (have[3]) {
+            float fr = lut_value(3u, 3u, normal, nview, lv, half_v, tangent, id, two_sided);
+            if (((c0 >> 2) & 1u) != 0u) dalpha = fr;
+            if (((c0 >> 3) & 1u) != 0u) salpha = fr;
+        }
+        vec3 spec0 = light_color(R(b)) * d0;
+        vec3 spec1 = light_color(R(b + 1u)) * refl * d1;
+        float ndl = dot(lv, normal); ndl = two_sided ? abs(ndl) : max(ndl, 0.0);
+        float clamp_h = ((c0 >> 27) & 1u) != 0u ? (ndl == 0.0 ? 0.0 : 1.0) : 1.0;
+        if (((lcfg >> 2) & 3u) != 0u) {
+            float g = dot(half_v, half_v); g = g == 0.0 ? 0.0 : min(ndl / g, 1.0);
+            if (((lcfg >> 2) & 1u) != 0u) spec0 *= g;
+            if (((lcfg >> 3) & 1u) != 0u) spec1 *= g;
+        }
+        float att = dist_att * spot_att;
+        dsum += (light_color(R(b + 2u)) * ndl + light_color(R(b + 3u))) * att;
+        ssum += (spec0 + spec1) * clamp_h * att;
+    }
     dsum += light_color(R(0x1C0u));
     prim = clamp(vec4(dsum, dalpha), 0.0, 1.0);
     sec = clamp(vec4(ssum, salpha), 0.0, 1.0);

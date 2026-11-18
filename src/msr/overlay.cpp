@@ -880,8 +880,13 @@ void Overlay::DrawControlHints(float width, float height) {
     const bool menu = static_cast<P::Bottom>(P::bottom.load()) == P::Bottom::Menu &&
                       P::panel_visible.load() && !P::menu_unasked.load();
     const auto page = static_cast<P::Page>(P::page.load());
-    // The menu's "Menu help text" option turns off every set, touch mode's too.
+    // The menu's "Menu help text" option turns off every set, touch mode's too. (msr-native has no such option: touch
+    // mode's, the only set it shows, is always on.)
+#ifdef MSR_NATIVE
+    const bool enabled = true;
+#else
     const bool enabled = GetPlayerSettings().control_hints;
+#endif
     int set = -1;
     if (enabled && P::touch_mode.load()) {
         set = menu && page == P::Page::MapPins && !P::world_map.load() ? MapPinsTouch : Touch;
@@ -1862,11 +1867,9 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                  "keep their shape, and the map fills its width. On by default.");
             row("Title menu background");
             player_changed |= ImGui::SliderFloat("##backdrop", &p.menu_backdrop, 0.f, 1.f, "%.2f");
+#ifndef MSR_NATIVE   // (msr-native shows no help text beside its menus: its option is gone, touch navigation's kept on)
             row("Menu help text");
             player_changed |= OnOff("##hints", &p.control_hints);
-#ifdef MSR_NATIVE
-            Note("Help text for touch navigation (T on the keyboard).");
-#else
             Note("Help text beside the pause menu and file select, and in touch mode.");
 #endif
             end_tab_item();

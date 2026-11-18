@@ -263,7 +263,8 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   the file select's bin (Icon_Erase, `texturehudopaque` 110,378) and the 3DS Y's icon (drawn as the player's pad names
   that button: X on Xbox, Square on PlayStation). They are pieces added to the interface's (with the anchors of those
   they sit by), so they fade, slide and fit as those do. msr-native shows no help column beside its menus any more
-  (`overlay.cpp DrawControlHints`): only touch navigation's (T) is named, its "Menu help text" option kept for it.
+  (`overlay.cpp DrawControlHints`): only touch navigation's (T) is named, always (the "Menu help text" option is gone
+  from its settings: the user, "you can remove the menu help text from the launcher menu").
   (GuiQuads lit a chosen button's base by its name, and with a pin chosen, which has none, lit every unnamed piece: the
   icons came out blue. It needs a base now.)
 - Save states (`state.c`, `state.h`): the menu's Quick save and Quick load, F5 and F8. The guest's memory (the
@@ -602,6 +603,20 @@ depth D, without F)`, T less D and F being the copies, read-backs and uploads be
 model an original 3DS; reporting a 2DS changes nothing: the game never asks), and the eyes' copies feed each other's
 effects, so leaving one out would take the game's own code. Image layouts stay GENERAL (Adreno may keep such images
 uncompressed): not measured, as no phone was at hand.
+
+**The lighting setup per material, not on Adreno (#37, #58, 2026-11-17).** 2.0.9 built each material's lighting setup
+into its fragment shader (pica_int.h `pica_sc_light`: specialisation constants 30-37), which took the scene's GPU time
+on a Ryzen's integrated Radeon at 4x from 23.1 to 17.9 ms. On Adreno 830s (driver 512.800.64 and .72) the shader
+compiler crashed building it: a `pica_vk: pipeline creation failed`, then SIGSEGV in `libllvm-qgl.so` inside
+`vkCreateGraphicsPipelines` at the title's first lit draw (and at the start, preloading such pipelines from
+`pwr_shaders.bin`); `PWR_VK_DBG=nolight` (the constants zeroed) and `simplefs` ran. Now:
+- pica.frag's light loop is 2.0.8's again (2.0.9 had moved its body into a function taking the LUT array, with unroll
+  hints on it and on the loop over the LUTs), its reads of the setup through `L_*()`. Specialized, the driver still
+  unrolls it: 19.1 ms there with the setup built in, 25.1 without.
+- On Qualcomm GPUs (vendor 0x5143) lighting reads the registers, as in 2.0.8: the key's `SC_LNUM` gets bit 31
+  (pica.frag `L_SPEC`), so lit pipelines no longer multiply per material either, and saved keys with a setup built in are
+  not preloaded. The log says `pica_vk: lighting read from the registers, ...`; `PWR_VK_LIGHT_SPEC=1` builds it in there
+  (to try the rewritten loop on a phone), `=0` leaves it out elsewhere.
 
 Debugging switches (environment, as in Woohoo! Flight School; on Android `user/env.txt` in the app's folder, one
 `NAME=value` a line, the log listing each): `PWR_SKIP=<first>-<last>` (drop those draws of every

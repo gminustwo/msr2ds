@@ -94,6 +94,8 @@ static const uint32_t frag_simple_spv[] =   /* PWR_VK_DBG=simplefs, in both mode
    shader costs; on a Ryzen's integrated Radeon at 4x, 4.2 of 18.4 ms a frame) */
 enum { DBG_NONE, DBG_SCISSOR, DBG_NODRAW, DBG_HALF, DBG_SIMPLEFS, DBG_NOLIGHT, DBG_NOTEX, DBG_NOFRAGDEPTH };
 static int vk_dbg;
+/* the lighting setup in the pipeline key (pica_sc_light), else read from the registers (SC_LNUM bit 31): pica_vk_init */
+static int light_spec = 1;
 
 static VkPhysicalDevice phys; static VkDevice dev; static VkQueue queue; static uint32_t qfam;
 /* This thread's fences, whose submission video.c may still hold (video_queue_submit): a wait has it submitted first, a
@@ -1363,6 +1365,7 @@ static void seed_load(void) {
             k.vs = o.vs; k.blend = o.blend; k.blend_on = o.blend_on; k.cmask = o.cmask; k.has_depth = o.has_depth; k.gpu_vs = o.gpu_vs; k.nd = o.nd;
             memcpy(k.sc, o.sc, sizeof o.sc); k.ds = o.ds;
         } else if (fread(&k, sizeof k, 1, f) != 1) break;
+        if (!light_spec && k.sc[28] && k.sc[32] < 0x80000000u) continue;   /* (a lighting setup built in: not here) */
         VkShaderModule m = kind == 0 ? vs_mod : kind == 1 ? vsi_mod : pica_vsgen_preload(dev, vkey, NULL, 0);
         if (!m) continue;
         k.vs = (uint64_t)(uintptr_t)m;
@@ -1511,6 +1514,16 @@ static int init(void) {
             sci.codeSize = sizeof frag_simple_spv; sci.pCode = frag_simple_spv;
             if (!vkCreateShaderModule(dev, &sci, NULL, &m)) fs_mod = fs_nd_mod = m;
         }
+    }
+    {   /* the lighting setup per material (#37), not on Adreno GPUs: in 2.0.9 an Adreno 830's shader compiler crashed
+           building it (#37, #58: SIGSEGV in libllvm-qgl.so inside vkCreateGraphicsPipelines at the first lit draw, after a
+           "pipeline creation failed"); there lighting reads the registers, as 2.0.8 did. PWR_VK_LIGHT_SPEC=0|1 chooses. */
+        VkPhysicalDeviceProperties dp; vkGetPhysicalDeviceProperties(phys, &dp);
+        const char *e = getenv("PWR_VK_LIGHT_SPEC");
+        light_spec = e ? atoi(e) != 0 : dp.vendorID != 0x5143;
+        if (!light_spec)
+            fprintf(stderr, "pica_vk: lighting read from the registers, not built into each material's shader%s\n",
+                    e ? " (PWR_VK_LIGHT_SPEC=0)" : " (Adreno; PWR_VK_LIGHT_SPEC=1 builds it in)");
     }
     {   /* pipelines compiled in earlier runs (the driver checks that the data fits this GPU and driver) */
         size_t n = 0; void *data = NULL; FILE *f = fopen("pwr_pipelines.bin", "rb");
@@ -2190,7 +2203,8 @@ static void draw_pkey(PKey *k, VkShaderModule vsm, int gpu) {
         for (int i = 0; i < 6; i++) { k->sc[1 + i] = R(tb[i]) & 0x0FFF0FFF; k->sc[7 + i] = R(tb[i] + 1) & 0x777FFF; k->sc[13 + i] = R(tb[i] + 2) & 0x000F000F; k->sc[19 + i] = R(tb[i] + 4) & 0x00030003; }
         k->sc[25] = R(0x0E0) & 0x1FF07; k->sc[26] = R(0x104) & 0x71;   /* alpha test enable + function: the animated reference stays a uniform */ k->sc[27] = pica_sc_texen();
         k->sc[28] = (R(0x08F) & 1) && !(R(0x1C6) & 1); k->sc[29] = R(0x06D) & 1;
-        if (k->sc[28]) pica_sc_light(&k->sc[30]);   /* the material's lighting setup (#37) */
+        if (k->sc[28] && light_spec) pica_sc_light(&k->sc[30]);   /* the material's lighting setup (#37) */
+        else if (k->sc[28]) k->sc[32] = 0x80000000u;               /* ...or the registers' (pica.frag L_SPEC) */
         if (vk_dbg == DBG_NOLIGHT) { k->sc[28] = 0; memset(&k->sc[30], 0, 8 * sizeof k->sc[0]); }
         if (vk_dbg == DBG_NOTEX) k->sc[27] = 0;
     }
