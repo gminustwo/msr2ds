@@ -649,6 +649,28 @@ safe levels' marker naming `msr-native.log`) has the launcher go back to the sys
 `pwr_pipelines.bin` is used only when its header has this GPU's vendor, device and cache UUID (a switch of drivers on the
 same GPU: the driver's own check of it is not relied on). Not tried on a phone yet: no Adreno device here.
 
+**Crashes and memory on Windows (#70, 2026-11-18).** An i3-1215U (Intel UHD, 3.7 GB of RAM) slowed down after a while,
+then crashed with `exception c0000005 at ucrtbase.dll+0x511eb`, and the log could say nothing more: which thread, what it
+touched, how it got there (the offset names nothing without that Windows' own ucrtbase; here it lands in `ldexp`). The
+crash report (main.c `log_flush_on_crash`) now says which thread (the main thread or the GX thread, by the stages'
+thread IDs, or a game's thread `kN`), the address an access violation read or wrote, and on x64 the calls that led there
+(unwound from the crash's context with `RtlLookupFunctionEntry`/`RtlVirtualUnwind`), each as module+offset with the
+module's nearest exported name: a `memcpy` into address 0x10 on the main thread logged `#0 ucrtbase.dll+0xee4b3
+(memmove+0x1e3)`, `#1 msr-native.exe+0x216218`, ... Every 2 s, `native: memory: this program N MB committed, M MB in
+RAM; the computer ... of its commit limit` (as Linux and Android have theirs). Measured here in play at 2x: about 1.8 GB
+committed and 0.9 GB in RAM on the Ryzen's integrated Radeon (`PWR_VK_DEVICE=1`; 2.2 GB on the RTX 5090), steady; at 1x
+only about 70 MB less. The renderer's own Vulkan memory was 531 MB in 161 allocations, about 500 MB of it the twelve
+batch sets' rings (43 MB a set at 2x: vertices 4, indices 4, uniforms 4, light tables 2, uploads 8, downloads ~12,
+attributes 8, programs 2 MB), host-visible and so system RAM on integrated graphics. Measured over the title, two saves
+in play (walking, the pause map) at 2x, the most a batch used / the largest single allocation: indices 342 / 54 KB,
+uniforms 896 / 2.3 KB, light tables 294 / 24.5 KB, attributes 1.4 MB / 432 KB, programs 297 / 16.9 KB, uploads 8.1 /
+5.3 MB (full while loading), downloads 750 / 375 KB, vertices unused (GPU vertex shaders). A full ring only ends the
+batch sooner, but a draw that does not fit an empty one is dropped. Now indices 1 MB (a draw's most: 768 KB), uniforms
+2, light tables 1, attributes 4 and programs 1 MB, each at least 2.3x its batch's most: 32 MB a set, about 130 MB less
+(1732 MB committed on the integrated Radeon, from about 1815). The same runs again: the same peaks, the same three or
+four full rings (uploads, while loading), no draw dropped, 30 of 30 FPS. Vertices (the CPU-shaded draws: shaders not
+yet translated, Android's interpreter), downloads (a whole target's read-back must fit) and uploads are as they were.
+
 Debugging switches (environment, as in Woohoo! Flight School; on Android `user/env.txt` in the app's folder, one
 `NAME=value` a line, the log listing each): `PWR_SKIP=<first>-<last>` (drop those draws of every
 frame, counted from each top-screen swap: bisects an artifact to its draws; with `PWR_SKIP_DUMP=<frame>` it prints their

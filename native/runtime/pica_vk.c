@@ -1545,12 +1545,19 @@ static int init(void) {
         free(data);
     }
     for (int k = NSETS - 1; k >= 0; k--) {   /* each set's rings (set 0's left current) */
-        /* sizes for one batch, 5-10x what a gameplay batch uses (a full ring ends it early); a big upload gets its own
-           buffer (up_alloc); downloads are at 1x, except a depth target's when its format cannot be blitted (dl_size) */
-        if (ring_init(&vbuf, 4u << 20, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 0) || ring_init(&ibuf, 4u << 20, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 0) ||
-            ring_init(&ubuf, 4u << 20, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 0) || ring_init(&lbuf, 2u << 20, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0) ||
+        /* sizes for one batch (a full ring ends it early; a draw must fit an empty one, or it is dropped); a big upload
+           gets its own buffer (up_alloc); downloads are at 1x, except a depth target's when its format cannot be blitted
+           (dl_size). The twelve sets' rings are host-visible memory, which integrated graphics take from the computer's
+           RAM (#70: a laptop with 3.7 GB): about 43 MB a set at 2x until 2.1.0 (500 MB in all), now 32 MB. Measured
+           (2026-11-18, the title, two saves in play and the pause map, at 2x) as the most a batch used / the largest single
+           allocation: indices 342 / 54 KB (at most 768 KB: 3 x 65536 a draw), uniforms 896 / 2.3 KB, light tables 294 /
+           24.5 KB, attributes 1.4 MB / 432 KB, programs 297 / 16.9 KB; each ring keeps at least 2.3x the batch's. Vertices
+           (the CPU-shaded draws: shaders not yet translated, Android's interpreter) and downloads are as they were;
+           uploads filled their 8 MB while loading. */
+        if (ring_init(&vbuf, 4u << 20, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, 0) || ring_init(&ibuf, 1u << 20, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, 0) ||
+            ring_init(&ubuf, 2u << 20, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 0) || ring_init(&lbuf, 1u << 20, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0) ||
             ring_init(&upbuf, 8u << 20, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 0) || ring_init(&dlbuf, dl_size(cur_scale), VK_BUFFER_USAGE_TRANSFER_DST_BIT, 1) ||
-            ring_init(&abuf, 8u << 20, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0) || ring_init(&pbuf, 2u << 20, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0)) return -1;
+            ring_init(&abuf, 4u << 20, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0) || ring_init(&pbuf, 1u << 20, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0)) return -1;
         for (int r = 0; r < 8; r++) sets[k].rings[r] = *set_ring_ptr[r];
     }
     gpu_vs = getenv("PWR_VK_CPU_VS") == NULL;
