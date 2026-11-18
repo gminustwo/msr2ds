@@ -1515,19 +1515,31 @@ static int init(void) {
             if (!vkCreateShaderModule(dev, &sci, NULL, &m)) fs_mod = fs_nd_mod = m;
         }
     }
-    {   /* the lighting setup per material (#37), not on Adreno GPUs: in 2.0.9 an Adreno 830's shader compiler crashed
-           building it (#37, #58: SIGSEGV in libllvm-qgl.so inside vkCreateGraphicsPipelines at the first lit draw, after a
-           "pipeline creation failed"); there lighting reads the registers, as 2.0.8 did. PWR_VK_LIGHT_SPEC=0|1 chooses. */
-        VkPhysicalDeviceProperties dp; vkGetPhysicalDeviceProperties(phys, &dp);
+    {   /* the lighting setup per material (#37), not with Qualcomm's own Adreno driver: in 2.0.9 an Adreno 830's shader
+           compiler crashed building it (#37, #58: SIGSEGV in libllvm-qgl.so inside vkCreateGraphicsPipelines at the first
+           lit draw, after a "pipeline creation failed"); there lighting reads the registers, as 2.0.8 did. Mesa's Turnip on
+           the same GPUs (a GPU driver the player installed: vk_load.c) has a compiler of its own. PWR_VK_LIGHT_SPEC=0|1
+           chooses. */
         const char *e = getenv("PWR_VK_LIGHT_SPEC");
-        light_spec = e ? atoi(e) != 0 : dp.vendorID != 0x5143;
+        light_spec = e ? atoi(e) != 0 : g_vk_driver_id != VK_DRIVER_ID_QUALCOMM_PROPRIETARY;
         if (!light_spec)
             fprintf(stderr, "pica_vk: lighting read from the registers, not built into each material's shader%s\n",
-                    e ? " (PWR_VK_LIGHT_SPEC=0)" : " (Adreno; PWR_VK_LIGHT_SPEC=1 builds it in)");
+                    e ? " (PWR_VK_LIGHT_SPEC=0)" : " (Qualcomm's Adreno driver; PWR_VK_LIGHT_SPEC=1 builds it in)");
     }
     {   /* pipelines compiled in earlier runs (the driver checks that the data fits this GPU and driver) */
         size_t n = 0; void *data = NULL; FILE *f = fopen("pwr_pipelines.bin", "rb");
         if (f) { fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET); if (sz > 0 && (data = malloc((size_t)sz)) && fread(data, 1, (size_t)sz, f) == (size_t)sz) n = (size_t)sz; fclose(f); }
+        if (n) {   /* another GPU's or driver's (Android: a GPU driver the player switched to, vk_load.c, on the same GPU):
+                      not given to this one, whose check of it is then not relied on. The header: size, version, vendor,
+                      device (32-bit, least significant byte first), then the cache's UUID. */
+            VkPhysicalDeviceProperties dp; vkGetPhysicalDeviceProperties(phys, &dp);
+            const uint8_t *h = data; uint32_t hv[4] = { 0 };
+            if (n >= 32) for (int i = 0; i < 4; i++) hv[i] = (uint32_t)h[4 * i] | (uint32_t)h[4 * i + 1] << 8 | (uint32_t)h[4 * i + 2] << 16 | (uint32_t)h[4 * i + 3] << 24;
+            if (n < 32 || hv[0] < 32 || hv[2] != dp.vendorID || hv[3] != dp.deviceID || memcmp(h + 16, dp.pipelineCacheUUID, VK_UUID_SIZE)) {
+                fprintf(stderr, "pica_vk: pwr_pipelines.bin is another GPU's or driver's: its pipelines are compiled again\n");
+                n = 0;
+            }
+        }
         VkPipelineCacheCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .initialDataSize = n, .pInitialData = n ? data : NULL };
         if (vkCreatePipelineCache(dev, &pci, NULL, &pcache)) { pci.initialDataSize = 0; pci.pInitialData = NULL; vkCreatePipelineCache(dev, &pci, NULL, &pcache); }
         free(data);

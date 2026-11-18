@@ -2103,6 +2103,49 @@ void Overlay::DrawLauncher(const LauncherSnapshot& l, float label_width,
     ImGui::EndGroup();
     ImGui::Spacing();
 
+    // msr-native's Android app on an Adreno GPU: the game's Vulkan driver, the system's or one the player installed
+    if (l.gpu_driver_option) {
+        Label("GPU driver", label_width);
+        ImGui::BeginGroup();
+        const float half = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) / 2.f;
+        std::string current = "System driver";
+        for (const auto& d : l.gpu_drivers) {
+            if (d.first == l.gpu_driver) {
+                current = d.second;
+            }
+        }
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##gpudriver", current.c_str())) {
+            if (ImGui::Selectable("System driver", l.gpu_driver.empty())) {
+                Act(OverlayAction::Kind::LauncherGpuDriver, 0, "");
+            }
+            for (const auto& d : l.gpu_drivers) {
+                if (ImGui::Selectable((d.second + "##" + d.first).c_str(), d.first == l.gpu_driver)) {
+                    Act(OverlayAction::Kind::LauncherGpuDriver, 0, d.first);
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::Button("Install a driver...", {half, 0.f})) {
+            Act(OverlayAction::Kind::LauncherGpuDriverInstall);
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(l.gpu_driver.empty());
+        if (ImGui::Button("Remove it", {half, 0.f})) {
+            Act(OverlayAction::Kind::LauncherGpuDriverRemove, 0, l.gpu_driver);
+        }
+        ImGui::EndDisabled();
+        ImGui::PushTextWrapPos(0.f);
+        if (!l.gpu_driver_note.empty()) {
+            ImGui::TextColored(l.gpu_driver_bad ? bad : good, "%s", l.gpu_driver_note.c_str());
+        }
+        Note("For the game: a driver package (.zip) made for emulators like Azahar and Eden, such as Mesa's Turnip. If "
+             "the game closes or draws wrongly with it, choose System driver.");
+        ImGui::PopTextWrapPos();
+        ImGui::EndGroup();
+        ImGui::Spacing();
+    }
+
     // Saves from a 3DS (a Checkpoint or JKSM backup) or another emulator, in place of the ones here. The
     // confirmation's buttons take the IDs of the two they replace, so a pad's focus stays on the first.
     using Saves = LauncherSnapshot::Saves;
