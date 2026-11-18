@@ -334,8 +334,7 @@ same `settings.ini`; LB and RB switch tabs.
   panel size; **Fit the pause screen to the window** (on by default: the pause
   screen fills the window; its bars and background reach the edges, its
   buttons, text and columns keep their shape, and the map fills its width,
-  showing more of the area); title menu background; menu help text (touch
-  navigation's).
+  showing more of the area); title menu background.
 - **Controls:** every 3DS control with its key and controller button: select one
   and press the new key or button (Esc cancels). See [Controls](#controls).
 - **Mods:** game mods (see [Game mods and Randovania](#game-mods-and-randovania)).
