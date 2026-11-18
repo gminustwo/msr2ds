@@ -77,6 +77,16 @@ static void tex_upload(const Tex *t, const uint8_t *px) {
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4); glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, t->w, t->h, GL_RGBA, GL_UNSIGNED_BYTE, px);
 }
+/* The game's atlases (msr_gui_atlas: its sprites and fonts, the compositor's quads with source 3), each uploaded when it is new;
+   NULL until there is one */
+static Tex hud_atlas[MSR_ATLAS_COUNT]; static unsigned hud_atlas_ver[MSR_ATLAS_COUNT];
+static const Tex *hud_atlas_tex(int a) {
+    const uint8_t *px; uint32_t w, h;
+    const unsigned ver = msr_gui_atlas(a, &px, &w, &h);
+    if (!ver) return NULL;
+    if (ver != hud_atlas_ver[a]) { hud_atlas_ver[a] = ver; tex_size(&hud_atlas[a], (int)w, (int)h); tex_upload(&hud_atlas[a], px); }
+    return hud_atlas[a].id ? &hud_atlas[a] : NULL;
+}
 
 /* draws go into this texture from here (fbo_draw) */
 static void draw_into(const Tex *t) {
@@ -269,6 +279,8 @@ void vgl_frame(const VglFrame *f) {
     }
     const Tex *sbeams = f->mf && f->mf->count ? beam_slots(sb) : sb;   /* R held: the beam slots before it */
     const Tex *smenu = f->mf && f->mf->count ? menu_panel(sb) : sb;    /* the menu as last seen */
+    const Tex *satlas[MSR_ATLAS_COUNT];   /* the game's atlases (its sprites and fonts) */
+    for (int a = 0; a < MSR_ATLAS_COUNT; a++) satlas[a] = f->mf && f->mf->count ? hud_atlas_tex(a) : NULL;
     VidRect rt = f->rt, rb = f->rb;
     /* the screens' passes: alpha comes from the source (the screens write 1), colour blends by it, as video.c's pipelines */
     glDisable(GL_BLEND);
@@ -294,7 +306,10 @@ void vgl_frame(const VglFrame *f) {
         glUseProgram(prog_msr);
         for (int i = 0; i < f->mf->count; i++) {
             const int source = f->mf->quads[i].source;
-            msr_quad(&f->mf->quads[i], source == 1 ? sbeams : source == 2 ? smenu : sb, W, H);
+            const int a = f->mf->quads[i].atlas;
+            const Tex *atlas = source == 3 && a >= 0 && a < MSR_ATLAS_COUNT ? satlas[a] : NULL;
+            if (source == 3 && !atlas) continue;
+            msr_quad(&f->mf->quads[i], source == 1 ? sbeams : source == 2 ? smenu : source == 3 ? atlas : sb, W, H);
         }
     }
     if (f->toast_show && tex_toast.id)   /* the layout label, top centre (pixel for pixel) */

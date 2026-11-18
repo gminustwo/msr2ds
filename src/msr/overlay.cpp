@@ -60,7 +60,9 @@ struct ControlHint {
 };
 
 // The game offers the map tools, file copy and delete only by touch (its buttons do nothing
-// there); touch mode reaches them.
+// there); touch mode reaches them. (msr-native shows no help text beside its menus, 2026-11-17, the user: "we no longer
+// need but I do want them to be re-worked": its D-pad works their touch buttons, and the pause map shows its buttons'
+// icons on it, compositor.cpp PauseExtras; only touch mode's own controls are named.)
 constexpr ControlHint PauseMapHints[] = {
     {"{R}", "Samus page"},
     {"{B}", "Back to the game"},
@@ -416,6 +418,7 @@ void PlayerSettings::Load(const QString& path) {
     show_abilities = file.value(QStringLiteral("show_abilities"), show_abilities).toBool();
     hud_within_16_9 = file.value(QStringLiteral("hud_within_16_9"), hud_within_16_9).toBool();
     panel_scale = file.value(QStringLiteral("panel_scale"), panel_scale).toFloat();
+    fit_pause = file.value(QStringLiteral("fit_pause"), fit_pause).toBool();
     menu_backdrop = file.value(QStringLiteral("menu_backdrop"), menu_backdrop).toFloat();
     control_hints = file.value(QStringLiteral("control_hints"), control_hints).toBool();
     menu_scale = file.value(QStringLiteral("menu_scale"), menu_scale).toFloat();
@@ -459,6 +462,7 @@ void PlayerSettings::Save(const QString& path) const {
     file.setValue(QStringLiteral("show_abilities"), show_abilities);
     file.setValue(QStringLiteral("hud_within_16_9"), hud_within_16_9);
     file.setValue(QStringLiteral("panel_scale"), panel_scale);
+    file.setValue(QStringLiteral("fit_pause"), fit_pause);
     file.setValue(QStringLiteral("menu_backdrop"), menu_backdrop);
     file.setValue(QStringLiteral("control_hints"), control_hints);
     file.setValue(QStringLiteral("menu_scale"), menu_scale);
@@ -500,6 +504,7 @@ void PlayerSettings::Publish() const {
     P::show_abilities = show_abilities;
     P::hud_within_16_9 = hud_within_16_9;
     P::panel_scale = panel_scale;
+    P::fit_pause = fit_pause;
     P::menu_backdrop = menu_backdrop;
     P::bloom = bloom;
     P::hdr = hdr;
@@ -879,8 +884,11 @@ void Overlay::DrawControlHints(float width, float height) {
     const bool enabled = GetPlayerSettings().control_hints;
     int set = -1;
     if (enabled && P::touch_mode.load()) {
-        set = menu && page == P::Page::MapPins ? MapPinsTouch : Touch;
+        set = menu && page == P::Page::MapPins && !P::world_map.load() ? MapPinsTouch : Touch;
     } else if (enabled && menu) {
+#ifdef MSR_NATIVE
+        (void)page;   // (msr-native: its menus' buttons are on them; touch mode's alone are named)
+#else
         switch (page) {
         case P::Page::PauseMap:
             set = PauseMap;
@@ -900,6 +908,7 @@ void Overlay::DrawControlHints(float width, float height) {
         default:
             break;
         }
+#endif
     }
     // Fade in and out with the panel, keeping the last set while fading out.
     const float step = ImGui::GetIO().DeltaTime * 6.f;
@@ -935,7 +944,13 @@ void Overlay::DrawControlHints(float width, float height) {
     }
     box_h -= size * .5f;
     const float x = beside ? x1 + gap : width - gap - box_w;
-    const float y = std::min(y1, height) - gap - box_h;
+    float y = std::min(y1, height) - gap - box_h;
+    // over the panel (fitted to the window, or a narrow window): above its bottom bar (the touch screen's last
+    // 30 of its 240 lines), so the box is not over the buttons there
+    const float y0 = static_cast<float>(P::panel_y0.load());
+    if (!beside && x < x1 && y1 > y0) {
+        y = std::min(y, y0 + (y1 - y0) * (210.f / 240.f) - gap - box_h);
+    }
 
     const auto alpha = [this](int value) { return static_cast<int>(value * hint_alpha); };
     auto* draw = ImGui::GetForegroundDrawList();
@@ -1029,11 +1044,13 @@ void Overlay::DrawControls(float scale, float label_width,
         reference = {
             "Mouse: the left button shoots, the right one held aims at the pointer, the wheel changes beams",
             ButtonGlyphs::Keys("Move: {Stick}        Beams: {Beams}        Morph Ball: {Morph}"),
+            ButtonGlyphs::Keys("Super Missiles: hold {R}, then {Beams} (again for Missiles)"),
             ButtonGlyphs::Keys("Settings: {Close}        Fullscreen: F11"),
-            ButtonGlyphs::Keys("Touch navigation: {Touch} in menus"),
         };
         // a pad chooses and goes back in menus with its own layout's buttons (msr/glyphs.cpp), whatever A and B do in play
         const u32 dev = ButtonGlyphs::device.load();
+        // touch navigation: the keyboard's (a pad's L3 no more: its D-pad reaches the touch screen's buttons)
+        if (dev == ButtonGlyphs::Keyboard) reference.push_back(ButtonGlyphs::Keys("Touch navigation: {Touch}"));
         if (dev == ButtonGlyphs::Xbox || dev == ButtonGlyphs::PlayStation || dev == ButtonGlyphs::Nintendo) {
             reference.push_back(ButtonGlyphs::Keys(snapshot.menu_confirm_right
                 ? "In menus: {Choose} chooses, {Back} goes back"
@@ -1839,11 +1856,19 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             }
             row("Menu panel size");
             player_changed |= ImGui::SliderFloat("##panel", &p.panel_scale, .5f, 1.f, "%.2f");
+            row("Fit the pause screen to the window");
+            player_changed |= OnOff("##fitpause", &p.fit_pause);
+            Note("The pause screen fills the window: its bars and background reach the edges, its buttons and text "
+                 "keep their shape, and the map fills its width. On by default.");
             row("Title menu background");
             player_changed |= ImGui::SliderFloat("##backdrop", &p.menu_backdrop, 0.f, 1.f, "%.2f");
             row("Menu help text");
             player_changed |= OnOff("##hints", &p.control_hints);
+#ifdef MSR_NATIVE
+            Note("Help text for touch navigation (T on the keyboard).");
+#else
             Note("Help text beside the pause menu and file select, and in touch mode.");
+#endif
             end_tab_item();
         }
         if (tab_item("Controls", 3)) {
@@ -1908,7 +1933,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
     }
     if (player_changed) {
         PlayerChanged(p.widescreen != before.widescreen || p.ultrawide != before.ultrawide || p.fill_16_10 != before.fill_16_10 ||
-                      p.panel_scale != before.panel_scale);
+                      p.panel_scale != before.panel_scale || p.fit_pause != before.fit_pause);
         if (p.frame_rate != before.frame_rate) {
             Act(OverlayAction::Kind::FrameRate);
         }

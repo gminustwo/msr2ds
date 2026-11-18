@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 
 namespace MSR::Presentation {
 
@@ -82,6 +83,9 @@ inline std::atomic<bool> hud_within_16_9{false};
 
 /// Height of the bottom-screen panel (pause menu, file select...) relative to the game view.
 inline std::atomic<float> panel_scale{1.f};
+/// The pause screen (the touch screen's menus over play) laid out over the whole window: its bars and backgrounds to
+/// the window's edges, its buttons, text and columns keeping their shape at the sides and middle, the map wider.
+inline std::atomic<bool> fit_pause{true};
 
 /// Opacity of the dark card behind the title menus (file select, gallery...), which are drawn
 /// without their backdrop over the game view.
@@ -135,6 +139,15 @@ inline std::atomic<bool> touch_mode{false};
 inline std::atomic<int> touch_x{160};
 inline std::atomic<int> touch_y{120};
 inline std::atomic<int> touch_x0{0}, touch_y0{0}, touch_x1{0}, touch_y1{0};
+
+/// The file select's footer buttons chosen with the D-pad (msr-native's compositor, 2026-11-17): the name hash of the
+/// icon of Copy (ButtonSelectCopyIcon) or Delete (ButtonSelectEraseIcon) the D-pad is on, 0 for none.
+inline std::atomic<uint32_t> footer_focus{0};
+/// The pause menu's touch buttons chosen with the D-pad (msr-native's compositor): the chosen one's icon name hash
+inline std::atomic<uint32_t> pause_focus{0};
+/// The pause map's world map shows (msr-native's compositor, from the game's interface): SR388's areas, the Teleport
+/// Station's too. The pixels read it as the map pins page; its controls are the game's own.
+inline std::atomic<bool> world_map{false};
 
 /// A tap injected into the touch screen until this steady-clock time (ns), at tap_x/tap_y.
 inline std::atomic<long long> touch_tap_until{0};

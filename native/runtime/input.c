@@ -291,20 +291,73 @@ int input_stick_active(void) {
 static uint32_t mouse_buttons(void) { return (mouse_fire ? B_Y : 0) | (mouse_aim ? B_L : 0); }
 uint32_t input_buttons(void) { pthread_mutex_lock(&I); uint32_t b = keys | pad_keys | rstick_bits | mouse_buttons(); pthread_mutex_unlock(&I); return b; }
 
+/* PWR_TEST_TOUCH=<s>:<x>:<y>,...: a test finger on the touch screen (its pixels) from that run time on, going in a
+   straight line to the next point, and <s>:- lifting it, e.g. "22:75:228,22.5:140:120,22.8:-" (tests of the touch
+   screen without a mouse: a background window's posted clicks do not reach it, 2026-11-17). 1 while it is down. */
+static int test_touch(int *x, int *y) {
+    static int state = -1; static const char *script; static double t0;
+    if (state < 0) { script = getenv("PWR_TEST_TOUCH"); state = script != NULL; t0 = (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
+    if (!state) return 0;
+    const double t = (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency() - t0;
+    double pt = -1, px = 0, py = 0; int down = 0;
+    for (const char *p = script; p && *p; ) {
+        char *end; const double at = strtod(p, &end);
+        if (end == p || *end != ':') break;
+        p = end + 1;
+        int lift = *p == '-', nx = 0, ny = 0;
+        if (!lift) { nx = (int)strtol(p, &end, 10); p = end; if (*p == ':') p++; ny = (int)strtol(p, &end, 10); p = end; }
+        while (*p && *p != ',') p++;
+        if (*p == ',') p++;
+        if (at > t) {   /* the next point: on the way to it while down */
+            if (down && !lift && pt >= 0 && at > pt) { const double k = (t - pt) / (at - pt); px += (nx - px) * k; py += (ny - py) * k; }
+            break;
+        }
+        pt = at; down = !lift; px = nx; py = ny;
+    }
+    if (!down) return 0;
+    *x = (int)lround(px); *y = (int)lround(py);
+    return 1;
+}
+
 void input_update(void) {
     pthread_mutex_lock(&I);
     uint32_t base = shmem ? shmem->addr : 0;
     if (base < 0x1000) { pthread_mutex_unlock(&I); return; }   /* not mapped by the game yet */
-    int cx = ((stick_r || pad_cr) - (stick_l || pad_cl)) * CIRCLE_MAX, cy = ((stick_u || pad_cu) - (stick_d || pad_cd)) * CIRCLE_MAX;
-    if (!cx && !cy && (abs(pad_x) > 6000 || abs(pad_y) > 6000)) { cx = pad_x * CIRCLE_MAX / 32768; cy = pad_y * CIRCLE_MAX / 32768; }
+    /* the circle pad: its digital directions (keys, and pad buttons bound to it: the D-pad under the right stick option),
+       else the analog stick's */
+    const int dx = (stick_r || pad_cr) - (stick_l || pad_cl), dy = (stick_u || pad_cu) - (stick_d || pad_cd);
+    const int ax = abs(pad_x) > 6000 || abs(pad_y) > 6000 ? pad_x * CIRCLE_MAX / 32768 : 0;
+    const int ay = abs(pad_x) > 6000 || abs(pad_y) > 6000 ? pad_y * CIRCLE_MAX / 32768 : 0;
+    int cx = dx * CIRCLE_MAX, cy = dy * CIRCLE_MAX;
+    if (!cx && !cy) { cx = ax; cy = ay; }
     if (mouse_aim) { cx = (int)lrintf(aim_x * CIRCLE_MAX); cy = (int)lrintf(aim_y * CIRCLE_MAX); }
     uint32_t btn = keys | pad_keys | rstick_bits | mouse_buttons();
     if (msr_input_blocked()) { btn = 0; cx = cy = 0; }   /* Samus Returns' touch navigation has the pad (msr/compositor.cpp) */
     if (cx > 0x28) btn |= B_CRIGHT; if (cx < -0x28) btn |= B_CLEFT;
     if (cy > 0x28) btn |= B_CUP;    if (cy < -0x28) btn |= B_CDOWN;
-    int td = touch_down, tx = touch_x, ty = touch_y;
-    if (msr_injected_touch(&tx, &ty)) td = 1;   /* Samus Returns: a beam or Morph Ball tap (msr/compositor.cpp) */
+    /* the D-pad as the menus mean it: the 3DS D-pad's bits, the pad's D-pad bound to the circle pad (the right stick
+       option) and the arrow keys (stick_* bit 1); not the circle pad's own keys (WASD) nor the analog stick */
+    const int mx = (pad_cr || (stick_r & 2)) - (pad_cl || (stick_l & 2)), my = (pad_cu || (stick_u & 2)) - (pad_cd || (stick_d & 2));
+    const int kx = ((stick_r & 1) != 0) - ((stick_l & 1) != 0), ky = ((stick_u & 1) != 0) - ((stick_d & 1) != 0);
+    const uint32_t dpad = msr_input_blocked() ? 0 : (btn & (B_RIGHT | B_LEFT | B_UP | B_DOWN)) | (mx > 0 ? B_RIGHT : 0) |
+                          (mx < 0 ? B_LEFT : 0) | (my > 0 ? B_UP : 0) | (my < 0 ? B_DOWN : 0);
+    int td = touch_down, tx = touch_x, ty = touch_y, take_dpad = 0;
+    int test_x = 0, test_y = 0;
+    const int test_down = test_touch(&test_x, &test_y);
+    if (msr_footer_input(&btn, dpad, &take_dpad, &cx, &cy, &tx, &ty)) td = 1;   /* Samus Returns: the menus' touch buttons on the D-pad */
+    else if (msr_injected_touch(btn, &tx, &ty)) td = 1;   /* Samus Returns: a beam, missile or Morph Ball tap (msr/compositor.cpp) */
+    else if (test_down) { td = 1; tx = test_x; ty = test_y; }
     else { tx = touch_x; ty = touch_y; }
+    if (take_dpad) {   /* the D-pad is the menu's (the pause map's toolbar): the game keeps the stick and the WASD keys */
+        btn &= ~(B_RIGHT | B_LEFT | B_UP | B_DOWN | B_CRIGHT | B_CLEFT | B_CUP | B_CDOWN);
+        if (!(take_dpad & 4) && !mouse_aim && (dx || dy)) {   /* (4: the stick as the menu gave it, a map pin's push) */
+            cx = kx * CIRCLE_MAX; cy = ky * CIRCLE_MAX;
+            if (!cx && !cy) { cx = ax; cy = ay; }
+        }
+        if (take_dpad & 2) cx = cy = 0;   /* (the stick too: a pin dragged with it) */
+        if (cx > 0x28) btn |= B_CRIGHT; if (cx < -0x28) btn |= B_CLEFT;
+        if (cy > 0x28) btn |= B_CUP;    if (cy < -0x28) btn |= B_CDOWN;
+    }
     if (td) btn |= B_TOUCH;
     uint64_t now = k_ticks();
     /* pad ring */

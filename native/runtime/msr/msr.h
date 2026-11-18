@@ -55,7 +55,8 @@ void msr_patches_module_loaded(void);
 
 /* ---- the single 16:9 screen (compositor.cpp; the emulator-based build's DrawMsrScreens) ---- */
 /* One quad over the view, in window (drawable) pixels: a region of the bottom screen (style[3] = mode 0 plain,
-   1 luma-keyed, 3 drawn over black) or a solid fill (mode 2). msr.frag reads these as they are. */
+   1 luma-keyed, 3 drawn over black), a solid fill (mode 2), or a sprite of one of the game's atlases (source 3; mode 4
+   an additive one tinted, 5 tinted by color, 6 additive tinted by color). msr.frag reads these as they are. */
 typedef struct {
     float dst[4];     /* x, y, w, h */
     float src[4];     /* bottom screen u0, v0, u1, v1 (0..1, screen-oriented) */
@@ -63,8 +64,9 @@ typedef struct {
     int feather;      /* soft edge in percent of the quad; bits 8-11 keep the left, top, right, bottom edges hard */
     int circle;       /* circular mask radius in percent (0: none) */
     int source;       /* 1: the beam slots as held (video.c's copy of the bottom screen before R, msr_beams_held);
-                         2: the menu as last seen (video.c's copy of the bottom screen while it read as one, msr_menu_live) */
-    int pad;
+                         2: the menu as last seen (video.c's copy of the bottom screen while it read as one, msr_menu_live);
+                         3: one of the game's atlases, atlas (msr_gui_atlas; src in it, 0..1) */
+    int atlas;        /* source 3: MSR_ATLAS_* */
     float color[4];   /* fill colour */
 } MsrQuad;
 
@@ -119,14 +121,20 @@ unsigned msr_glyph_version(void);
 int  msr_skip_bottom_draw(int quad_backdrop);
 void msr_bottom_frame(void);
 /* The pad's triggers (input_bridge.cpp): 0 = LT, Morph Ball (taps the minimap); 1 = RT, the next beam (taps its slot);
-   2 = the beam before (the mouse wheel up). Only while the HUD shows. input.c then holds the tap msr_injected_touch
-   gives (1 while it lasts). */
+   2 = the beam before (the mouse wheel up); with R held, 1 and 2 switch between Missile and Super Missile (taps those
+   slots). Only while the HUD shows. input.c then holds the tap msr_injected_touch gives (1 while it lasts; a missile
+   tap ends when R, in the buttons the game gets, comes up). */
 void msr_trigger(int which);
-int  msr_injected_touch(int *x, int *y);
+int  msr_injected_touch(unsigned buttons, int *x, int *y);
+/* The menus' touch buttons on the D-pad (compositor.cpp: the file select's Copy and Delete, the pause menu's toolbar
+   and map pins): input.c's buttons and circle pad, which it may keep from the game, the D-pad as the menus mean it
+   (its bits or the circle pad's digital directions), *take |= 1 to keep that D-pad from the game (|= 2: the analog
+   stick too), and its tap at x, y (1 while it holds) */
+int  msr_footer_input(uint32_t *buttons, uint32_t dpad, int *take, int *cx, int *cy, int *x, int *y);
+void msr_trigger_hold(int which, int down);   /* video.c: ZL (0) or ZR (1) pressed or let go (the map pins' drag) */
 /* Touch navigation (src/msr/touch_nav.cpp): a highlight over the touch screen's buttons, moved with the pad or keys */
 int  msr_touch_active(void);
-void msr_touch_toggle(void);             /* T (keyboard), L3 */
-void msr_touch_l3(void);                 /* the left stick's click: only while a menu shows, or to leave */
+void msr_touch_toggle(void);             /* T (keyboard) */
 void msr_touch_step(int dx, int dy);
 void msr_touch_finger(int down);         /* press (hold to drag) and lift */
 void msr_touch_close(void);
@@ -136,6 +144,8 @@ int  msr_input_blocked(void);            /* the game gets no pad input (touch na
 /* ---- cheats (cheats.cpp; the emulator-based build's ApplyMsrRefills) ---- */
 void msr_cheats_frame(double now);   /* each VBlank: the extras' patches follow the settings, refills, setter calls queued */
 float msr_item(uint32_t key, const char *name);   /* cheats.cpp: Samus's item by key global and name; -1: cannot tell */
+int msr_metroid_radar(float rgba[4][4]);   /* cheats.cpp: the Metroid radar sprites' colors (base, color, highlight, flare); 0: not found yet */
+int msr_samus_beam(int *morph);   /* cheats.cpp: her beam (0 usual, 1 Ice, 2 Grapple; -2 another gun in use, -1 cannot tell) and Morph Ball (1/0/-1) */
 struct CPU;
 int msr_game_hook(struct CPU *c);
 
@@ -162,6 +172,79 @@ void msr_textures_set_stager(void *(*make)(const uint8_t *rgba, uint32_t w, uint
    cannot be read */
 int  msr_texture_take(uint64_t key, int want_staged, void **staged, const uint8_t **rgba, uint32_t *w, uint32_t *h);
 void msr_texture_done(uint64_t key);          /* uploaded: the pixels may go */
+/* A copy of the replacement's RGBA rows (pica_vk's order: bottom-up), malloc'd for the caller: 1, 0 while loading, -1
+   when it cannot be read (gui_assets.cpp: the game's atlases) */
+int  msr_texture_copy(uint64_t key, uint8_t **rgba, uint32_t *w, uint32_t *h);
+
+/* ---- the game's interface pictures (gui_assets.cpp): its sprite sheets and fonts, drawn as the compositor's quads
+   with source 3. All main thread; they start loading on the first call. ---- */
+enum { MSR_ATLAS_HUD_OPAQUE, MSR_ATLAS_HUD, MSR_ATLAS_FONT, MSR_ATLAS_WHITE, MSR_ATLAS_MAINMENU, MSR_ATLAS_COUNT };
+/* An atlas (RGBA8, rows top-down) and its version: 0 until it is read, a new one when a pack's replacement arrives.
+   The pixels stay valid until the version changes. */
+unsigned msr_gui_atlas(int atlas, const uint8_t **rgba, uint32_t *w, uint32_t *h);
+/* The game's own alpha of an atlas (w x h of the game's, rows top-down), a texture pack's or not; 0 until it is read */
+int msr_gui_atlas_game_alpha(int atlas, const uint8_t **alpha, uint32_t *w, uint32_t *h);
+enum {
+    MSR_SPRITE_POWER, MSR_SPRITE_ICE, MSR_SPRITE_GRAPPLE, MSR_SPRITE_WAVE, MSR_SPRITE_SPAZER, MSR_SPRITE_PLASMA,   /* beams */
+    MSR_SPRITE_DNA_COUNT, MSR_SPRITE_METROID_BASE, MSR_SPRITE_METROID_COLOR, MSR_SPRITE_METROID_HIGHLIGHT,
+    MSR_SPRITE_FLARE, MSR_SPRITE_ERASE, MSR_SPRITE_UP_WINDOW, MSR_SPRITE_COUNT
+};
+/* A sprite's atlas and rectangle in it (u0, v0, u1, v1): 1, or 0 while that atlas is not there */
+int msr_gui_sprite(int sprite, int *atlas, float uv[4]);
+enum { MSR_FONT_HEFTY, MSR_FONT_BIG, MSR_FONT_MEDIUM, MSR_FONT_SMALL, MSR_FONT_COUNT };   /* digital_hefty, _big, ... */
+/* A glyph of a font, in MSR_ATLAS_FONT: its rectangle (uv), size, left bearing, height of its top above the baseline
+   and advance, in the font's pixels */
+typedef struct { float uv[4]; float w, h, left, top, advance; } MsrGlyph;
+int msr_gui_font(int font, float *size, float *ascent);   /* 1 when the font can be drawn; ascent: baseline below the top */
+int msr_gui_glyph(int font, unsigned code, MsrGlyph *glyph);
+/* By the game's own names' hashes (the packages' CRC-32 of a path): a font file's (MSR_FONT_*), a texture's
+   (MSR_ATLAS_*); -1 for one not loaded here */
+int msr_gui_font_by_file(uint32_t hash);
+int msr_gui_atlas_by_path(uint32_t hash);
+/* A sprite a label's text embeds, @[NAME]: its atlas, rectangle and size in its atlas' pixels; 0 if unknown */
+int msr_gui_embedded(const char *name, size_t length, int *atlas, float uv[4], float *w, float *h);
+
+/* ---- the title menus' touch screen as the game holds it (gui_tree.cpp) ---- */
+/* One sprite or glyph of it, in touch-screen pixels, in the order the game draws them */
+typedef struct {
+    float x, y, w, h;
+    float uv[4];        /* in atlas (flips applied) */
+    float color[4];     /* the game's (may pass 1) */
+    float clip[4];      /* drawn only inside x0, y0, x1, y1 (the pause map's view) */
+    int atlas;          /* MSR_ATLAS_* */
+    int additive;       /* blended additively (the game's Additive), else by alpha */
+    int glyph;          /* part of a label's text */
+    uint32_t name;      /* the object's name hash (CRC-32 of its name: ButtonSelectCopyBase ...) */
+    uint32_t sprite;    /* a sprite's sheet item's name hash (Button_Selected ...) */
+    int anchor;         /* where it goes on a touch screen drawn wider than 4:3 (MSR_ANCHOR_*) */
+} MsrGuiItem;
+/* MsrGuiItem.anchor: kept to the middle (as the 3DS draws it), to the left or right edge (a piece, or its group, against
+   that edge of the screen, or lying in one that is), stretched between its ends (a piece wider than 60% of the screen
+   in no narrower group, with an end against an edge: backgrounds, bars, a bar's halves; each end keeps its shape where it goes,
+   msr_anchor_end), or the map's (the middle, its view opened to the width) */
+enum { MSR_ANCHOR_MIDDLE, MSR_ANCHOR_LEFT, MSR_ANCHOR_RIGHT, MSR_ANCHOR_STRETCH, MSR_ANCHOR_MAP };
+/* where an end of a piece at x (touch-screen pixels) goes: against the left or right edge, or with the middle */
+static inline int msr_anchor_end(float x) { return x <= 2.f ? MSR_ANCHOR_LEFT : x >= 318.f ? MSR_ANCHOR_RIGHT : MSR_ANCHOR_MIDDLE; }
+/* This frame's (main thread): the count, 0 when the game holds no interface tree here (the title menus' root, or in
+   play the in-game root with the HUD and the pause menu). Valid until the next call. */
+int msr_gui_tree(const MsrGuiItem **items);
+/* The pause map's world map (SR388's areas; the Teleport Station's too): its opacity in msr_gui_tree's last call, 0 when
+   it is not shown */
+float msr_gui_world_map(void);
+/* The pause map's view (MinimapHang) in msr_gui_tree's last call: x0, y0, x1, y1 in touch-screen pixels and 1, else 0 */
+int msr_gui_map_view(float view[4]);
+/* The pause map's view widened by so many touch-screen pixels at each side of the screen it reaches, from the next
+   msr_gui_tree call on (the pause screen fitted to a wider window: the map fills it). Main thread. */
+void msr_gui_map_margin(float margin);
+/* In play: the HUD's minimap (the touch screen's map view and what it holds, not clipped to it), its view's rectangle
+   in view (x, y, w, h, touch-screen pixels); 0 where there is none. Its dark fill round the rooms in colors times shade
+   (its background's). Main thread; valid until the next call. */
+int msr_gui_minimap(const MsrGuiItem **items, float view[4], float shade);
+/* The mouse at wx, wy (a window of ww x wh) on the pause screen fitted to the window: the touch-screen point under it in
+   tx, ty and 1; 0 where the panel is drawn as the game draws it (mapped to its rectangle then). Main thread. */
+int msr_panel_touch(float wx, float wy, float ww, float wh, int *tx, int *ty);
+/* layered_fs.cpp: a RomFS file by its path (with the game mods' files), malloc'd for the caller; NULL if not there */
+uint8_t *msr_romfs_file(const char *path, size_t *size);
 void msr_textures_stats(unsigned *textures, unsigned *loaded, unsigned *failed);    /* dispatch.cpp, at the frame limiter's trap: runs the queued calls; 0 when it was ours */
 
 /* kernel.c: the calling thread below the game's, for work no frame waits for (texture decodes, scans, cache saves) */

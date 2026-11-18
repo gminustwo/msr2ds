@@ -7,11 +7,13 @@
 // settings (GPU::ApplyMsrCheats).
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <thread>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -46,9 +48,9 @@ struct Refills {
 // A guest range is readable: inside a region the game was given (kernel.c's map), not past its end.
 bool Valid(u32 address) { return address >= 0x00100000 && k_region_state(address) != 0; }
 
-// Samus's inventory, as the game finds it (cheats.h: from the game object's player handles, her entity's +0x18C); 0
-// out of play
-u32 Inventory() {
+// Samus's entity, as the game finds her (cheats.h: from the game object's player handles, the one with an inventory at
+// +0x18C); 0 out of play
+u32 SamusEntity() {
     if (!Valid(C::GamePointer)) return 0;
     const u32 game = rd32(C::GamePointer);
     for (const u32 offset : C::PlayerHandles) {
@@ -56,9 +58,14 @@ u32 Inventory() {
         const u32 handle = rd32(game + offset);
         const u32 entity = Valid(handle + 8) ? rd32(handle + 8) : 0;
         const u32 inventory = Valid(entity + C::EntityInventoryOffset) ? rd32(entity + C::EntityInventoryOffset) : 0;
-        if (inventory != 0) return Valid(inventory + 0x48) ? inventory : 0;
+        if (inventory != 0) return Valid(inventory + 0x48) ? entity : 0;
     }
     return 0;
+}
+// Her inventory; 0 out of play
+u32 Inventory() {
+    const u32 entity = SamusEntity();
+    return entity ? rd32(entity + C::EntityInventoryOffset) : 0;
 }
 // The address of an item's value (a float) in the inventory, by the key global naming it (cheats.h); 0: not there
 u32 ItemAddress(u32 inventory, u32 key) {
@@ -486,11 +493,123 @@ extern "C" float msr_item(uint32_t key, const char* name) {
     return std::isfinite(f) ? f : -1.f;
 }
 
+// The beam Samus has chosen and whether she is in Morph Ball, as the game holds them (2026-11-16, found by diffing her
+// memory while switching beams and morphing, USA release). The game object's player handles (cheats.h) are her standing
+// entity (+0xF0), her Morph Ball's (+0xF4) and the one in play (+0xFC, which the inventory follows): Morph Ball is the
+// last being the second. The standing entity's gun component (vtable 0x6D28C0; among its components, at +0x1A4) points
+// at +0x9C to the gun in use (Ice 0x6CBCD0, Grapple 0x6CE498, the usual beam one of several: below); it keeps it in
+// Morph Ball. Returns 0, 1 or 2 (the HUD's beam slots); -2 while another gun is in use (R held: the
+// missiles), which the caller takes as no change; -1 when it cannot be told (out of play, another version of the game).
+// *morph: 1 in Morph Ball, 0 out of it, -1 when it cannot be told. Main thread, as msr_item.
+extern "C" int msr_samus_beam(int* morph) {
+    constexpr u32 StandingHandle = 0xF0, BallHandle = 0xF4, InPlayHandle = 0xFC;
+    constexpr u32 GunComponentVtable = 0x6D28C0, GunInUseOffset = 0x9C;
+    static u32 component_offset = 0x1A4;   // where it was last found
+    *morph = -1;
+    if (!Valid(C::GamePointer)) return -1;
+    const u32 game = rd32(C::GamePointer);
+    if (!Valid(game + InPlayHandle + 4)) return -1;
+    const u32 standing = rd32(game + StandingHandle), ball = rd32(game + BallHandle), in_play = rd32(game + InPlayHandle);
+    if (in_play && in_play == standing) *morph = 0;
+    else if (in_play && in_play == ball) *morph = 1;
+    const u32 entity = Valid(standing + 8) ? rd32(standing + 8) : 0;
+    if (!entity || !Valid(entity + 0x1C0)) return -1;
+    const auto is_component = [](u32 p) { return Valid(p) && Valid(p + GunInUseOffset + 4) && rd32(p) == GunComponentVtable; };
+    u32 component = rd32(entity + component_offset);
+    if (!is_component(component)) {
+        component = 0;
+        for (u32 offset = 0x100; offset < 0x1C0 && !component; offset += 4) {
+            if (is_component(rd32(entity + offset))) {
+                component_offset = offset;
+                component = rd32(entity + offset);
+            }
+        }
+        if (!component) return -1;
+    }
+    const u32 gun = rd32(component + GunInUseOffset);
+    if (!Valid(gun)) return -2;
+    // The usual beam is a gun of its own per upgrade (2026-11-17, the user's second file: its beam, 0x6CCD80, was taken
+    // for a missile, and the HUD kept Ice lit), so a gun is told by where the component holds it: its primary slots
+    // (+0x6C, count +0x70; 0x18 bytes each: its guns at +0, their count at +4) hold the usual beam's guns (0x6CCD80,
+    // 0x6CC7C4, 0x6CDDE4, 0x6CDBBC in the USA release), Ice's and the Grapple Beam's; the missiles are secondary (+0x84).
+    const u32 slots = rd32(component + 0x6C), slot_count = rd32(component + 0x70);
+    if (slot_count > 8 || !Valid(slots) || !Valid(slots + 0x18 * slot_count)) return -1;
+    for (u32 k = 0; k < slot_count; ++k) {
+        const u32 guns = rd32(slots + 0x18 * k), count = rd32(slots + 0x18 * k + 4);
+        if (count > 16 || !Valid(guns) || !Valid(guns + 4 * count)) continue;
+        for (u32 j = 0; j < count; ++j) {
+            if (rd32(guns + 4 * j) != gun) continue;
+            switch (rd32(gun)) {
+            case 0x6CBCD0: return 1;   // Ice
+            case 0x6CE498: return 2;   // Grapple
+            default: return 0;         // the usual beam, whichever upgrade
+            }
+        }
+    }
+    return -2;   // a secondary gun: the missiles (R held)
+}
+
+// The bottom screen's Metroid radar (the Metroid counter's icon), as the game tints it (2026-11-17, USA release). Its
+// logic object (vtable 0x6E4FEC, 0x18C bytes; the HUD root's +0x334 handle, made by the lower bar's builder at
+// 0x45D9C8) holds its sprites: +0x13C MetroidRadar (Icon_Metroid_Base), +0x138 MetroidRadarColor (Icon_Metroid_Color),
+// +0x134 MetroidRadarWhite (Icon_Metroid_Highlight), +0x140 MetroidFlare (Flare_01), each a display object with its
+// color, RGBA floats, at +0x70 (0x1CA2E8 sets it). Found on the heap on a worker once (a scan takes some 30 ms), kept
+// while its vtable stays. rgba: those four colors, in that order. Returns 1 when they are read, 0 when not (yet).
+// Main thread, as msr_item.
+namespace {
+struct RadarScan {
+    std::atomic<int> state{0};   // 0 idle, 1 scanning, 2 done (found holds the result)
+    std::atomic<u32> found{0};
+    u32 object = 0;
+    std::chrono::steady_clock::time_point next{};
+} radar;
+constexpr u32 RadarVtable = 0x6E4FEC, RadarSize = 0x18C;
+constexpr std::array<u32, 4> RadarSprites = {0x13C, 0x138, 0x134, 0x140};
+}   // namespace
+
+extern "C" int msr_metroid_radar(float rgba[4][4]) {
+    if (radar.object && !(Valid(radar.object + RadarSize) && rd32(radar.object) == RadarVtable)) radar.object = 0;
+    if (!radar.object) {
+        const auto now = std::chrono::steady_clock::now();
+        if (radar.state.load() == 2) {
+            radar.object = radar.found.exchange(0);
+            radar.state.store(0);
+            radar.next = now + std::chrono::seconds(2);   // none found: again in a while
+            if (radar.object) std::fprintf(stderr, "msr: HUD: the Metroid radar at %08x\n", radar.object);
+        } else if (radar.state.load() == 0 && InGameplay() && now >= radar.next) {
+            radar.state.store(1);
+            std::thread([] {
+                k_background_thread();
+                radar.found.store(FindObject(RadarVtable, RadarSize, [](auto word) {
+                    for (const u32 offset : RadarSprites) {
+                        const u32 sprite = word(offset);
+                        if (!Valid(sprite) || !Valid(sprite + 0x80)) return false;
+                    }
+                    return true;
+                }));
+                radar.state.store(2);
+            }).detach();
+        }
+        if (!radar.object) return 0;
+    }
+    for (std::size_t i = 0; i < RadarSprites.size(); ++i) {
+        const u32 sprite = rd32(radar.object + RadarSprites[i]);
+        for (u32 c = 0; c < 4; ++c) {
+            const u32 bits = Valid(sprite + 0x80) ? rd32(sprite + 0x70 + c * 4) : 0;
+            float f;
+            std::memcpy(&f, &bits, 4);
+            rgba[i][c] = std::isfinite(f) ? std::clamp(f, 0.f, 4.f) : 0.f;
+        }
+    }
+    return 1;
+}
+
 // A save state was loaded: the objects found on the game's heaps are other ones now (or none), the calls queued meant
 // for the old ones.
 extern "C" void msr_cheats_reset(void) {
     std::lock_guard<std::mutex> guard(lock);
     calls.clear();
+    radar.object = 0;
     refills = Refills{};
     swap = Swap{};
     stub_room = -1;

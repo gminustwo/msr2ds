@@ -75,6 +75,13 @@ Keyboard and mouse (change them in the menu's Controls tab):
   Aim at the pointer    hold the right mouse button
   Free Aim Q            Missiles E             Morph Ball Left Shift
   Change beam C or the mouse wheel             Aeion F    Melee counter R
+  Super Missiles: hold E, then C or the mouse wheel (again for Missiles)
+  File select: open a file; Down goes past Options to Copy, Right to Delete
+  Pause map: Left/Right choose map pins, information or settings, A opens it
+  Map pins: the D-pad or stick chooses a pin (Up: those on the map); A picks it
+    up, the stick moves it, A places it (B puts it back); X / Square removes a
+    map pin; Delete all at the bar's end
+  World map: the D-pad or the stick chooses an area, A shows its map
   Aeion abilities 1 2 3 4                      Pause menu Tab
   Touch navigation T    Settings F1            Quick save F5, quick load F8
   Fullscreen F11
