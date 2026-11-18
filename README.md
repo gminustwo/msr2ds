@@ -1,5 +1,9 @@
 # msr2ds (Metroid Samus Returns 2DS)
 
+[![release](https://img.shields.io/github/v/release/gminustwo/msr2ds?filter=v%2A&sort=semver&display_name=tag&label=release&color=orange)](https://github.com/gminustwo/msr2ds/releases/latest)
+[![downloads](https://img.shields.io/github/downloads/gminustwo/msr2ds/total?label=downloads&color=brightgreen)](https://github.com/gminustwo/msr2ds/releases)
+[![Discord](https://img.shields.io/discord/1565552459299160188?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/u5SzfU66ZJ)
+
 > [!IMPORTANT]
 > **Windows users:**
 > 
@@ -17,6 +21,9 @@ You need your own decrypted dump of the game (USA): none is included,
 and nothing from the game is in this repository. Windows, macOS, Linux (x86-64
 and ARM64) and Android downloads are on the
 [releases page](https://github.com/gminustwo/msr2ds/releases).
+
+Chat and news: the project's Discord server, https://discord.gg/u5SzfU66ZJ (bug reports and feature requests go on
+[Issues](https://github.com/gminustwo/msr2ds/issues)).
 
 One 16:9 screen in the style of *Metroid Dread*. Energy and missiles sit at the
 upper left with the Aeion gauge and the beam slots (the usual beam, Ice and
