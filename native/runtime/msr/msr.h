@@ -116,6 +116,12 @@ int msr_menu_confirm_right(void);
 int msr_glyph_sheet(const uint8_t *level0, uint32_t w, uint32_t h, int fmt);   /* pica_vk.c: one of the face-button icon sheets (1, 2) or 0 */
 void msr_glyph_patch(int sheet, uint8_t *rgba, uint32_t w, uint32_t h);
 unsigned msr_glyph_version(void);
+/* The pause's Controls page names play's buttons in a menu (compositor.cpp ControlsIcons): the game's face icon (0-3:
+   A, B, X, Y) that shows now the pad button play binds control (C_*) to, -1 when none does (pad_button: that button,
+   -1 unbound), -2 when the icons need no change (the keyboard's and an unknown device's follow the bindings) */
+int msr_glyph_play_face(int control, int *pad_button);
+/* a pad button's (or trigger's: PAD_TRIGGER_*) short name on the device in use: "LT", "RS", "View" ... */
+const char *msr_pad_label(int button);
 /* pica_vk: each draw into the bottom screen's target (1 if it is a full-screen backdrop quad of the title menus);
    returns 1 to leave it out. msr_bottom_frame at each display transfer. */
 int  msr_skip_bottom_draw(int quad_backdrop);
@@ -217,6 +223,7 @@ typedef struct {
     uint32_t name;      /* the object's name hash (CRC-32 of its name: ButtonSelectCopyBase ...) */
     uint32_t sprite;    /* a sprite's sheet item's name hash (Button_Selected ...) */
     int anchor;         /* where it goes on a touch screen drawn wider than 4:3 (MSR_ANCHOR_*) */
+    uint32_t group;     /* the named container it lies in where one matters (ControlsComposition: the pause's Controls page) */
 } MsrGuiItem;
 /* MsrGuiItem.anchor: kept to the middle (as the 3DS draws it), to the left or right edge (a piece, or its group, against
    that edge of the screen, or lying in one that is), stretched between its ends (a piece wider than 60% of the screen

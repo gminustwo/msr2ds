@@ -267,6 +267,15 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   from its settings: the user, "you can remove the menu help text from the launcher menu").
   (GuiQuads lit a chosen button's base by its name, and with a pin chosen, which has none, lit every unnamed piece: the
   icons came out blue. It needs a base now.)
+- The pause's Controls page names play's buttons (2026-11-17, `compositor.cpp ControlsIcons`; the user: "the controls
+  on the pause menu should reflect the controls weve mapped to the game"). Its icons (ControlsComposition, tagged by
+  the tree walk: `MsrGuiItem.group`) are the game's face and shoulder icons, which in menus show the menus' layout (A
+  chooses), so Jump (3DS B) read B where play has it on the pad's A. Each shows play's binding instead
+  (`input_pad_bound(c, 0)`): the face icon that shows that button now (`glyphs.cpp msr_glyph_play_face`), the L or R
+  icon for a shoulder, the game's D-pad icons for a direction, else its name in digital_medium ("LT"); Select Aeion
+  reads "RS" with the Aeion abilities on the right stick. In play, the face and shoulder icons a text embeds (the Samus
+  page's "Press @[Y] rapidly to fire") are tagged by their sheet item (`sprite`) and shown the same way; the title's
+  "Press @[A_ALT] to Start" is a menu's and stays. The keyboard's icons show the keys bound in play already.
 - Save states (`state.c`, `state.h`): the menu's Quick save and Quick load, F5 and F8. The guest's memory (the
   reservation's committed pages, without the game's code) and every part that keeps state, in sections, zlib-compressed
   on a worker thread into `<user>/states/native-quick.state` (~13 MiB); a state of other game files or game mods is
