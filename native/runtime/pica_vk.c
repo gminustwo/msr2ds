@@ -38,6 +38,9 @@
 #include <stddef.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#ifdef __APPLE__
+#include <sys/sysctl.h>   /* pipe_threads: the performance cores */
+#endif
 
 #define R(i) pica_regs[i]
 VkShaderModule pica_vsgen_module(VkDevice dev);   /* pica_vsgen.c */
@@ -1386,6 +1389,24 @@ static void seed_load(void) {
     fprintf(stderr, "pica_vk: preloaded %u vertex shaders and %d pipelines in %.0f ms\n", vs_ok, preload_n, now_ms() - t0);
 }
 
+/* The threads that compile pipelines in play: three; on a Mac the performance cores less two, 3 to 8. A draw whose pipeline
+   is still compiling uses its generic one, which Apple's GPUs run about 13 times as long as a specialised pipeline
+   (pica.frag GENERIC_SELECTS), and a compile that Metal has not cached takes 30 ms or more, a fifth of them 200-480 ms. On
+   an M3 Max at 7x from empty caches (Metal's too, 2026-11-18), the frames' time over 8.3 ms through start-up and a quick
+   load: 1.59 s with three, 1.23 s with six, 1.14 s with eight; frames over 50 ms 9-12, then 4-8. The game's threads stay
+   ahead of them (k_game_thread). PWR_VK_PIPE_THREADS=<n> sets the number (A/B). */
+static int pipe_threads(void) {
+    const char *e = getenv("PWR_VK_PIPE_THREADS");
+    if (e && atoi(e) > 0) return atoi(e) > 16 ? 16 : atoi(e);
+#ifdef __APPLE__
+    int p = 0; size_t n = sizeof p;
+    if (sysctlbyname("hw.perflevel0.physicalcpu", &p, &n, NULL, 0) || p <= 0) p = k_cpu_threads() / 2;
+    return p - 2 < 3 ? 3 : p - 2 > 8 ? 8 : p - 2;
+#else
+    return 3;   /* (a new area or effect brings dozens) */
+#endif
+}
+
 /* the pipe for k, created now (sync) or queued for the worker (urgent: ahead of the others); NULL when the table is full */
 static Pipe *pipe_get(const PKey *k, int sync, int urgent) {
     uint32_t hs = pkey_hash(k) & (2 * MAX_PIPES - 1), j;
@@ -1404,7 +1425,11 @@ static Pipe *pipe_get(const PKey *k, int sync, int urgent) {
         if (getenv("PWR_VK_PIPE_TRACE")) fprintf(stderr, "vk: pipeline compiled on the spot for target %08x\n", cur_c ? cur_c->addr : 0);
     } else {
         static pthread_t th; static int started;
-        if (!started) { started = 1; for (int t = 0; t < 3; t++) if (!pthread_create(&th, NULL, pipe_worker, NULL)) pthread_detach(th); }   /* three: a new area or effect brings dozens */
+        if (!started) {
+            started = 1; const int nt = pipe_threads();
+            for (int t = 0; t < nt; t++) if (!pthread_create(&th, NULL, pipe_worker, NULL)) pthread_detach(th);
+            fprintf(stderr, "pica_vk: %d pipeline compile threads\n", nt);
+        }
         atomic_fetch_add(&pipes_pending, 1);
         pthread_mutex_lock(&pq_lock);
         if (urgent) { pq_head = (pq_head + PQ_N - 1) % PQ_N; pq[pq_head] = (int)(e - pipes); }

@@ -657,6 +657,29 @@ the scene's depth (MoltenVK makes `LOAD_OP_NONE`/`STORE_OP_NONE` Metal's load an
 `VK_EXT_dynamic_rendering_unused_attachments` to leave it out): discarding it, as a timing test only, changed nothing
 (5.9 ms of GPU a frame at 9x either way).
 
+**Macs: effects seen for the first time (2026-11-18).** After those fixes the user still saw dips (100-117 of 120 FPS,
+frames of 40-130 ms) in their first session of the new build: its `pwr_shaders.bin` was an older generator's, so ~680
+pipelines and ~170 vertex shaders were made again in play, 100 or more in each interval with a dip. A draw whose
+pipeline is still compiling uses its generic one, and Apple's GPUs ran that about 17 times as long as a specialised
+pipeline: with every draw on it (`PWR_VK_NOSPEC=1`) 69 ms of GPU a frame at 7x on an M3 Max, against about 4. Metal
+compiles what it has not cached in 30 ms or more, a fifth of them 200-480 ms; with Metal's cache warm the same run had no
+stalls, even without the saved pipelines. Measured from empty caches (a copy of the app under another bundle identifier
+gets an empty Metal cache, and no `pwr_*.bin`), through start-up and a quick load at 7x: 1.97 s of frame time over the
+8.3 ms budget, frames over 50 ms in the teens. Now, on a Mac:
+- The generic pipeline does less (pica.frag `GENERIC_SELECTS`, CMake's `MSR_FRAG_DEFS`): the combiner's selections as
+  selects, no array indexed at run time, the light loop's LUT mask worked out once, stages that pass Previous through
+  left out. 52.8 ms where it was 69 (its six combiner stages had been 54 of them, one stage 7.6, lighting about 15).
+  Paused pictures at 6x, old and new, specialised and generic: 0.0005-0.001 of 255 apart on average, as two runs of the
+  same build. Built without the define (every other platform) its SPIR-V is the same, byte for byte, and the OpenGL
+  text checks as GLSL 3.30 both ways: untried elsewhere, and Adreno's compiler has crashed on light-loop changes (#37).
+- More pipeline compile threads (pica_vk.c `pipe_threads`): the performance cores less two, 3 to 8 (`PWR_VK_PIPE_THREADS`
+  sets it; the log's `pica_vk: N pipeline compile threads`). From empty caches, with the new shader: 1.59 s over budget
+  with three, 1.23 with six, 1.14 with eight (three runs each); start-up's first interval 60 FPS, 76, 84.
+Together 1.19 s where it was 1.97, frames over 50 ms 8 where 17-19. Tried and left: Metal's concurrent compilation
+(`MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION`, no change), a `switch` for the sources (Metal flattens it: no
+better), the texture pack's mipmaps (no cost). The rest is the generic pipeline itself: it chooses at run time what a
+specialised one has built in, about 13 times the work; a cheaper stand-in would take another design.
+
 Debugging switches (environment, as in Woohoo! Flight School; on Android `user/env.txt` in the app's folder, one
 `NAME=value` a line, the log listing each): `PWR_SKIP=<first>-<last>` (drop those draws of every
 frame, counted from each top-screen swap: bisects an artifact to its draws; with `PWR_SKIP_DUMP=<frame>` it prints their

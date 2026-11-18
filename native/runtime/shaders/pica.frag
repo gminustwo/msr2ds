@@ -96,6 +96,21 @@ bool sampler_ok(uint cfg, uint smp) {
     const uint ok[9] = uint[9](0x41u, 0x49u, 0x43u, 0x4au, 0u, 0x73u, 0x79u, 0x4bu, 0x7bu);
     return cfg < 9u && ((ok[cfg] >> smp) & 1u) != 0u;
 }
+#ifdef GENERIC_SELECTS
+// Built so on Macs (CMake: MoltenVK): the generic pipeline (SC_ON = 0: each draw whose own pipeline is still compiling)
+// with no array indexed at run time, its selections as selects and its pass-through stages left out. Apple's GPUs ran it
+// about 17 times as long as the specialised pipelines (2026-11-18: an M3 Max at 7x, PWR_VK_NOSPEC=1, 69 ms of GPU a frame
+// against about 4; 52.8 with this, the pictures the same, specialised and generic). The combiner's selections were most of
+// it (its six stages without lighting 54 ms, one stage 7.6), the light loop about 15 ms. Elsewhere the shader is as it
+// was (its SPIR-V byte for byte): untried there, and Adreno's compiler has crashed on changes to the light loop (#37, #58).
+uint sampler_bits(uint cfg) {   // sampler_ok's table as a bit per LUT
+    return cfg == 0u ? 0x41u : cfg == 1u ? 0x49u : cfg == 2u ? 0x43u : cfg == 3u ? 0x4au : cfg == 5u ? 0x73u :
+           cfg == 6u ? 0x79u : cfg == 7u ? 0x4bu : cfg == 8u ? 0x7bu : 0u;
+}
+#define HAVE(s) ((have & (1u << s)) != 0u)
+#else
+#define HAVE(s) have[s]
+#endif
 float lut_scale(uint s) { return s == 0u ? 1.0 : s == 1u ? 2.0 : s == 2u ? 4.0 : s == 3u ? 8.0 : s == 6u ? 0.25 : s == 7u ? 0.5 : 0.0; }
 vec3 qrot(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + v * q.w); }
 
@@ -133,7 +148,11 @@ void fragment_light(vec4 tex[3], out vec4 prim, out vec4 sec) {
     uint cfg = (c0 >> 4) & 15u, bump = (c0 >> 28) & 3u, bsel = (c0 >> 22) & 3u;
     vec3 surf_n = vec3(0, 0, 1), surf_t = vec3(1, 0, 0);
     if (bump != 0u && bsel < 3u) {
+#ifdef GENERIC_SELECTS
+        vec3 m = (bsel == 0u ? tex[0].rgb : bsel == 1u ? tex[1].rgb : tex[2].rgb) * 2.0 - 1.0;
+#else
         vec3 m = tex[bsel].rgb * 2.0 - 1.0;
+#endif
         if (bump == 1u) { surf_n = m; if (((c0 >> 30) & 1u) == 0u) surf_n.z = sqrt(max(1.0 - m.x * m.x - m.y * m.y, 0.0)); }
         else surf_t = m;
     }
@@ -143,7 +162,13 @@ void fragment_light(vec4 tex[3], out vec4 prim, out vec4 sec) {
     vec3 dsum = vec3(0), ssum = vec3(0);
     float dalpha = 1.0, salpha = 1.0;
     uint nlights = L_N();
+#ifdef GENERIC_SELECTS
+    // the LUTs sampled, the same for every light: s unless c1 disables it (s 0-3: bits 16-19, 4: 22, 5: 21, 6: 20) or the
+    // configuration lacks it, never 2 (the spotlight's, per light below)
+    uint d16 = c1 >> 16, have = sampler_bits(cfg) & ~((d16 & 15u) | ((d16 >> 6) & 1u) << 4 | ((d16 >> 5) & 1u) << 5 | ((d16 >> 4) & 1u) << 6) & ~4u;
+#else
     const uint dis_bit[7] = uint[7](16u, 17u, 18u, 19u, 22u, 21u, 20u);
+#endif
     // The loop as 2.0.8 wrote it, its reads of the setup through L_*(): specialized, the light count is a constant and the
     // driver unrolls it, each light's id, register reads and LUTs constants. (2.0.9 moved its body into a function taking
     // the LUT array, with unroll hints on this loop and the one over the LUTs; Adreno 830's compiler crashed on that, #37,
@@ -155,8 +180,10 @@ void fragment_light(vec4 tex[3], out vec4 prim, out vec4 sec) {
         vec3 pos = u.lpos[id].xyz;
         vec3 lv = normalize(directional ? pos : pos + view);
         vec3 half_v = nview + lv;
+#ifndef GENERIC_SELECTS
         bool have[7];
         for (uint s = 0u; s < 7u; s++) have[s] = s != 2u && ((c1 >> dis_bit[s]) & 1u) == 0u && sampler_ok(cfg, s);
+#endif
         float dist_att = 1.0, spot_att = 1.0;
         if (((c1 >> (24u + id)) & 1u) == 0u) {
             float d = length(view + pos);
@@ -166,12 +193,12 @@ void fragment_light(vec4 tex[3], out vec4 prim, out vec4 sec) {
         }
         if (((c1 >> (8u + id)) & 1u) == 0u) spot_att = lut_value(2u, 8u + id, normal, nview, lv, half_v, tangent, id, two_sided);
         float d0 = 1.0, d1 = 1.0; vec3 refl;
-        if (have[0]) d0 = lut_value(0u, 0u, normal, nview, lv, half_v, tangent, id, two_sided);
-        refl.x = have[6] ? lut_value(6u, 6u, normal, nview, lv, half_v, tangent, id, two_sided) : 1.0;
-        refl.y = have[5] ? lut_value(5u, 5u, normal, nview, lv, half_v, tangent, id, two_sided) : refl.x;
-        refl.z = have[4] ? lut_value(4u, 4u, normal, nview, lv, half_v, tangent, id, two_sided) : refl.x;
-        if (have[1]) d1 = lut_value(1u, 1u, normal, nview, lv, half_v, tangent, id, two_sided);
-        if (have[3]) {
+        if (HAVE(0)) d0 = lut_value(0u, 0u, normal, nview, lv, half_v, tangent, id, two_sided);
+        refl.x = HAVE(6) ? lut_value(6u, 6u, normal, nview, lv, half_v, tangent, id, two_sided) : 1.0;
+        refl.y = HAVE(5) ? lut_value(5u, 5u, normal, nview, lv, half_v, tangent, id, two_sided) : refl.x;
+        refl.z = HAVE(4) ? lut_value(4u, 4u, normal, nview, lv, half_v, tangent, id, two_sided) : refl.x;
+        if (HAVE(1)) d1 = lut_value(1u, 1u, normal, nview, lv, half_v, tangent, id, two_sided);
+        if (HAVE(3)) {
             float fr = lut_value(3u, 3u, normal, nview, lv, half_v, tangent, id, two_sided);
             if (((c0 >> 2) & 1u) != 0u) dalpha = fr;
             if (((c0 >> 3) & 1u) != 0u) salpha = fr;
@@ -195,6 +222,41 @@ void fragment_light(vec4 tex[3], out vec4 prim, out vec4 sec) {
 }
 
 // ---- TEV ----
+#ifdef GENERIC_SELECTS
+// selects, not branches: the same values (the first match of each chain below; the sources and ops are distinct)
+vec4 tev_src(uint src, vec4 tex[3], vec4 prev, vec4 buf, vec4 konst, vec4 lp, vec4 ls) {
+    vec4 r = vec4(0);
+    r = mix(r, v_col, bvec4(src == 0u)); r = mix(r, lp, bvec4(src == 1u)); r = mix(r, ls, bvec4(src == 2u));
+    r = mix(r, tex[0], bvec4(src == 3u)); r = mix(r, tex[1], bvec4(src == 4u)); r = mix(r, tex[2], bvec4(src == 5u));
+    r = mix(r, buf, bvec4(src == 0xDu)); r = mix(r, konst, bvec4(src == 0xEu)); r = mix(r, prev, bvec4(src == 0xFu));
+    return r;
+}
+vec3 oprgb(uint op, vec4 c) {
+    vec3 v = c.rgb;
+    v = mix(v, vec3(c.a), bvec3(op == 2u || op == 3u)); v = mix(v, vec3(c.r), bvec3(op == 4u || op == 5u));
+    v = mix(v, vec3(c.g), bvec3(op == 8u || op == 9u)); v = mix(v, vec3(c.b), bvec3(op == 12u || op == 13u));
+    return mix(v, 1.0 - v, bvec3(op == 1u || op == 3u || op == 5u || op == 9u || op == 13u));
+}
+float opa(uint op, vec4 c) {
+    uint ch = op >> 1;
+    float v = mix(mix(mix(c.b, c.g, ch == 2u), c.r, ch == 1u), c.a, ch == 0u);
+    return mix(v, 1.0 - v, (op & 1u) != 0u);
+}
+vec3 comb3(uint op, vec3 a, vec3 b, vec3 c) {
+    vec3 r = a;
+    r = mix(r, a * b, bvec3(op == 1u)); r = mix(r, a + b, bvec3(op == 2u)); r = mix(r, a + b - 0.5, bvec3(op == 3u));
+    r = mix(r, a * c + b * (1.0 - c), bvec3(op == 4u)); r = mix(r, a - b, bvec3(op == 5u));
+    r = mix(r, a * b + c, bvec3(op == 8u)); r = mix(r, (a + b) * c, bvec3(op == 9u));
+    return r;
+}
+float comb1(uint op, float a, float b, float c) {
+    float r = a;
+    r = mix(r, a * b, op == 1u); r = mix(r, a + b, op == 2u); r = mix(r, a + b - 0.5, op == 3u);
+    r = mix(r, a * c + b * (1.0 - c), op == 4u); r = mix(r, a - b, op == 5u);
+    r = mix(r, a * b + c, op == 8u); r = mix(r, (a + b) * c, op == 9u);
+    return r;
+}
+#else
 vec4 tev_src(uint src, vec4 tex[3], vec4 prev, vec4 buf, vec4 konst, vec4 lp, vec4 ls) {
     if (src == 0u) return v_col;
     if (src == 1u) return lp;
@@ -229,6 +291,7 @@ float comb1(uint op, float a, float b, float c) {
     if (op == 4u) return a * c + b * (1.0 - c); if (op == 5u) return a - b; if (op == 8u) return a * b + c; if (op == 9u) return (a + b) * c;
     return a;
 }
+#endif
 bool cmp_func(uint f, float a, float b) {
     if (f == 0u) return false; if (f == 1u) return true; if (f == 2u) return a == b; if (f == 3u) return a != b;
     if (f == 4u) return a < b; if (f == 5u) return a <= b; if (f == 6u) return a > b; return a >= b;
@@ -255,6 +318,15 @@ void main() {
         uint ops = SC_ON != 0u ? sc6(i, SC_OPS0, SC_OPS1, SC_OPS2, SC_OPS3, SC_OPS4, SC_OPS5) : R(b + 1u);
         uint cmb = SC_ON != 0u ? sc6(i, SC_CMB0, SC_CMB1, SC_CMB2, SC_CMB3, SC_CMB4, SC_CMB5) : R(b + 2u);
         uint scl = SC_ON != 0u ? sc6(i, SC_SCL0, SC_SCL1, SC_SCL2, SC_SCL3, SC_SCL4, SC_SCL5) : R(b + 4u);
+#ifdef GENERIC_SELECTS
+        // a stage that passes Previous through (replace; source 0 Previous, as is; scale 1) gives it as it is (clamped by
+        // the stage before): its work left out (most draws use 4-6 of the 6 stages, the rest such)
+        vec4 o = prev;
+        if (i == 0u || (cmb & 0xF000Fu) != 0u || (srcs & 0xF000Fu) != 0xF000Fu || (ops & 0x700Fu) != 0u || (scl & 0x30003u) != 0u) {
+#else
+        vec4 o;
+        {
+#endif
         vec4 konst = rgba8(R(b + 3u));
         vec3 in_rgb[3]; float in_a[3];
         UNROLL for (uint k = 0u; k < 3u; k++) {
@@ -265,12 +337,12 @@ void main() {
             in_a[k] = opa((ops >> (12u + 4u * k)) & 7u, tev_src(sa, tex, prev, buf, konst, lp, ls));
         }
         uint crgb = cmb & 15u, ca = (cmb >> 16) & 15u;
-        vec4 o;
         if (crgb == 6u || crgb == 7u) o.rgb = vec3(4.0 * dot(in_rgb[0] - 0.5, in_rgb[1] - 0.5));
         else o.rgb = comb3(crgb, in_rgb[0], in_rgb[1], in_rgb[2]);
         o.a = crgb == 7u ? o.r : comb1(ca, in_a[0], in_a[1], in_a[2]);
         o.rgb = clamp(o.rgb * float(1u << (scl & 3u)), 0.0, 1.0);
         o.a = clamp(o.a * float(1u << ((scl >> 16) & 3u)), 0.0, 1.0);
+        }
         buf = next_buf;
         if (i < 4u) {
             if (((bufcfg >> (8u + i)) & 1u) != 0u) next_buf.rgb = o.rgb;
