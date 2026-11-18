@@ -351,7 +351,7 @@ static void dsp_tick(void) {
 /* the DSP's clock: one frame every 160 samples at 32728 Hz, on its own thread (from the 60 Hz main loop the frames came in bursts of 3-4,
    and all but the first of a burst were skipped by the pacing above, so audio ran at 60 frames/s instead of 200) */
 static void *dsp_clock(void *arg) {
-    (void)arg; struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    (void)arg; k_game_thread(); struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     double next = (double)ts.tv_sec + ts.tv_nsec * 1e-9;
     const char *hz = getenv("PWR_DSP_HZ");   /* A/B: tick rate (default 32728/160 = 204.55); the guest sound engine runs once per tick */
     double period = hz ? 1.0 / atof(hz) : 160.0 / 32728.0, fill = TARGET_FILL;

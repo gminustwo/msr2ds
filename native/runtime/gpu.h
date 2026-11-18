@@ -64,6 +64,7 @@ void dsp_set_volume(float volume);       /* dsp.c: 0..1 */
 int  k_power_saving(void);               /* kernel.c: power-saving waits (sleep, don't spin) */
 int  k_cpu_threads(void);                /* kernel.c: the host's processor threads */
 void k_background_thread(void);          /* kernel.c: the calling thread below the game's (work no frame waits for) */
+void k_game_thread(void);                /* kernel.c: the calling thread is one of the game's (a Mac: user-interactive) */
 void msr_overlay_start(int fullscreen, int resolution, int vsync, int volume, int aniso, int fsr,
                        int power_saving);   /* msr/overlay_host.cpp */   /* before video_init: above 60, frames are presented without waiting for the display (mailbox) */
 int  video_frame(void);                                        /* present current screens; 0 when the window closed */
