@@ -235,7 +235,7 @@ void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
 
     // the text's pieces: glyphs, embedded sprites, spaces and line breaks
     enum Kind { Glyph, Sprite, Space, Break };
-    struct Piece { Kind kind; MsrGlyph g; int atlas; float uv[4], w, h, advance; };
+    struct Piece { Kind kind; MsrGlyph g; int atlas; float uv[4], w, h, advance; u32 icon; };
     std::vector<Piece> all;
     all.reserve(length);
     for (u32 i = 0; i < length; ++i) {
@@ -252,6 +252,12 @@ void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
             if (j < length && msr_gui_embedded(name, n, &p.atlas, p.uv, &p.w, &p.h)) {
                 p.kind = Sprite;
                 p.advance = p.w;
+                // (a face or shoulder button's icon: its sheet item's name hash, for the compositor's ControlsIcons,
+                // which shows play's button in the pause's descriptions: "Press @[Y] rapidly to fire")
+                static const struct { const char* name; u32 hash; } Buttons[] = {
+                    {"A", 0x2C266174u}, {"B", 0xB52F30CEu}, {"X", 0x484DC9B4u}, {"Y", 0x3F4AF922u}, {"L", 0x52971DC9u}, {"R", 0xA89820AAu}};
+                for (const auto& button : Buttons)
+                    if (std::strlen(button.name) == n && !std::strncmp(button.name, name, n)) p.icon = button.hash;
                 all.push_back(p);
                 i = j;
                 continue;
@@ -327,6 +333,7 @@ void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
             MsrGuiItem it = labelled;
             if (p.kind == Sprite) {
                 it.atlas = p.atlas;
+                it.sprite = p.icon;
                 std::memcpy(it.uv, p.uv, sizeof p.uv);
                 it.x = pen; it.y = baseline + sy - p.h * sy; it.w = p.w * sx; it.h = p.h * sy;
                 it.additive = 1;
@@ -373,8 +380,11 @@ int AnchorOf(u32 o) {
 }
 // ...the map's view and what it holds, and the pin a finger holds over it (MarkerComposition, MarkerCell): the map's
 constexpr u32 MapAnchored[] = {0x1055A6E5u /* MinimapHang */, 0xB9370011u /* MarkerComposition */, 0xCA37DA0Au /* MarkerCell */};
+// Containers whose pieces the compositor tells apart (MsrGuiItem.group): the pause's Controls page, whose icons name
+// play's buttons (compositor.cpp ControlsIcons)
+constexpr u32 GroupContainers[] = {0xB1E17D10u /* ControlsComposition */};
 
-void Walk(u32 o, int depth, Clip clip, int anchor = -1) {
+void Walk(u32 o, int depth, Clip clip, int anchor = -1, u32 group = 0) {
     if (depth > 32 || ++nodes > MaxNodes || !ValidRange(o, ObjectSize)) return;
     const u32 vt = rd32(o);
     if (vt < 0x600000 || vt >= 0x800000) return;   // not an object of the game's
@@ -402,6 +412,7 @@ void Walk(u32 o, int depth, Clip clip, int anchor = -1) {
             return;
         }
         base.name = NameHash(o);
+        base.group = group;
         // (a leaf always decides, AnchorOf; a label stretched keeps to its alignment, Label)
         base.anchor = anchor >= 0 ? anchor : MSR_ANCHOR_MIDDLE;
         base.clip[0] = clip.x0; base.clip[1] = clip.y0; base.clip[2] = clip.x1; base.clip[3] = clip.y1;
@@ -431,8 +442,12 @@ void Walk(u32 o, int depth, Clip clip, int anchor = -1) {
         clip = {std::max(clip.x0, x <= 2.f ? x - wide : x), std::max(clip.y0, y),
                 std::min(clip.x1, x + w >= 318.f ? x + w + wide : x + w), std::min(clip.y1, y + h)};
     }
+    {
+        const u32 name = NameHash(o);
+        if (std::find(std::begin(GroupContainers), std::end(GroupContainers), name) != std::end(GroupContainers)) group = name;
+    }
     for (int guard = 0; node && guard < 2000 && ValidRange(node, 8); ++guard) {
-        Walk(rd32(node), depth + 1, clip, anchor);
+        Walk(rd32(node), depth + 1, clip, anchor, group);
         node = rd32(node + 4);
     }
 }

@@ -290,3 +290,20 @@ extern "C" void msr_glyph_patch(int sheet, uint8_t* rgba, uint32_t w, uint32_t h
     G::WriteShoulders(s, image, shoulders);
 }
 extern "C" unsigned msr_glyph_version(void) { return version.load(std::memory_order_relaxed); }
+
+// compositor.cpp: the face icon showing the pad button play binds a control to (msr.h). A pad's face icons show, each,
+// the button its face is bound to in the layout the icons follow now (Apply: the menus' in menus), so the one that shows
+// play's button for the control is the face whose binding in that layout is that button.
+extern "C" int msr_glyph_play_face(int control, int* pad_button) {
+    const u32 dev = G::device.load(std::memory_order_relaxed);
+    *pad_button = -1;
+    if (dev != G::Xbox && dev != G::PlayStation && dev != G::Nintendo) return -2;
+    const int b = control >= 0 && control < C_COUNT ? input_pad_bound(control, 0) : -1;
+    *pad_button = b;
+    if (b < SDL_CONTROLLER_BUTTON_A || b > SDL_CONTROLLER_BUTTON_Y) return -1;
+    const bool icons_menu = MenuLayout(dev, true);
+    for (int face = 0; face < static_cast<int>(G::FaceCount); ++face)
+        if (input_pad_bound(face, icons_menu) == b) return face;
+    return -1;
+}
+extern "C" const char* msr_pad_label(int button) { return Label(button); }

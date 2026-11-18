@@ -19,6 +19,9 @@
 #include "msr/presentation.h"
 
 extern "C" int msr_overlay_visible(void);   // overlay_host.cpp
+extern "C" {
+#include "input.h"
+}
 #include "msr/touch_nav.h"
 
 namespace {
@@ -604,6 +607,87 @@ void PauseExtras() {
     gui_now.insert(gui_now.end(), extra.begin(), extra.end());
 }
 
+// The pause's Controls page with the buttons play is bound to (2026-11-17, the user: "the controls on the pause menu
+// should reflect the controls weve mapped to the game"). Its icons (ControlsComposition: the sheet items A, B, X, Y,
+// L, R, D beside Use Aeion, Jump, Melee Counter, Shoot, Free Aim, Missile Mode, Select Aeion) are the game's face and
+// shoulder icons, which in menus show the menus' layout (A chooses: the check mark's A), so Jump (B) read B though
+// play has it on the pad's A. Each shows play's button instead: the face icon that shows it now
+// (msr_glyph_play_face), the L or R icon for a shoulder, the game's D-pad icons for a direction, else its name in the
+// game's font ("LT", and "RS" for Select Aeion with the Aeion abilities on the right stick). The keyboard's icons
+// already show the keys bound in play.
+void ControlsIcons() {
+    constexpr uint32_t Group = 0xB1E17D10u;   // ControlsComposition
+    struct Row { uint32_t sprite; int control; };
+    static constexpr Row Rows[] = {{0x2C266174u, C_A}, {0xB52F30CEu, C_B}, {0x484DC9B4u, C_X}, {0x3F4AF922u, C_Y},
+                                   {0x52971DC9u, C_L}, {0xA89820AAu, C_R}, {0x5C4C95FBu, C_UP /* D */}};
+    static const char* const FaceIcons[4] = {"A", "B", "X", "Y"};
+    static const char* const DpadIcons[4] = {"D-UP", "D-DOWN", "D-LEFT", "D-RIGHT"};
+    constexpr int PadL1 = 9, PadR1 = 10, PadUp = 11, PadRight = 14;   // (SDL_CONTROLLER_BUTTON_*)
+    std::vector<MsrGuiItem> text;
+    // an embedded icon in the place of `it` (as tall, its middle where it was)
+    const auto swap_icon = [](MsrGuiItem& it, const char* name) {
+        int atlas = -1;
+        float uv[4], w = 0.f, h = 0.f;
+        if (!msr_gui_embedded(name, std::strlen(name), &atlas, uv, &w, &h) || h <= 0.f) return false;
+        const float nw = w * it.h / h, mid = it.x + it.w / 2;
+        it.atlas = atlas;
+        std::copy(uv, uv + 4, it.uv);
+        it.x = mid - nw / 2;
+        it.w = nw;
+        return true;
+    };
+    // a short name in the place of `it`: the game's digital_medium glyphs, at most 24 pixels wide, its middle there
+    const auto name_icon = [&text](MsrGuiItem& it, const char* label) {
+        float size = 0.f, ascent = 0.f;
+        if (!label || !*label || !msr_gui_font(MSR_FONT_MEDIUM, &size, &ascent)) return;
+        std::vector<MsrGlyph> glyphs;
+        float width = 0.f;
+        for (const char* c = label; *c; ++c) {
+            MsrGlyph g;
+            if (!msr_gui_glyph(MSR_FONT_MEDIUM, static_cast<unsigned char>(*c), &g)) continue;
+            glyphs.push_back(g);
+            width += g.advance;
+        }
+        if (width <= 0.f) return;
+        const float s = std::min(it.h / size, 24.f / width);
+        float pen = it.x + it.w / 2 - width * s / 2;
+        const float baseline = it.y + it.h / 2 + ascent * s / 2;
+        for (const MsrGlyph& g : glyphs) {
+            MsrGuiItem t = it;
+            t.atlas = MSR_ATLAS_FONT;
+            std::copy(g.uv, g.uv + 4, t.uv);
+            t.x = pen + g.left * s; t.y = baseline - g.top * s; t.w = g.w * s; t.h = g.h * s;
+            t.glyph = 1;
+            t.additive = 0;
+            t.sprite = 0;
+            t.color[0] = .8f; t.color[1] = .9f; t.color[2] = 1.f;
+            text.push_back(t);
+            pen += g.advance * s;
+        }
+        it.color[3] = 0.f;   // (the icon it stands for, not drawn)
+    };
+    for (MsrGuiItem& it : gui_now) {
+        // the page's icons, and in play the face and shoulder icons a text embeds (the Samus page's descriptions:
+        // "Press @[Y] rapidly to fire"; the title's "Press @[A_ALT] to Start" is a menu's, and untagged)
+        if (it.glyph ? !(it.sprite && st.in_play) : it.group != Group) continue;
+        const auto row = std::find_if(std::begin(Rows), std::end(Rows), [&it](const Row& r) { return r.sprite == it.sprite; });
+        if (row == std::end(Rows)) continue;
+        int b = -1;
+        const int face = msr_glyph_play_face(row->control, &b);
+        if (face == -2) continue;   // (the icons follow play's bindings already)
+        if (row->control == C_UP) {   // Select Aeion: the D-pad, or the right stick with the Aeion abilities there
+            if (input_right_stick_dpad()) name_icon(it, "RS");
+            continue;
+        }
+        if (face >= 0) swap_icon(it, FaceIcons[face]);
+        else if (b == PadL1) swap_icon(it, "L");
+        else if (b == PadR1) swap_icon(it, "R");
+        else if (b >= PadUp && b <= PadRight) swap_icon(it, DpadIcons[b - PadUp]);
+        else if (b >= 0) name_icon(it, msr_pad_label(b));
+    }
+    gui_now.insert(gui_now.end(), text.begin(), text.end());
+}
+
 // ConsumeMsrReadbacks: classify the bottom screen, track the beam slots, the map marker and the prompt's text, and
 // publish the state once it has held.
 void Consume(const BC::Image& image, s64 now) {
@@ -900,6 +984,7 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     FooterFromTree();
     PauseFromTree();
     PauseExtras();
+    ControlsIcons();
     // HID Start rising: the game sees the press (the emulator's HID sets this as the game reads it)
     if ((buttons & 8) && !(st.buttons & 8)) {
         P::start_pressed_us.store(now_us, std::memory_order_relaxed);
