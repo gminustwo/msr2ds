@@ -15,6 +15,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #ifndef MSR_NATIVE
 #include <QString>
@@ -272,6 +273,13 @@ struct LauncherSnapshot {
     std::string saves_detail; ///< Confirm: how many files, when last saved, other save folders there
     std::string saves_note;   ///< Searching: where; Done: where the previous saves went; Failed: why
     std::string saves_folder; ///< Where the game keeps its saves
+    /// msr-native's Android app on an Adreno GPU: the game's Vulkan driver, the system's or one the
+    /// player installed (a driver package as emulators take them: Mesa's Turnip and the like)
+    bool gpu_driver_option = false;
+    std::vector<std::pair<std::string, std::string>> gpu_drivers; ///< Installed: folder name, name shown
+    std::string gpu_driver;      ///< The chosen one's folder name; empty: the system's
+    std::string gpu_driver_note; ///< An install's or removal's result, or why the game went back to the system's
+    bool gpu_driver_bad = false; ///< The note is a failure
 };
 
 struct OverlayAction {
@@ -315,6 +323,9 @@ struct OverlayAction {
         LauncherImportConfirm, ///< Import the saves found
         LauncherImportCancel,  ///< Leave the saves found
         LauncherSavesFolder,   ///< Open the saves folder
+        LauncherGpuDriver,        ///< msr-native (Android): the game's GPU driver, `text` its folder name ("": the system's)
+        LauncherGpuDriverInstall, ///< msr-native (Android): install a GPU driver package (the system's file picker)
+        LauncherGpuDriverRemove,  ///< msr-native (Android): remove the GPU driver `text`
     };
     Kind kind;
     EmulatorSettings emulator{};

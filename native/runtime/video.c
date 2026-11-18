@@ -159,6 +159,18 @@ static int opt_res = 1, opt_aniso = 1, opt_fps = 0, opt_vsync = 1, opt_res_match
 static int opt_select_layout = 2;   /* the gamepad's Back/Select button: 0 3DS Select, 1 the next screen layout, 2 these settings (F1),
                                        as the emulator-based build's Select (the game takes Select as Start) */
 static int opt_free_look = 0;       /* right stick orbits the chase camera (freelook.c) */
+/* The Android app's game: a GPU driver the player installed (--gpu-driver=<its folder's name>, from the launcher's GPU
+   driver; vk_load.c), else the system's. gpu_driver_off: it could not open the graphics, the system's opens them. */
+static char opt_gpu_driver[128];
+static int gpu_driver_off;
+#ifdef MSR_VOLK   /* Vulkan's functions loaded at run time (vk_load.c) */
+int msr_vk_load(const char *driver, char *why, size_t why_n);
+int msr_vk_custom(void);
+SDL_bool msr_vk_surface(SDL_Window *win, VkInstance inst, VkSurfaceKHR *surf);
+#define vk_create_surface msr_vk_surface
+#else
+#define vk_create_surface SDL_Vulkan_CreateSurface
+#endif
 static int opt_drawdist = 1;        /* draw distance multiplier (drawdist.c), read when the game starts */
 static int fs_last = 1;   /* the fullscreen mode F11 toggles to */
 static float opt_window_aspect = 16.f / 9.f;   /* the single layout's window when it opens ("21:9", "2.37") */
@@ -187,6 +199,7 @@ int video_option(const char *name, const char *value) {
     else if (!strcmp(name, "select_layout")) opt_select_layout = !strcmp(value, "settings") || !strcmp(value, "2") ? 2 : !strcmp(value, "1") || !strcmp(value, "on") || !strcmp(value, "true");
     else if (!strcmp(name, "draw_distance")) { i = atoi(value); if (i < 1 || i > 4) return -1; opt_drawdist = i; drawdist_set(i); }
     else if (!strcmp(name, "free_look")) { opt_free_look = !strcmp(value, "1") || !strcmp(value, "on") || !strcmp(value, "true"); freelook_enable(opt_free_look); }
+    else if (!strcmp(name, "gpu_driver")) { if (strlen(value) >= sizeof opt_gpu_driver || strchr(value, '/')) return -1; snprintf(opt_gpu_driver, sizeof opt_gpu_driver, "%s", value); }
     else return -1;
     return 0;
 }
@@ -576,7 +589,7 @@ static int create_swapchain(void) {
                 (unsigned)caps.supportedUsageFlags, (unsigned)transform, (unsigned)caps.supportedTransforms, (unsigned)alpha, (int)ci.presentMode);
         swap = VK_NULL_HANDLE;
         vkDestroySurfaceKHR(inst, surf, NULL); surf = VK_NULL_HANDLE;
-        if (!SDL_Vulkan_CreateSurface(win, inst, &surf)) { fprintf(stderr, "video: surface: %s\n", SDL_GetError()); snprintf(init_error, sizeof init_error, "surface: %s", SDL_GetError()); return -1; }
+        if (!vk_create_surface(win, inst, &surf)) { fprintf(stderr, "video: surface: %s\n", SDL_GetError()); snprintf(init_error, sizeof init_error, "surface: %s", SDL_GetError()); return -1; }
         ci.surface = surf;
         sr = vkCreateSwapchainKHR(dev, &ci, NULL, &swap);
     }
@@ -652,7 +665,7 @@ static int recreate_surface(void) {
     queue_acquire(); vk_wait_device(dev); queue_release();
     if (swap) { vkDestroySwapchainKHR(dev, swap, NULL); swap = VK_NULL_HANDLE; }
     vkDestroySurfaceKHR(inst, surf, NULL); surf = VK_NULL_HANDLE;
-    if (!SDL_Vulkan_CreateSurface(win, inst, &surf)) { fprintf(stderr, "video: surface: %s\n", SDL_GetError()); return -1; }
+    if (!vk_create_surface(win, inst, &surf)) { fprintf(stderr, "video: surface: %s\n", SDL_GetError()); return -1; }
     VkBool32 pres = 0; vkGetPhysicalDeviceSurfaceSupportKHR(phys, qfam, surf, &pres);
     fprintf(stderr, "video: the window's surface again (presentable %d)\n", (int)pres);
     return create_swapchain();
@@ -755,16 +768,54 @@ static void safe_begin(void) {
     if ((f = fopen(GFX_OPENING, "w"))) { fprintf(f, "%d %s\n%s\n", level, MSR_NATIVE_VERSION, own_log); fclose(f); safe_open = 1; }
 }
 static void safe_end(void) { if (safe_open) { remove(GFX_OPENING); safe_open = 0; } }
+/* The launcher, before video_keep_crashed_log: 1 when the start that ended while opening the graphics was the game's
+   (its marker names the game's log), which the launcher then puts down to the player's GPU driver, if one was chosen */
+int video_game_ended_opening(void) {
+    FILE *f = fopen(GFX_OPENING, "r"); if (!f) return 0;
+    int level = 0; char ver[32] = "", name[512] = "";
+    if (fscanf(f, "%d %31s", &level, ver) < 1) level = 0;
+    if (fscanf(f, " %511[^\r\n]", name) != 1) name[0] = 0;
+    fclose(f);
+    const size_t n = strlen(name);
+    return n >= 14 && !strcmp(name + n - 14, "msr-native.log");
+}
+/* ...and when it did: the next opening (the launcher's, then the game's with the system's driver) takes no safe level */
+void video_forget_ended_opening(void) { remove(GFX_OPENING); }
 #else
 void video_keep_crashed_log(const char *log) { (void)log; }
 static void safe_begin(void) {}
 static void safe_end(void) {}
 #endif
 
+#ifdef MSR_VOLK
+/* The player's GPU driver could not be loaded, or could not open the graphics (vk_open, video_init): the Android app's
+   launcher shows why under its GPU driver, from user/msr/gpu-driver-failed.txt (its folder's name, then why), which it
+   deletes */
+static void gpu_driver_failed(const char *why) {
+#ifdef __ANDROID__
+    FILE *f = fopen("user/msr/gpu-driver-failed.txt", "w");
+    if (f) { fprintf(f, "%s\n%s\n", opt_gpu_driver, why); fclose(f); }
+#else
+    (void)why;
+#endif
+}
+#endif
+/* The Vulkan device's vendor (the launcher's GPU driver is for Qualcomm's Adreno GPUs, 0x5143); 0 without Vulkan */
+static uint32_t vk_vendor;
+unsigned video_gpu_vendor(void) { return vk_vendor; }
+
 static int vk_open(int win_w, int win_h, int probe) {
     const char *no_vk = getenv("PWR_NO_VULKAN");
     if (no_vk && !strcmp(no_vk, "1")) { snprintf(init_error, sizeof init_error, "PWR_NO_VULKAN=1"); return -1; }
     safe_begin();
+#ifdef MSR_VOLK
+    {   /* Vulkan's library (vk_load.c): for the game, the player's GPU driver where one was chosen */
+        char why[300];
+        stage_set(STAGE_MAIN, "loading the Vulkan library");
+        if (msr_vk_load(gpu_driver_off ? NULL : opt_gpu_driver, why, sizeof why)) { snprintf(init_error, sizeof init_error, "no Vulkan library"); return -1; }
+        if (why[0]) gpu_driver_failed(why);
+    }
+#endif
     stage_set(STAGE_MAIN, "opening the window");
 #ifdef __ANDROID__
     const Uint32 win_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_FULLSCREEN;   /* the whole screen, without the system bars */
@@ -815,7 +866,10 @@ static int vk_open(int win_w, int win_h, int probe) {
     VkInstanceCreateInfo ici = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &ai, .enabledExtensionCount = ne, .ppEnabledExtensionNames = exts,
         .flags = has_portability_enum ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0 };
     VK(vkCreateInstance(&ici, NULL, &inst));
-    if (!SDL_Vulkan_CreateSurface(win, inst, &surf)) {
+#ifdef MSR_VOLK
+    volkLoadInstance(inst);
+#endif
+    if (!vk_create_surface(win, inst, &surf)) {
         fprintf(stderr, "video: surface: %s\n", SDL_GetError());
         snprintf(init_error, sizeof init_error, "surface: %s", SDL_GetError());
         return -1;
@@ -862,6 +916,7 @@ static int vk_open(int win_w, int win_h, int probe) {
         return -1;
     }
     VkPhysicalDeviceProperties pp; vkGetPhysicalDeviceProperties(phys, &pp);
+    vk_vendor = pp.vendorID;
     {   /* its kind and memory, for the logs players send (integrated graphics share the computer's memory) */
         VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(phys, &mp);
         double local = 0; for (uint32_t h = 0; h < mp.memoryHeapCount; h++) if (mp.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) local += (double)mp.memoryHeaps[h].size;
@@ -975,6 +1030,9 @@ static int vk_open(int win_w, int win_h, int probe) {
                        (int)f13.shaderDemoteToHelperInvocation);
     stage_set(STAGE_MAIN, "creating the Vulkan device");
     VK(vkCreateDevice(phys, &dci, NULL, &dev));
+#ifdef MSR_VOLK
+    volkLoadDevice(dev);   /* the device's own functions, and Vulkan 1.3's (msr_vk13_load below) */
+#endif
     stage_set(STAGE_MAIN, "setting up the device's functions");
     if (vk_hw) vk_push_init(dev, has_push && !getenv("PWR_VK_NO_PUSH"));   /* PWR_VK_NO_PUSH=1: the stand-in sets (vk_push.c), as on Mali */
     if (g_vk_rp) vk_rp_init(dev);
@@ -1121,6 +1179,15 @@ int video_init(int scale) {
     if (opt_renderer == R_OPENGL) fprintf(stderr, "video: no OpenGL in this build: Vulkan\n");
     if (!(vk = vk_open_(win_w, win_h, 0))) return 0;
     vk_close();
+#ifdef MSR_VOLK
+    if (msr_vk_custom()) {   /* the player's GPU driver could not open them: the system's, as the launcher has */
+        char why[300]; snprintf(why, sizeof why, "it could not open the graphics: %s", init_error);
+        gpu_driver_failed(why);
+        gpu_driver_off = 1;
+        if (!(vk = vk_open_(win_w, win_h, 0))) return 0;
+        vk_close();
+    }
+#endif
     return -1;
 #endif
 }

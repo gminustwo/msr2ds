@@ -50,7 +50,8 @@ android {
                     "-DCMAKE_JOB_POOL_COMPILE=msr",
                     "-DCMAKE_JOB_POOL_LINK=msr",
                 )
-                targets("msr-native")
+                // the program, and libadrenotools' loader and hooks (a GPU driver the player installed: native/CMakeLists.txt)
+                targets("msr-native", "msr_adrenotools", "msr_hook_impl", "msr_main_hook")
             }
         }
     }
@@ -85,6 +86,12 @@ android {
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
+    }
+
+    // The native libraries unpacked into the app's native library folder when it is installed: libadrenotools loads its
+    // hooks from there by name (a GPU driver the player installed), which it cannot do inside the APK
+    packaging {
+        jniLibs.useLegacyPackaging = true
     }
 
     compileOptions {

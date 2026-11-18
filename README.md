@@ -178,6 +178,15 @@ PC builds it for the app:
 The Back button opens the game's menu. Saves and settings are in the same user
 folder on the device.
 
+**GPU driver (Snapdragon).** On an Adreno GPU, the launcher's Game tab has a
+**GPU driver** row. The game can use a Vulkan driver you install in place of the
+phone's own, such as Mesa's Turnip: a driver package (`.zip`) made for emulators
+like Azahar and Eden. **Install a driver...** opens the file picker, and the
+game uses it from its next start. The launcher itself always uses the phone's
+driver. If the game closes while starting with a driver, the launcher goes back
+to **System driver**; if it closes later or draws wrongly, choose **System
+driver** yourself.
+
 ## Your files
 
 Everything goes in the user folder (**Open the user folder** on the Game tab):
@@ -586,6 +595,7 @@ hold no user folder and nothing from the game.
 `native/` (from Woohoo! Flight School) is GPL-3.0-or-later (`native/LICENSE`);
 `src/` and `tools/`, from the emulator-based port, stay GPL-2.0-or-later
 (`license.txt`). Dear ImGui and AMD FidelityFX FSR 1 are MIT. The macOS app also
-holds MoltenVK and shaderc (Apache 2.0), SDL 2 (zlib) and libpng. *Metroid:
+holds MoltenVK and shaderc (Apache 2.0), SDL 2 (zlib) and libpng; the Android
+app holds volk (MIT) and libadrenotools (BSD 2-Clause) too. *Metroid:
 Samus Returns* belongs to Nintendo; this project contains none of it and is not
 affiliated with Nintendo.

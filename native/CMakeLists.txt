@@ -60,6 +60,18 @@ if (WIN32 AND MINGW)
     target_link_libraries(msr_vulkan_delay INTERFACE Vulkan::Headers ${CMAKE_CURRENT_BINARY_DIR}/libvulkan-1-delay.a delayimp)
     set(MSR_VULKAN_LIB msr_vulkan_delay)
 endif()
+# The Android app: Vulkan through volk (externals/volk), every Vulkan function a pointer loaded at run time (runtime/vk_load.c),
+# from the system's libvulkan.so or from a GPU driver the player installed (libadrenotools, below). Elsewhere linked as above;
+# -DMSR_VOLK=ON takes the Android app's way on a PC (a check of it where the game can be run).
+if (ANDROID)
+    set(MSR_VOLK_DEFAULT ON)
+else()
+    set(MSR_VOLK_DEFAULT OFF)
+endif()
+option(MSR_VOLK "Vulkan's functions loaded at run time (volk), not linked" ${MSR_VOLK_DEFAULT})
+if (MSR_VOLK)
+    set(MSR_VULKAN_LIB Vulkan::Headers)
+endif()
 # SDL2 built from a source folder (static: nothing to ship), e.g. for an AppImage on a system without SDL2's headers
 set(MSR_SDL2_SOURCE "" CACHE PATH "Build SDL2 statically from this source folder instead of using the system's")
 if (ANDROID AND NOT MSR_SDL2_SOURCE)
@@ -180,11 +192,47 @@ else()
         target_compile_options(msr-native PRIVATE -ffp-contract=off)
     endif()
 endif()
-if (ANDROID OR WIN32)
+if (MSR_VOLK)
+    # Every source sees volk's function pointers in place of the Vulkan library's functions (a later vulkan.h adds
+    # nothing); vk_load.c loads them, and Vulkan 1.3's from the device under their extensions' names where needed
+    set(MSR_VOLK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../externals/volk)
+    target_sources(msr-native PRIVATE ${MSR_VOLK_DIR}/volk.c runtime/vk_load.c)
+    target_include_directories(msr-native PRIVATE ${MSR_VOLK_DIR})
+    target_compile_definitions(msr-native PRIVATE MSR_VOLK VK_NO_PROTOTYPES MSR_VK13_FROM_DEVICE)
+    target_compile_options(msr-native PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX>:SHELL:-include ${MSR_VOLK_DIR}/volk.h>")
+elseif (ANDROID OR WIN32)
     # Vulkan 1.3's functions from the device, not the Vulkan library (runtime/vk13_load.c): Android's has none of them,
     # and Windows' may be older than 1.3, where the program must still start (and render on the CPU)
     target_sources(msr-native PRIVATE runtime/vk13_load.c)
     target_compile_definitions(msr-native PRIVATE MSR_VK13_FROM_DEVICE)
+endif()
+if (ANDROID)
+    # libadrenotools (externals/libadrenotools, BSD 2-Clause): a GPU driver the player installed (an Adreno driver package,
+    # as Azahar and Eden take them: Mesa's Turnip and the like) loaded in place of the phone's own. Its loader is a library
+    # of its own, which vk_load.c opens only for such a driver: liblinkernsbypass, inside it, patches the system's linker
+    # as it loads. Its two hooks keep the names it opens them by (libhook_impl.so, libmain_hook.so), beside libmain.so
+    # in the app's native library folder (the app is packaged with its libraries unpacked: native/android/app).
+    set(MSR_ADRENOTOOLS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../externals/libadrenotools)
+    add_library(msr_linkernsbypass STATIC ${MSR_ADRENOTOOLS_DIR}/lib/linkernsbypass/android_linker_ns.cpp
+                ${MSR_ADRENOTOOLS_DIR}/lib/linkernsbypass/elf_soname_patcher.cpp)
+    set_target_properties(msr_linkernsbypass PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(msr_linkernsbypass PUBLIC ${MSR_ADRENOTOOLS_DIR}/lib/linkernsbypass)
+    target_link_libraries(msr_linkernsbypass PUBLIC android dl log)
+    add_library(msr_adrenotools SHARED ${MSR_ADRENOTOOLS_DIR}/src/driver.cpp)
+    target_include_directories(msr_adrenotools PRIVATE ${MSR_ADRENOTOOLS_DIR}/include)
+    target_link_libraries(msr_adrenotools PRIVATE msr_linkernsbypass)
+    # (their static C++ runtime and liblinkernsbypass kept to themselves: only their own functions are seen)
+    target_link_options(msr_adrenotools PRIVATE "LINKER:--exclude-libs,ALL")
+    add_library(msr_hook_impl SHARED ${MSR_ADRENOTOOLS_DIR}/src/hook/hook_impl.cpp)
+    set_target_properties(msr_hook_impl PROPERTIES OUTPUT_NAME hook_impl CXX_VISIBILITY_PRESET hidden)
+    target_include_directories(msr_hook_impl PRIVATE ${MSR_ADRENOTOOLS_DIR}/include)
+    target_link_libraries(msr_hook_impl PRIVATE msr_linkernsbypass)
+    target_link_options(msr_hook_impl PRIVATE "LINKER:--exclude-libs,ALL")
+    add_library(msr_main_hook SHARED ${MSR_ADRENOTOOLS_DIR}/src/hook/main_hook.c)
+    set_target_properties(msr_main_hook PROPERTIES OUTPUT_NAME main_hook)
+    target_link_options(msr_main_hook PRIVATE "LINKER:-z,global")
+    target_link_libraries(msr_main_hook PRIVATE msr_hook_impl)
+    add_dependencies(msr-native msr_adrenotools msr_hook_impl msr_main_hook)
 endif()
 if (MSR_A64)
     target_include_directories(msr-native BEFORE PRIVATE ${MSR_AOT_DIR}/a64)   # <emmintrin.h>, <xmmintrin.h>

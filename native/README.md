@@ -566,7 +566,7 @@ start `msr-native` (beside the exe) with `--layout=single --scale=3 --resolution
 game mods and texture packs it finds itself (`--texture-pack <folder>` instead, for tests). It runs in
 `user/native/` (log: `msr-native.log`) with saves in `user/native-save/`, a copy of the emulator's on the first start.
 
-- The Android app (2026-11-04, README.md Android): the program as `libmain.so` in SDL's activity. AArch64 builds take aot_runtime.h's SSE intrinsics from `src/core/arm/msr_aot/a64/` (MXCSR on FPCR: rounding, flush-to-zero; fsqrt, frinti/fcvtzs), which is part of their runtime hash; the native code is built on a PC (`build_module.py --target android-arm64`, Zig, no imports, 16 KB pages) and copied to the app's private folder before `dlopen` (`android.c`). Vulkan 1.3 functions come from `vkGetDeviceProcAddr` there (`vk13_load.c`, as on Windows, where `vulkan-1.dll` may be older than 1.3), push descriptors from descriptor sets where the device has none (`vk_push.c`, the emulator's gfxstream), the swapchain is identity-transformed at the window's size (SUBOPTIMAL is expected), and the window's surface is made again after the background (`recreate_surface`). Back is F1 in play, Escape in the launcher.
+- The Android app (2026-11-04, README.md Android): the program as `libmain.so` in SDL's activity. AArch64 builds take aot_runtime.h's SSE intrinsics from `src/core/arm/msr_aot/a64/` (MXCSR on FPCR: rounding, flush-to-zero; fsqrt, frinti/fcvtzs), which is part of their runtime hash; the native code is built on a PC (`build_module.py --target android-arm64`, Zig, no imports, 16 KB pages) and copied to the app's private folder before `dlopen` (`android.c`). Vulkan's functions are loaded at run time there (volk, `vk_load.c`; Vulkan 1.3's from the device, under their extensions' names where needed, as `vk13_load.c` does on Windows, where `vulkan-1.dll` may be older than 1.3), push descriptors from descriptor sets where the device has none (`vk_push.c`, the emulator's gfxstream), the swapchain is identity-transformed at the window's size (SUBOPTIMAL is expected), and the window's surface is made again after the background (`recreate_surface`). Back is F1 in play, Escape in the launcher.
 
 ## Build and run
 
@@ -613,7 +613,7 @@ model an original 3DS; reporting a 2DS changes nothing: the game never asks), an
 effects, so leaving one out would take the game's own code. Image layouts stay GENERAL (Adreno may keep such images
 uncompressed): not measured, as no phone was at hand.
 
-**The lighting setup per material, not on Adreno (#37, #58, 2026-11-17).** 2.0.9 built each material's lighting setup
+**The lighting setup per material, not with Qualcomm's Adreno driver (#37, #58, 2026-11-17).** 2.0.9 built each material's lighting setup
 into its fragment shader (pica_int.h `pica_sc_light`: specialisation constants 30-37), which took the scene's GPU time
 on a Ryzen's integrated Radeon at 4x from 23.1 to 17.9 ms. On Adreno 830s (driver 512.800.64 and .72) the shader
 compiler crashed building it: a `pica_vk: pipeline creation failed`, then SIGSEGV in `libllvm-qgl.so` inside
@@ -622,10 +622,32 @@ compiler crashed building it: a `pica_vk: pipeline creation failed`, then SIGSEG
 - pica.frag's light loop is 2.0.8's again (2.0.9 had moved its body into a function taking the LUT array, with unroll
   hints on it and on the loop over the LUTs), its reads of the setup through `L_*()`. Specialized, the driver still
   unrolls it: 19.1 ms there with the setup built in, 25.1 without.
-- On Qualcomm GPUs (vendor 0x5143) lighting reads the registers, as in 2.0.8: the key's `SC_LNUM` gets bit 31
+- With Qualcomm's own driver (`VK_DRIVER_ID_QUALCOMM_PROPRIETARY`, or vendor 0x5143 without Vulkan 1.2's driver ID)
+  lighting reads the registers, as in 2.0.8: the key's `SC_LNUM` gets bit 31
   (pica.frag `L_SPEC`), so lit pipelines no longer multiply per material either, and saved keys with a setup built in are
   not preloaded. The log says `pica_vk: lighting read from the registers, ...`; `PWR_VK_LIGHT_SPEC=1` builds it in there
-  (to try the rewritten loop on a phone), `=0` leaves it out elsewhere.
+  (to try the rewritten loop on a phone), `=0` leaves it out elsewhere. Mesa's Turnip on the same GPUs (a GPU driver the
+  player installed, below) has its own compiler and builds it in.
+
+**A GPU driver the player installs (Android, #58, #66, 2026-11-18).** On an Adreno GPU the launcher's Game tab has a GPU
+driver: an Adreno driver package as Azahar, Eden and other emulators take them (a `.zip` with `meta.json`, whose
+`libraryName` is the driver's library, and the libraries; Mesa's Turnip and the like). Its Install button opens the
+system's file picker; `MsrActivity`/`GpuDrivers.java` unpack the package into the app's private `files/gpu_drivers/<name>/`
+(Android loads code only from there) and tell the launcher (`msr_gpu_driver_installed`). `settings.ini [native]
+gpu_driver` keeps the folder's name, and Play gives the game `--gpu-driver=<name>`. The game loads it with libadrenotools
+(`externals/libadrenotools`, `vk_load.c`) in place of the phone's driver: the Android build takes every Vulkan function
+through volk (`externals/volk`, forced into every source; `-DMSR_VOLK=ON` builds a PC's that way, which ran the game on
+the RTX 5090), so they come from whichever library was loaded. libadrenotools' loader is its own library
+(`libmsr_adrenotools.so`), opened only then, as liblinkernsbypass inside it patches the system's linker as it loads; its
+hooks (`libhook_impl.so`, `libmain_hook.so`) are opened by name from the app's native library folder, so the APK is
+packaged with its libraries unpacked (`useLegacyPackaging`). With that driver the window's surface comes from its own
+`vkCreateAndroidSurfaceKHR` (SDL's Vulkan library is the system's). The launcher always takes the system's driver, so a
+driver that fails cannot keep the player from changing it. A driver that cannot be loaded, or cannot open the graphics
+(`video_init`: the window and Vulkan opened again), leaves the game on the system's, and
+`user/msr/gpu-driver-failed.txt` has the launcher say why; a game that ended while opening the graphics with one (the
+safe levels' marker naming `msr-native.log`) has the launcher go back to the system's, without a safe level for it.
+`pwr_pipelines.bin` is used only when its header has this GPU's vendor, device and cache UUID (a switch of drivers on the
+same GPU: the driver's own check of it is not relied on). Not tried on a phone yet: no Adreno device here.
 
 **Macs: the window's drawable outside the queue (2026-11-18).** On an M3 Max at 6x, 120 FPS and V-Sync, 2.1.0 made 30-60
 FPS in play (46 on average over 50 s after a quick load; the app through `--direct`, 61-77), at times 120 after half a

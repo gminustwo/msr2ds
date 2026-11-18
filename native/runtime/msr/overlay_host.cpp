@@ -728,6 +728,9 @@ extern "C" void msr_overlay_frame(void) {
         case Kind::LauncherImportConfirm:
         case Kind::LauncherImportCancel:
         case Kind::LauncherSavesFolder:
+        case Kind::LauncherGpuDriver:
+        case Kind::LauncherGpuDriverInstall:
+        case Kind::LauncherGpuDriverRemove:
             msr_launcher_action(static_cast<int>(action.kind), action.text.c_str());
             break;
         case Kind::Quit:

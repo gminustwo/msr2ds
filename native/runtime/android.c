@@ -55,6 +55,63 @@ const char *msr_android_module(const char *path) {
     return copy;
 }
 
+const char *msr_android_gpu_drivers(void) {
+    static char dir[4096];
+    if (!dir[0]) {
+        const char *internal = SDL_AndroidGetInternalStoragePath();
+        snprintf(dir, sizeof dir, "%s/gpu_drivers", internal ? internal : ".");
+    }
+    return dir;
+}
+
+/* (a Java exception from a call: cleared, so that JNI can go on) */
+static int jni_failed(JNIEnv *env) {
+    if (!(*env)->ExceptionCheck(env)) return 0;
+    (*env)->ExceptionClear(env);
+    return 1;
+}
+
+const char *msr_android_native_libs(void) {
+    static char dir[4096];
+    if (dir[0]) return dir;
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return dir;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID get = (*env)->GetMethodID(env, cls, "getApplicationInfo", "()Landroid/content/pm/ApplicationInfo;");
+    jobject info = get ? (*env)->CallObjectMethod(env, activity, get) : NULL;
+    if (jni_failed(env)) info = NULL;
+    if (info) {
+        jclass icls = (*env)->GetObjectClass(env, info);
+        jfieldID field = (*env)->GetFieldID(env, icls, "nativeLibraryDir", "Ljava/lang/String;");
+        jstring s = field ? (jstring)(*env)->GetObjectField(env, info, field) : NULL;
+        if (jni_failed(env)) s = NULL;
+        if (s) {
+            const char *c = (*env)->GetStringUTFChars(env, s, NULL);
+            if (c) { snprintf(dir, sizeof dir, "%s", c); (*env)->ReleaseStringUTFChars(env, s, c); }
+            (*env)->DeleteLocalRef(env, s);
+        }
+        (*env)->DeleteLocalRef(env, icls);
+        (*env)->DeleteLocalRef(env, info);
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, activity);
+    return dir;
+}
+
+void msr_android_pick_gpu_driver(void) {
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID pick = (*env)->GetMethodID(env, cls, "pickGpuDriver", "()V");
+    if (pick) (*env)->CallVoidMethod(env, activity, pick);
+    else fprintf(stderr, "android: MsrActivity.pickGpuDriver is missing\n");
+    jni_failed(env);
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, activity);
+}
+
 void msr_android_relaunch(int argc, const char *const *argv) {
     JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
     jobject activity = (jobject)SDL_AndroidGetActivity();

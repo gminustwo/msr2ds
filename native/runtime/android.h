@@ -14,6 +14,14 @@ const char *msr_android_root(void);
 const char *msr_android_module(const char *path);
 /* The game's process is started again by the app: with these arguments (argc 0: the launcher). Does not return. */
 void msr_android_relaunch(int argc, const char *const *argv);
+/* GPU drivers the player installed (the launcher's GPU driver, vk_load.c): the app's private folder holding them, one
+   folder each (files/gpu_drivers/<name>/: meta.json and the driver's libraries, as MsrActivity unpacked them). */
+const char *msr_android_gpu_drivers(void);
+/* The app's native library folder (ApplicationInfo.nativeLibraryDir), where libadrenotools' hooks are; "" if unknown */
+const char *msr_android_native_libs(void);
+/* The system's file picker for a GPU driver package (.zip); MsrActivity unpacks the one chosen and tells the launcher
+   (msr_gpu_driver_installed, launcher.cpp) */
+void msr_android_pick_gpu_driver(void);
 
 #ifdef __cplusplus
 }

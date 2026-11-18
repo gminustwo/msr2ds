@@ -25,7 +25,8 @@
 // which a PC reaches over USB. Nothing is built there: the PC's launcher builds the Android native code (Build for
 // Android: build_module.py --target android-arm64, into user/msr/recomp-android/), which the player copies into the
 // same folder of the app's, with the game file (found in the user folder). Play starts the app again as the game
-// (android.c); there are no file dialogs, folders to open, updates or direct start there.
+// (android.c); there are no file dialogs, folders to open, updates or direct start there. On an Adreno GPU it has a GPU
+// driver for the game (the GPU driver section below).
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -62,6 +63,7 @@
 #include <mach-o/dyld.h>
 #endif
 #ifdef __ANDROID__
+#include <jni.h>
 #include "android.h"
 #endif
 #include "dump.h"
@@ -90,6 +92,11 @@ void msr_overlay_launcher(int on);
 void msr_overlay_reload(void);
 void msr_mods_init(const char* user, const char* settings, const char* exe);
 void video_keep_crashed_log(const char* log);
+unsigned video_gpu_vendor(void);
+#ifdef __ANDROID__
+int video_game_ended_opening(void);
+void video_forget_ended_opening(void);
+#endif
 }
 
 namespace {
@@ -573,6 +580,17 @@ struct State {
     fs::path saves_from;          // the saves found, waiting for the player's confirmation
     std::string saves_detail, saves_note;
     std::thread saves_worker;     // the search
+#ifdef __ANDROID__
+    // the game's GPU driver (the GPU driver section below)
+    bool gpu_driver_option = false;       // an Adreno GPU: the choice is offered
+    std::vector<std::pair<std::string, std::string>> gpu_drivers;   // installed: folder name, name shown
+    std::string gpu_driver;               // the chosen one's folder name; empty: the system's
+    std::string gpu_driver_note;          // an install's or a removal's result, or why the game went back to the system's
+    bool gpu_driver_bad = false;          // the note is a failure
+    bool installed = false;               // MsrActivity finished an install (or the picker was closed): installed_id, _note
+    std::string installed_id, installed_note;
+    bool game_ended_opening = false;      // the last start was the game's and ended while opening the graphics (Setup)
+#endif
 } S;
 
 void WriteDirect();   // the direct start section
@@ -716,6 +734,160 @@ void CheckCode() {
     }
     S.dirty = true;
 }
+
+#ifdef __ANDROID__
+// ---- the game's GPU driver (the Android app on an Adreno GPU) ----
+// Driver packages as Azahar, Eden and other emulators take them (a .zip with meta.json and the driver's libraries: Mesa's
+// Turnip and the like, #58, #66), chosen with the system's file picker. MsrActivity unpacks one into the app's private
+// folder (files/gpu_drivers/<name>/: Android loads code only from there) and tells msr_gpu_driver_installed; Play gives
+// the game --gpu-driver=<name>, and the game loads it with libadrenotools (vk_load.c). settings.ini [native] gpu_driver:
+// that folder's name, empty for the system's driver. The launcher's own window always takes the system's, so a driver
+// that fails cannot keep the player from choosing another. A game that ended while opening the graphics with one, or
+// fell back to the system's (user/msr/gpu-driver-failed.txt, video.c), goes back to the system's, with a note why.
+fs::path GpuDriverRoot() { return FromUtf8(msr_android_gpu_drivers()); }
+
+// The folder name of an installed driver (no path in it)
+bool GpuDriverId(const std::string& id) {
+    return !id.empty() && id != "." && id != ".." && id.find('/') == std::string::npos && id[0] != '.';
+}
+
+std::string GpuDriverName(const std::string& id) {
+    for (const auto& d : S.gpu_drivers)
+        if (d.first == id) return d.second;
+    return id;
+}
+
+// The drivers installed, each a folder with meta.json and the library it names; the choice kept only if still there
+void ScanGpuDrivers() {
+    std::vector<std::pair<std::string, std::string>> list;
+    std::error_code e;
+    for (fs::directory_iterator it(GpuDriverRoot(), e), end; !e && it != end; it.increment(e)) {
+        std::error_code d;
+        const std::string id = Utf8(it->path().filename());
+        if (!GpuDriverId(id) || !it->is_directory(d)) continue;   // (.installing: an install under way)
+        const std::string json = ReadText(it->path() / "meta.json");
+        const std::string lib = JsonValue(json, "libraryName");
+        if (lib.empty() || lib.find('/') != std::string::npos || !fs::is_regular_file(it->path() / FromUtf8(lib), d)) continue;
+        std::string name = Trim(JsonValue(json, "name"));
+        const std::string version = Trim(JsonValue(json, "driverVersion"));
+        if (name.empty()) name = id;
+        if (!version.empty() && name.find(version) == std::string::npos) name += " (" + version + ")";
+        list.emplace_back(id, name);
+    }
+    std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return Lower(a.second) < Lower(b.second); });
+    std::scoped_lock lock{S.lock};
+    S.gpu_drivers = std::move(list);
+    S.dirty = true;
+}
+
+// The game's driver from now on (empty: the system's), kept in settings.ini
+void SetGpuDriver(const std::string& id) {
+    {
+        std::scoped_lock lock{S.lock};
+        if (S.gpu_driver == id) return;
+        S.gpu_driver = id;
+        S.dirty = true;
+    }
+    MsrIni::File file(Utf8(S.settings));
+    file.SetString("native", "gpu_driver", id);
+    if (!file.Save()) std::fprintf(stderr, "launcher: could not save the GPU driver setting\n");
+    std::fprintf(stderr, "launcher: GPU driver for the game: %s\n", id.empty() ? "the system's" : id.c_str());
+}
+
+void GpuDriverNote(const std::string& note, bool bad) {
+    std::scoped_lock lock{S.lock};
+    S.gpu_driver_note = note;
+    S.gpu_driver_bad = bad;
+    S.dirty = true;
+}
+
+// When the launcher starts: the setting, what is installed, and what became of the game's last start with a driver
+void ReadGpuDriver() {
+    ScanGpuDrivers();
+    std::string id = MsrIni::File(Utf8(S.settings)).String("native", "gpu_driver", "");
+    std::string name;
+    {
+        std::scoped_lock lock{S.lock};
+        name = GpuDriverName(id);
+        bool there = false;
+        for (const auto& d : S.gpu_drivers) there = there || d.first == id;
+        if (!there) id.clear();   // removed (or never installed): the system's
+        S.gpu_driver = id;
+    }
+    const fs::path failed = S.user / "msr" / "gpu-driver-failed.txt";
+    std::error_code e;
+    if (fs::exists(failed, e)) {   // the game could not use it and took the system's (video.c)
+        const std::string text = ReadText(failed);
+        const auto nl = text.find('\n');
+        const std::string which = Trim(text.substr(0, nl)), why = nl == std::string::npos ? "" : Trim(text.substr(nl + 1));
+        fs::remove(failed, e);
+        std::fprintf(stderr, "launcher: the game's last start could not use the GPU driver %s: %s\n", which.c_str(), why.c_str());
+        if (!which.empty() && which == id) {
+            SetGpuDriver("");
+            GpuDriverNote("The game could not use " + name + " (" + why + ") and started with the system driver.", true);
+            id.clear();   // (an end while opening the graphics after that was the system driver's: its safe level)
+        }
+    }
+    if (S.game_ended_opening && !id.empty()) {   // ended inside the driver, as likely as not: no safe level for the system's
+        video_forget_ended_opening();
+        std::fprintf(stderr, "launcher: the game ended while opening the graphics with the GPU driver %s: the system's\n", id.c_str());
+        SetGpuDriver("");
+        GpuDriverNote("The game closed while opening the graphics with " + name + ", so it is back on the system driver.", true);
+    }
+}
+
+// MsrActivity's install, applied on the launcher's thread: the new driver chosen, or what went wrong
+void ApplyInstalled() {
+    std::string id, note;
+    {
+        std::scoped_lock lock{S.lock};
+        if (!S.installed) return;
+        S.installed = false;
+        id = S.installed_id;
+        note = S.installed_note;
+    }
+    if (id.empty()) {
+        if (!note.empty()) GpuDriverNote(note, true);
+        if (!note.empty()) std::fprintf(stderr, "launcher: GPU driver not installed: %s\n", note.c_str());
+        return;
+    }
+    ScanGpuDrivers();
+    std::string name;
+    bool there = false;
+    {
+        std::scoped_lock lock{S.lock};
+        name = GpuDriverName(id);
+        for (const auto& d : S.gpu_drivers) there = there || d.first == id;
+    }
+    if (!there) {
+        GpuDriverNote("That driver package could not be read after it was unpacked.", true);
+        return;
+    }
+    std::fprintf(stderr, "launcher: GPU driver installed: %s (%s)\n", id.c_str(), name.c_str());
+    SetGpuDriver(id);
+    GpuDriverNote("Installed " + name + ". The game uses it from its next start.", false);
+}
+
+void RemoveGpuDriver(const std::string& id) {
+    if (!GpuDriverId(id)) return;
+    std::string name;
+    {
+        std::scoped_lock lock{S.lock};
+        name = GpuDriverName(id);
+    }
+    std::error_code e;
+    fs::remove_all(GpuDriverRoot() / FromUtf8(id), e);
+    std::fprintf(stderr, "launcher: GPU driver %s removed%s\n", id.c_str(), e ? (": " + e.message()).c_str() : "");
+    bool chosen;
+    {
+        std::scoped_lock lock{S.lock};
+        chosen = S.gpu_driver == id;
+    }
+    if (chosen) SetGpuDriver("");
+    ScanGpuDrivers();
+    GpuDriverNote(e ? "Could not remove " + name + ": " + e.message() + "." : "Removed " + name + ".", static_cast<bool>(e));
+}
+#endif
 
 void SetGame(const std::string& path) {
     const std::string p = Trim(path);
@@ -2085,6 +2257,10 @@ bool StartGame() {
         if (renderer == "vulkan" || renderer == "opengl") args.push_back("--renderer=" + renderer);
     }
 #ifdef __ANDROID__
+    {   // a GPU driver the player installed (the GPU driver section)
+        std::scoped_lock lock{S.lock};
+        if (S.gpu_driver_option && !S.gpu_driver.empty()) args.push_back("--gpu-driver=" + S.gpu_driver);
+    }
     {   // the app again, as the game (main.c logs to user/msr-native.log there); this process ends
         std::fprintf(stderr, "launcher: starting the game\n");
         std::vector<const char*> argv;
@@ -2131,6 +2307,11 @@ void Publish() {
         s.direct = S.direct;
 #ifdef __ANDROID__
         s.can_build = false;   // built on a PC (its Build for Android)
+        s.gpu_driver_option = S.gpu_driver_option;
+        s.gpu_drivers = S.gpu_drivers;
+        s.gpu_driver = S.gpu_driver;
+        s.gpu_driver_note = S.gpu_driver_note;
+        s.gpu_driver_bad = S.gpu_driver_bad;
 #else
         s.android_build = true;
         s.android_note = S.android_note;
@@ -2186,6 +2367,18 @@ extern "C" void msr_launcher_action(int kind, const char* text) {
     case Kind::LauncherImportCancel: CancelSaves(); break;
     case Kind::LauncherSavesFolder: OpenFolder(SaveFolder()); break;
     case Kind::LauncherUpdate: StartUpdate(); break;
+#ifdef __ANDROID__
+    case Kind::LauncherGpuDriver: {
+        const std::string id = text ? text : "";
+        if (id.empty() || GpuDriverId(id)) {
+            SetGpuDriver(id);
+            GpuDriverNote("", false);
+        }
+        break;
+    }
+    case Kind::LauncherGpuDriverInstall: msr_android_pick_gpu_driver(); break;
+    case Kind::LauncherGpuDriverRemove: RemoveGpuDriver(text ? text : ""); break;
+#endif
     case Kind::LauncherUpdatePage: {
         std::string page;
         {
@@ -2204,6 +2397,27 @@ extern "C" void msr_launcher_action(int kind, const char* text) {
     }
 }
 
+#ifdef __ANDROID__
+// MsrActivity, on a thread of its own after the file picker: the GPU driver package unpacked into files/gpu_drivers/<id>
+// (id empty: not installed, `note` says why, or nothing when the picker was closed). The launcher's thread applies it.
+extern "C" JNIEXPORT void JNICALL Java_io_github_gminustwo_msrnative_MsrActivity_gpuDriverInstalled(JNIEnv* env, jclass,
+                                                                                                    jstring id, jstring note) {
+    const auto text = [env](jstring s) {
+        std::string out;
+        if (const char* c = s ? env->GetStringUTFChars(s, nullptr) : nullptr) {
+            out = c;
+            env->ReleaseStringUTFChars(s, c);
+        }
+        return out;
+    };
+    const std::string i = text(id), n = text(note);
+    std::scoped_lock lock{S.lock};
+    S.installed = true;
+    S.installed_id = i;
+    S.installed_note = n;
+}
+#endif
+
 namespace {
 
 // The user folder, the working folder (the game's paths are user/...) and the log: the launcher's and the direct start's
@@ -2216,6 +2430,9 @@ void Setup() {
     S.settings = S.user / "msr" / "settings.ini";
     {   // the launcher's own log (a program without a console has no stderr)
         const fs::path log = S.user / "launcher.log";
+#ifdef __ANDROID__
+        S.game_ended_opening = video_game_ended_opening() != 0;   // (the GPU driver section)
+#endif
         video_keep_crashed_log(Utf8(log).c_str());   // (Android: a start that ended while opening the graphics, video.c)
 #ifdef _WIN32
         _wfreopen(log.c_str(), L"w", stderr);
@@ -2287,6 +2504,9 @@ int Launcher() {
                       file.Bool("native", "power_saving", MSR::PowerSavingDefault()));
     ReadGame();
     CheckCode();
+#ifdef __ANDROID__
+    ReadGpuDriver();
+#endif
     video_option("layout", "single");
     video_option("renderer", file.String("native", "renderer", "auto").c_str());   // the launcher's window too
     if (video_init(3)) {
@@ -2294,6 +2514,15 @@ int Launcher() {
         video_explain(Utf8(S.user / "launcher.log").c_str());
         return 1;
     }
+#ifdef __ANDROID__
+    {   // Qualcomm's Adreno GPUs: what libadrenotools loads drivers for
+        std::scoped_lock lock{S.lock};
+        S.gpu_driver_option = video_gpu_vendor() == 0x5143;
+        S.dirty = true;
+    }
+    std::fprintf(stderr, "launcher: GPU driver for the game: %s\n", !S.gpu_driver_option ? "the system's (not an Adreno GPU)"
+                 : S.gpu_driver.empty() ? "the system's" : S.gpu_driver.c_str());
+#endif
     Publish();
 #ifndef __ANDROID__
     S.update_checker = std::thread([] { CleanUpdate(); CheckForUpdate(); });   // a newer release (the updates section)
@@ -2329,6 +2558,7 @@ int Launcher() {
             code_checked = now;
             CheckCode();
         }
+        ApplyInstalled();   // a GPU driver MsrActivity unpacked
 #endif
         Publish();
         if (!video_frame()) break;   // the window was closed
