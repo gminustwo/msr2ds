@@ -627,6 +627,36 @@ compiler crashed building it: a `pica_vk: pipeline creation failed`, then SIGSEG
   not preloaded. The log says `pica_vk: lighting read from the registers, ...`; `PWR_VK_LIGHT_SPEC=1` builds it in there
   (to try the rewritten loop on a phone), `=0` leaves it out elsewhere.
 
+**Macs: the window's drawable outside the queue (2026-11-18).** On an M3 Max at 6x, 120 FPS and V-Sync, 2.1.0 made 30-60
+FPS in play (46 on average over 50 s after a quick load; the app through `--direct`, 61-77), at times 120 after half a
+minute or more: what had looked like a cold start. `sample` showed why: MoltenVK takes the window's next CAMetalDrawable
+only when a submission first uses the swapchain image, inside `vkQueueSubmit`, and sleeps there until the compositor
+gives one back. The presenter's submission did that holding the queue (`queue_lock`) and the scan-out lock, so the GX
+thread waited behind the display (a quarter of its time, in `video_queue_submit` and `pica_vk_scanout_invalidate`), the
+main thread 42% of its own in `[CAMetalLayer nextDrawable]`. The log's presenting waits never showed it: the acquire
+returns at once. Now, on a Mac:
+- `video_frame` takes the drawable right after the acquire, outside both locks, by asking for the image's Metal texture
+  (`VK_EXT_metal_objects`, `vkExportMetalObjectsEXT`; video.c `export_metal`); its wait is the log's "next image".
+  `PWR_MVK_LATE_DRAWABLE=1` leaves it to MoltenVK (A/B).
+- MoltenVK encodes submissions and presents into Metal on its own queue (`MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS=0`,
+  set unless the environment has it), not on the thread that submits: the GX thread's flush went from 0.9 to 0.15 ms a
+  frame (5.6 in 2.1.0, its lock waits included). MoltenVK 1.4.2's `vkQueueWaitIdle` waits for that queue first, so
+  `sets_idle` and `scanouts_drop` (a quick load, a rescale) still find the GPU idle.
+- The game's threads (its guest threads, the GX worker and the texture decoders it waits for, the timers, the DSP
+  clock) are user-interactive (kernel.c `k_game_thread`), as the main thread is; at the default QoS another program's
+  work took their time: with 14 busy threads of another process, 95 FPS (77-116, frames of 33-42 ms), now 119 (116-120,
+  none over 22 ms).
+- The log's `video: MoltenVK asynchronous queue submissions; the window's drawable taken after the acquire
+  (VK_EXT_metal_objects)` says which are on.
+
+Measured on the same quick state, 50 s after its load: 119.8 FPS (118-120) with both, 120 with either alone; the app from
+a fresh unzip through `--direct`, 119.4 to 119.5 in three runs against 60.5, 76.6 and 67.6 for 2.1.0; quick save and
+quick load (the pad's combos), no MoltenVK errors, `vs-failed=0`. With `--fps=144 --vsync=off`: about 140 at 6x and 9x
+(GPU 3.4 and 5.8 ms a frame). Tried and left: passes that neither test nor write depth (four in five) loading and storing
+the scene's depth (MoltenVK makes `LOAD_OP_NONE`/`STORE_OP_NONE` Metal's load and store, and has no
+`VK_EXT_dynamic_rendering_unused_attachments` to leave it out): discarding it, as a timing test only, changed nothing
+(5.9 ms of GPU a frame at 9x either way).
+
 Debugging switches (environment, as in Woohoo! Flight School; on Android `user/env.txt` in the app's folder, one
 `NAME=value` a line, the log listing each): `PWR_SKIP=<first>-<last>` (drop those draws of every
 frame, counted from each top-screen swap: bisects an artifact to its draws; with `PWR_SKIP_DUMP=<frame>` it prints their

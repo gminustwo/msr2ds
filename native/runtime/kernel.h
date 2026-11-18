@@ -90,6 +90,7 @@ void k_set_power_saving(int on);               /* k_sleep_ns waits on the timer 
 int  k_power_saving(void);
 int  k_cpu_threads(void);                      /* the host's processor threads */
 void k_background_thread(void);                /* lower the calling thread's priority: work no frame waits for */
+void k_game_thread(void);                      /* the calling thread is one of the game's (a Mac: user-interactive) */
 extern int g_trace;
 
 /* services.c */

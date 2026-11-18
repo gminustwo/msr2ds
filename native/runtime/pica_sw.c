@@ -969,6 +969,7 @@ static pthread_cond_t pool_start = PTHREAD_COND_INITIALIZER, pool_done = PTHREAD
 
 static void *pool_worker(void *arg) {
     int id = (int)(intptr_t)arg; unsigned seen = 0;
+    k_game_thread();   /* (the GX thread waits for its jobs: pool_run) */
     for (;;) {
         pthread_mutex_lock(&PM);
         while (pool_gen == seen) pthread_cond_wait(&pool_start, &PM);

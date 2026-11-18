@@ -29,6 +29,9 @@
 #include <SDL_vulkan.h>
 #include <SDL_syswm.h>
 #include <vulkan/vulkan.h>
+#ifdef __APPLE__
+#include <vulkan/vulkan_metal.h>   /* VK_EXT_metal_objects: the window's drawable taken outside the queue (video_frame) */
+#endif
 #include "msr/overlay_host.h"
 #include "vk_push.h"
 #include "vk_rp.h"
@@ -70,6 +73,16 @@ static int hdr_mode;                 /* the swapchain now: 0 SDR, 1 HDR10 (PQ, B
 static int hdr_option;               /* 0 no HDR here, 1 the display is not in HDR mode, 2 HDR possible (msr_overlay_hdr) */
 static float disp_peak = 1000.f, disp_paper = 200.f;   /* nits: the display's peak, Windows' SDR content white */
 static int has_colorspace_ext, has_hdr_metadata;
+#ifdef __APPLE__
+/* MoltenVK takes the window's next CAMetalDrawable only when a submission first uses the swapchain image, inside
+   vkQueueSubmit (vkAcquireNextImageKHR returns at once): there it sleeps until the compositor gives one back, and it did
+   so holding queue_lock and the scan-out lock, so the GX thread waited behind the display. On an M3 Max at 6x/120 FPS
+   (2026-11-18) the main thread spent 42% of its time in [CAMetalLayer nextDrawable] inside that submission and the GX
+   thread a quarter of its own waiting for the two locks: 30-60 FPS in play, at times 120 after half a minute or more
+   (what had looked like a cold start). VK_EXT_metal_objects' export of the image's texture takes the drawable at once,
+   so video_frame takes it right after the acquire, outside both locks (its wait is the log's "next image"). */
+static PFN_vkExportMetalObjectsEXT export_metal;
+#endif
 int g_vk_attachment_none;   /* pica_vk.c: VK_ATTACHMENT_LOAD_OP_NONE and STORE_OP_NONE can be used (VK_KHR/EXT_load_store_op_none) */
 int g_vk_driver_id;         /* pica_vk.c: the device's VkDriverId (0: not known) */
 static VkImageView sc_views[MAX_IMAGES];
@@ -890,9 +903,14 @@ static int vk_open(int win_w, int win_h, int probe) {
         if (!strcmp(dep[i].extensionName, "VK_EXT_load_store_op_none")) has_ext_none = 1;
     }
     const char *op_none = has_khr_none ? "VK_KHR_load_store_op_none" : has_ext_none ? "VK_EXT_load_store_op_none" : NULL;
+    int has_metal_objects = 0;   /* MoltenVK: the drawable taken outside the queue (export_metal) */
+#ifdef __APPLE__
+    for (uint32_t i = 0; i < nde; i++) if (!strcmp(dep[i].extensionName, VK_EXT_METAL_OBJECTS_EXTENSION_NAME)) has_metal_objects = 1;
+    if (getenv("PWR_MVK_LATE_DRAWABLE")) has_metal_objects = 0;   /* PWR_MVK_LATE_DRAWABLE=1: MoltenVK takes it in the submission (A/B) */
+#endif
     int diag_fault, diag_marks; vk_diag_wanted(dep, nde, &diag_fault, &diag_marks);   /* if the GPU is lost: where (vk_diag.c) */
     free(dep);
-    if (safe_level >= 1) { has_push = 0; op_none = NULL; has_hdr_metadata = 0; diag_fault = diag_marks = 0; }   /* safe levels: no optional device extensions (safe_begin) */
+    if (safe_level >= 1) { has_push = 0; op_none = NULL; has_hdr_metadata = 0; has_metal_objects = 0; diag_fault = diag_marks = 0; }   /* safe levels: no optional device extensions (safe_begin) */
 #ifdef VK_EXT_device_fault
     VkPhysicalDeviceFaultFeaturesEXT fault_have = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT },
                                      fault_on = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT, .deviceFault = VK_TRUE };
@@ -929,7 +947,7 @@ static int vk_open(int win_w, int win_h, int probe) {
         en10.robustBufferAccess = f10.robustBufferAccess;
         if (vk13 ? f2.features.robustBufferAccess : f10.robustBufferAccess) fprintf(stderr, "video: robust buffer access on\n");
     }
-    const char *dext[8] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME }; uint32_t ndext = 1;
+    const char *dext[10] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME }; uint32_t ndext = 1;
 #ifdef VK_EXT_device_fault
     diag_fault = diag_fault && vk13 && fault_have.deviceFault;
     if (diag_fault) { dext[ndext++] = VK_EXT_DEVICE_FAULT_EXTENSION_NAME; en13.pNext = &fault_on; }
@@ -938,6 +956,9 @@ static int vk_open(int win_w, int win_h, int probe) {
     if (has_portability_subset) dext[ndext++] = "VK_KHR_portability_subset";
     if (vk_hw && has_push) dext[ndext++] = VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME;
     if (vk13 && has_hdr_metadata) dext[ndext++] = VK_EXT_HDR_METADATA_EXTENSION_NAME; else has_hdr_metadata = 0;
+#ifdef __APPLE__
+    if (has_metal_objects) dext[ndext++] = VK_EXT_METAL_OBJECTS_EXTENSION_NAME;
+#endif
     /* the extension (the instance asks for 1.3, so 1.4's core ops are not ours); not through MoltenVK (Metal's load and
        store actions differ) */
     g_vk_attachment_none = vk_hw && !has_portability_subset && op_none;
@@ -962,6 +983,12 @@ static int vk_open(int win_w, int win_h, int probe) {
 #endif
     vkGetDeviceQueue(dev, qfam, 0, &queue);
     vk_diag_init(dev, queue, diag_fault, diag_marks);
+#ifdef __APPLE__
+    export_metal = has_metal_objects ? (PFN_vkExportMetalObjectsEXT)vkGetDeviceProcAddr(dev, "vkExportMetalObjectsEXT") : NULL;
+    fprintf(stderr, "video: MoltenVK %s queue submissions; the window's drawable taken %s\n",
+            getenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS") && strcmp(getenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS"), "0") ? "synchronous" : "asynchronous",
+            export_metal ? "after the acquire (VK_EXT_metal_objects)" : "in the submission");
+#endif
     /* swapchain format first (the presenter's target uses it), then the presenter, then the swapchain-sized resources */
     stage_set(STAGE_MAIN, "reading the window's formats");
     { VkFormat h10, scrgb; VkColorSpaceKHR cs; surface_formats(&sdr_format, &cs, &h10, &scrgb); sc_format = sdr_format; }
@@ -1065,6 +1092,14 @@ int video_init(int scale) {
     /* MoltenVK: its errors only in the log (not its device report, nor a warning for each pipeline that Metal always
        restarts primitives); MVK_CONFIG_LOG_LEVEL set by the player wins */
     setenv("MVK_CONFIG_LOG_LEVEL", "1", 0);
+    /* MoltenVK: submissions and presents encoded into Metal on a queue of its own (GCD, user-initiated), not on the
+       thread that submits. Synchronous (MoltenVK's default), the GX thread encoded the game's command buffers for Metal
+       itself, and the main thread's own submission sat in nextDrawable holding the queue (export_metal, above). Its
+       vkQueueWaitIdle waits for that queue first (MVKQueue::waitIdle, 1.4.2), so pica_vk.c's idle waits hold. On an M3
+       Max at 6x/120 FPS (2026-11-18) either this or export_metal alone held 120 where 2.1.0 made 30-60; with both the
+       GX thread's flush took 0.15 ms a frame (0.9 with either alone, 5.6 in 2.1.0). MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS=1
+       set by the player wins (A/B) */
+    setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | (g_input_none ? 0 : SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK))) { fprintf(stderr, "video: SDL_Init: %s\n", SDL_GetError()); return -1; }
     static const int cw[L_COUNT] = { TOP_W, TOP_W + BOT_W, TOP_W + BOT_W / 2, TOP_W, BOT_W, 0, TOP_W }, chh[L_COUNT] = { 2 * SCR_H, SCR_H, SCR_H, SCR_H, SCR_H, SCR_H, 2 * SCR_H };
@@ -1909,6 +1944,14 @@ int video_frame(void) {
     uint32_t idx;
     stage_set(STAGE_MAIN, "waiting for the next swapchain image");
     VkResult r = vkAcquireNextImageKHR(dev, swap, UINT64_MAX, sem_acquire, VK_NULL_HANDLE, &idx);
+#ifdef __APPLE__
+    if (export_metal && (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR)) {   /* MoltenVK: the drawable now, outside the queue (export_metal) */
+        stage_set(STAGE_MAIN, "waiting for the window's next drawable (CAMetalLayer)");
+        VkExportMetalTextureInfoEXT ti = { .sType = VK_STRUCTURE_TYPE_EXPORT_METAL_TEXTURE_INFO_EXT, .image = sc_images[idx], .plane = VK_IMAGE_ASPECT_PLANE_0_BIT };
+        VkExportMetalObjectsInfoEXT oi = { .sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECTS_INFO_EXT, .pNext = &ti };
+        export_metal(dev, &oi);
+    }
+#endif
     stage_set(STAGE_MAIN, stage_was);
     g_vid_wait_acquire += wait_clock() - w1;
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { g_vid_acquire_fail++; g_vid_last_err = r; }

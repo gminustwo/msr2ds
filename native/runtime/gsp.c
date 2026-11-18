@@ -543,6 +543,7 @@ static void gx_done(const uint32_t *w, uint64_t t0, const int irqs[2]) {
 
 static void *gx_worker(void *arg) {
     (void)arg;
+    k_game_thread();
     { const char *e = getenv("PWR_GX_SPIN_US"); if (e) spin_ns = (uint64_t)atoi(e) * 1000u; }
     pthread_mutex_lock(&G);
     for (;;) {

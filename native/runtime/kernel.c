@@ -288,6 +288,7 @@ static int thread_body(KThread *t) {
 
 static void *thread_main(void *p) {
     ThreadStart s = *(ThreadStart *)p; free(p);
+    k_game_thread();
     cur = s.t;
     k_trace("thread start entry=%08x arg=%08x sp=%08x", s.t->cpu.r[15], s.t->cpu.r[0], s.t->cpu.r[13]);
     if (thread_body(s.t)) { k_trace("thread returned"); thread_finish(s.t); }
@@ -295,6 +296,7 @@ static void *thread_main(void *p) {
 }
 static void *thread_resume_main(void *p) {   /* a thread of a loaded state that had no host thread here */
     KThread *t = p; cur = t;
+    k_game_thread();
     if (thread_body(t)) thread_finish(t);
     return NULL;
 }
@@ -344,6 +346,7 @@ static Timer timers[MAX_TIMERS];
 static pthread_t timer_thread;
 static void *timer_main(void *arg) {
     (void)arg;
+    k_game_thread();
     pthread_mutex_lock(&K);
     for (;;) {
         uint64_t n = now_ns(), next = UINT64_MAX;
@@ -434,6 +437,16 @@ void k_background_thread(void) {
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
 #elif defined(__linux__)
     setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 5);   /* a thread's own nice value on Linux */
+#endif
+}
+/* The game's own threads (its guest threads, the GX worker and the decoders it waits for, the timers, the DSP clock), on
+   a Mac: user-interactive, as the main thread (the VBlank loop) already is. Left at the default QoS (priority 31, every
+   other program's), a busy Mac took their processor time and frames waited for them: on an M3 Max at 6x/120 FPS with 14
+   busy threads of another program's (2026-11-18), 95 FPS on average with frames of 33-42 ms; user-interactive, 119 with
+   none over 22 ms. Elsewhere unchanged. */
+void k_game_thread(void) {
+#ifdef __APPLE__
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #endif
 }
 
@@ -784,7 +797,7 @@ void k_init(void) {
 }
 
 typedef struct { uint32_t entry; volatile int done; int ret; } MainStart;
-static void *main_thread(void *p) { MainStart *m = p; m->ret = k_run_main(m->entry); m->done = 1; return NULL; }
+static void *main_thread(void *p) { MainStart *m = p; k_game_thread(); m->ret = k_run_main(m->entry); m->done = 1; return NULL; }
 
 /* run the guest main thread on its own host thread (recompiled code nests deeply on the host stack) */
 volatile int *k_start_main(uint32_t entry) {
