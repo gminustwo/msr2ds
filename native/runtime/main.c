@@ -36,6 +36,7 @@
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <windows.h>
+#include <psapi.h>   /* the memory line (K32GetProcessMemoryInfo) */
 #include <timeapi.h>
 #else
 #include <sys/resource.h>
@@ -299,12 +300,15 @@ static void folder_of(const char *path, char *out, size_t n) {
    #52 (Mali-G57): the log stopped a few seconds into the game while the audio played on, the main thread stuck
    somewhere, and the report of a game without frames runs on that thread; #58 (Adreno 830): the launcher's log ended
    inside vk_open, which says nothing of where. */
-static struct { const char *volatile what; volatile double since; } stages[STAGE_COUNT];
+static struct { const char *volatile what; volatile double since; volatile unsigned long tid; } stages[STAGE_COUNT];
 static const char *const stage_name[STAGE_COUNT] = { "the main thread", "the GX thread" };
 static volatile int g_booted;   /* the game's threads exist: the watchdog's report includes where they wait */
 const char *stage_set(int who, const char *what) {
     const char *was = stages[who].what;
     stages[who].since = now_s(); stages[who].what = what;
+#ifdef _WIN32
+    stages[who].tid = GetCurrentThreadId();   /* (the crash report says which thread it was) */
+#endif
     return was;
 }
 static void stages_print(void) {
@@ -415,16 +419,79 @@ static void watchdog_start(void) {
 #ifdef _WIN32
 static volatile int g_teardown;
 static void log_flush_on_abort(int sig) { (void)sig; fprintf(stderr, "native: aborted\n"); stages_print(); fflush(stderr); }
+/* Where an address is, for the crash report: its module + offset (addr2line -e <module> <offset> for this program's own),
+   and the module's nearest exported name below it (a system library's function: #70 crashed in ucrtbase.dll, at an offset
+   that names nothing without that Windows' own copy of it). 0 when no module holds it. */
+static int crash_where_win(const char *what, DWORD64 pc) {
+    HMODULE m = NULL; char path[MAX_PATH] = "?", name[160] = "";
+    if (!pc || !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)(uintptr_t)pc, &m)) {
+        fprintf(stderr, "native:   %s 0x%llx\n", what, (unsigned long long)pc);
+        return 0;
+    }
+    GetModuleFileNameA(m, path, sizeof path);
+    const unsigned char *b = (const unsigned char *)m;
+    const DWORD rva = (DWORD)(pc - (DWORD64)(uintptr_t)b);
+    const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)(b + ((const IMAGE_DOS_HEADER *)b)->e_lfanew);
+    const IMAGE_DATA_DIRECTORY *dd = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (dd->VirtualAddress && dd->Size) {
+        const IMAGE_EXPORT_DIRECTORY *ed = (const IMAGE_EXPORT_DIRECTORY *)(b + dd->VirtualAddress);
+        const DWORD *funcs = (const DWORD *)(b + ed->AddressOfFunctions), *names = (const DWORD *)(b + ed->AddressOfNames);
+        const WORD *ords = (const WORD *)(b + ed->AddressOfNameOrdinals);
+        DWORD best = 0; const char *best_name = NULL;
+        for (DWORD i = 0; i < ed->NumberOfNames; i++) {   /* (a forwarder's "RVA" is its text, in the export directory) */
+            const DWORD f = ords[i] < ed->NumberOfFunctions ? funcs[ords[i]] : 0;
+            if (f && f <= rva && f >= best && (f < dd->VirtualAddress || f >= dd->VirtualAddress + dd->Size)) { best = f; best_name = (const char *)(b + names[i]); }
+        }
+        if (best_name) snprintf(name, sizeof name, " (%s+0x%lx)", best_name, (unsigned long)(rva - best));
+    }
+    const char *base = strrchr(path, '\\'); base = base ? base + 1 : path;
+    fprintf(stderr, "native:   %s %s+0x%lx%s\n", what, base, (unsigned long)rva, name);
+    return 1;
+}
+/* A crash (Windows): where, which thread (the main thread, the GX thread or a game's thread; else the audio's, a driver's
+   or another library's), the address an access violation touched, what the main and GX threads were doing, and the calls
+   that led there (x64: unwound from the crash's context with each module's unwind tables). Then Windows' own handling:
+   the process ends, its other threads running until it does (#70: the watchdog's lines after the crash). */
 static LONG WINAPI log_flush_on_crash(EXCEPTION_POINTERS *e) {
     if (g_teardown) { fflush(stderr); return EXCEPTION_CONTINUE_SEARCH; }
-    void *at = e && e->ExceptionRecord ? e->ExceptionRecord->ExceptionAddress : NULL;
+    static volatile LONG busy;
+    if (InterlockedExchange(&busy, 1)) return EXCEPTION_CONTINUE_SEARCH;   /* the first thread to crash reports */
+    const EXCEPTION_RECORD *r = e ? e->ExceptionRecord : NULL;
+    void *at = r ? r->ExceptionAddress : NULL;
     HMODULE m = NULL; char path[MAX_PATH] = "?";   /* where: module + offset (addr2line -e <module> <offset>) */
     if (at && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)at, &m))
         GetModuleFileNameA(m, path, sizeof path);
     const char *base = strrchr(path, '\\'); base = base ? base + 1 : path;
-    fprintf(stderr, "native: crashed: exception %08lx at %s+0x%llx, thread %lu\n", e && e->ExceptionRecord ? (unsigned long)e->ExceptionRecord->ExceptionCode : 0ul,
-            base, m ? (unsigned long long)((uintptr_t)at - (uintptr_t)m) : (unsigned long long)(uintptr_t)at, (unsigned long)GetCurrentThreadId());
-    stages_print(); fflush(stderr); return EXCEPTION_CONTINUE_SEARCH;
+    const unsigned long tid = GetCurrentThreadId();
+    const KThread *kt = k_current();
+    char who[48] = "";
+    if (tid == stages[STAGE_MAIN].tid) snprintf(who, sizeof who, " (the main thread)");
+    else if (tid == stages[STAGE_GX].tid) snprintf(who, sizeof who, " (the GX thread)");
+    else if (kt) snprintf(who, sizeof who, " (the game's thread k%d)", kt->index);
+    fprintf(stderr, "native: crashed: exception %08lx at %s+0x%llx, thread %lu%s\n", r ? (unsigned long)r->ExceptionCode : 0ul,
+            base, m ? (unsigned long long)((uintptr_t)at - (uintptr_t)m) : (unsigned long long)(uintptr_t)at, tid, who);
+    if (r && r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2)
+        fprintf(stderr, "native:   %s address 0x%llx\n", r->ExceptionInformation[0] == 0 ? "reading" : r->ExceptionInformation[0] == 1 ? "writing" : "running code at",
+                (unsigned long long)r->ExceptionInformation[1]);
+    stages_print(); fflush(stderr);   /* (before the calls: a stack too damaged to walk faults again) */
+#if defined(__x86_64__) || defined(_M_X64)
+    if (e && e->ContextRecord) {
+        fprintf(stderr, "native:   the calls that led there (each library's nearest exported name):\n");
+        CONTEXT c = *e->ContextRecord;
+        for (int i = 0; i < 32 && c.Rip; i++) {
+            char what[8]; snprintf(what, sizeof what, "#%d", i);
+            const int known = crash_where_win(what, c.Rip);
+            fflush(stderr);
+            const DWORD64 sp = c.Rsp; DWORD64 image = 0;
+            PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(c.Rip, &image, NULL);
+            if (f) { PVOID data; DWORD64 frame; RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, f, &c, &data, &frame, NULL); }
+            else if (known) { c.Rip = *(const DWORD64 *)(uintptr_t)c.Rsp; c.Rsp += 8; }   /* a leaf function: its return address on top */
+            else break;   /* code outside any module: no way on */
+            if (c.Rsp <= sp) break;
+        }
+    }
+#endif
+    fflush(stderr); return EXCEPTION_CONTINUE_SEARCH;
 }
 #else
 /* A crash (Linux, Android, macOS): the log so far, then the signal, where it struck and the calls that led there (each
@@ -897,6 +964,18 @@ int main(int argc, char **argv) {
                 const long rss_mb = (long)((long long)pages * sysconf(_SC_PAGESIZE) >> 20);
                 if (avail >= 0) fprintf(stderr, "native: memory: this program %ld MB resident; the device %ld of %ld MB available\n", rss_mb, avail >> 10, total >> 10);
                 else fprintf(stderr, "native: memory: this program %ld MB resident\n", rss_mb);
+            }
+#elif defined(_WIN32)
+            {   /* memory (#70: a laptop with 3.7 GB slowed down, then crashed): what this program has committed and holds in
+                   RAM, and what the computer has left of its RAM and of its commit limit (RAM and page file, which integrated
+                   graphics' memory also takes from) */
+                PROCESS_MEMORY_COUNTERS_EX pm = { .cb = sizeof pm }; MEMORYSTATUSEX ms = { .dwLength = sizeof ms };
+                if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pm, sizeof pm) && GlobalMemoryStatusEx(&ms))
+                    fprintf(stderr, "native: memory: this program %llu MB committed, %llu MB in RAM; the computer %llu of %llu MB of RAM "
+                            "available, %llu of %llu MB of its commit limit\n", (unsigned long long)pm.PrivateUsage >> 20,
+                            (unsigned long long)pm.WorkingSetSize >> 20, (unsigned long long)ms.ullAvailPhys >> 20,
+                            (unsigned long long)ms.ullTotalPhys >> 20, (unsigned long long)ms.ullAvailPageFile >> 20,
+                            (unsigned long long)ms.ullTotalPageFile >> 20);
             }
 #endif
             fflush(stderr);   /* the log, in one write (log_buffered) */
