@@ -42,6 +42,7 @@ struct PlayerSettings {
     bool show_abilities = true;
     bool hud_within_16_9 = false; ///< Ultrawide: the HUD at the corners of the view's middle 16:9
     float panel_scale = 1.f;
+    bool fit_pause = true;  ///< The pause screen laid out over the whole window, its pieces keeping their shape
     float menu_backdrop = .75f; ///< Opacity of the card behind the title menus
     bool control_hints = true;  ///< Help text beside the pause menu, file select and touch mode
     float menu_scale = 1.34f;

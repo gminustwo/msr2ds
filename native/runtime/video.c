@@ -1241,8 +1241,9 @@ static int combo_event(const SDL_Event *e) {   /* 1: a combo went off, the event
     return 0;
 }
 /* PWR_TEST_PAD=<s>:<buttons>,...: a virtual gamepad (SDL's) that holds those buttons from that run time on, e.g.
-   "10:back,10.3:back+lb,10.8:none" (a b x y back guide start l3 r3 lb rb up down left right, lt rt pulled all the way):
-   the pad's own events and state, for testing without one (the combos, 2026-11-14) */
+   "10:back,10.3:back+lb,10.8:none" (a b x y back guide start l3 r3 lb rb up down left right, lt rt pulled all the way,
+   sleft sright sup sdown the left stick pushed all the way): the pad's own events and state, for testing without one
+   (the combos, 2026-11-14; the stick, 2026-11-17) */
 static double now_s(void);
 static void test_pad_frame(void) {
 #if SDL_VERSION_ATLEAST(2, 24, 0)
@@ -1261,6 +1262,7 @@ static void test_pad_frame(void) {
     }
     if (state != 1) return;
     static const char *const names[] = { "a", "b", "x", "y", "back", "guide", "start", "l3", "r3", "lb", "rb", "up", "down", "left", "right" };
+    static const char *const sticks[] = { "sright", "sleft", "sup", "sdown" };   /* (bits 26-29) */
     unsigned want = held; const double t = now_s() - t0;
     for (const char *p = script; p && *p; ) {   /* the last entry whose time has come */
         char *end; const double at = strtod(p, &end);
@@ -1271,14 +1273,21 @@ static void test_pad_frame(void) {
             for (int b = 0; b < (int)(sizeof names / sizeof *names); b++) if (strlen(names[b]) == n && !strncmp(p, names[b], n)) want |= 1u << b;
             if (n == 2 && !strncmp(p, "lt", 2)) want |= 1u << 24;
             if (n == 2 && !strncmp(p, "rt", 2)) want |= 1u << 25;
+            for (int k = 0; k < 4; k++) if (strlen(sticks[k]) == n && !strncmp(p, sticks[k], n)) want |= 1u << (26 + k);
             p += n; if (*p == '+') p++;
         }
         if (*p == ',') p++;
     }
     if (want == held) return;
     for (int b = 0; b < (int)(sizeof names / sizeof *names); b++) if ((want ^ held) >> b & 1) SDL_JoystickSetVirtualButton(joy_t, b, (want >> b & 1) ? SDL_PRESSED : SDL_RELEASED);
-    if ((want ^ held) >> 24 & 1) SDL_JoystickSetVirtualAxis(joy_t, SDL_CONTROLLER_AXIS_TRIGGERLEFT, (want >> 24 & 1) ? 32767 : 0);
-    if ((want ^ held) >> 25 & 1) SDL_JoystickSetVirtualAxis(joy_t, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, (want >> 25 & 1) ? 32767 : 0);
+    /* (a trigger at rest is the axis' bottom: SDL reads the virtual pad's full-range axis as 0-32767, so 0 was half pulled
+       and a trigger never came up) */
+    if ((want ^ held) >> 24 & 1) SDL_JoystickSetVirtualAxis(joy_t, SDL_CONTROLLER_AXIS_TRIGGERLEFT, (want >> 24 & 1) ? 32767 : -32768);
+    if ((want ^ held) >> 25 & 1) SDL_JoystickSetVirtualAxis(joy_t, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, (want >> 25 & 1) ? 32767 : -32768);
+    if ((want ^ held) >> 26 & 0xF) {   /* the left stick (SDL's y is down) */
+        SDL_JoystickSetVirtualAxis(joy_t, SDL_CONTROLLER_AXIS_LEFTX, (Sint16)((want >> 26 & 1 ? 32767 : 0) - (want >> 27 & 1 ? 32767 : 0)));
+        SDL_JoystickSetVirtualAxis(joy_t, SDL_CONTROLLER_AXIS_LEFTY, (Sint16)((want >> 29 & 1 ? 32767 : 0) - (want >> 28 & 1 ? 32767 : 0)));
+    }
     fprintf(stderr, "native: PWR_TEST_PAD at %.1f s: %#x\n", t, want);
     held = want;
 #endif
@@ -1476,6 +1485,39 @@ static const Img *menu_panel(const Img *sb) {
     bottom_copy(&menu_copy, sb, 0);
     return sb;
 }
+/* The game's atlases (msr_gui_atlas: its sprites and fonts, the compositor's quads with source 3): each uploaded when it
+   is new (once, and again when a texture pack's replacement arrives) from a staging buffer of its own, kept until the
+   next one (the frame that used it has finished by then, as for ui_img). Outside the passes. NULL until there is one. */
+static Img hud_atlas[MSR_ATLAS_COUNT]; static unsigned hud_atlas_ver[MSR_ATLAS_COUNT];
+static VkBuffer hud_stage[MSR_ATLAS_COUNT]; static VkDeviceMemory hud_stage_mem[MSR_ATLAS_COUNT];
+static const Img *hud_atlas_img(int a) {
+    const uint8_t *px; uint32_t w, h;
+    const unsigned ver = msr_gui_atlas(a, &px, &w, &h);
+    if (!ver) return NULL;
+    if (ver == hud_atlas_ver[a]) return hud_atlas[a].img ? &hud_atlas[a] : NULL;
+    hud_atlas_ver[a] = ver;
+    img_free(&hud_atlas[a]);
+    if (hud_stage[a]) { vkDestroyBuffer(dev, hud_stage[a], NULL); vkFreeMemory(dev, hud_stage_mem[a], NULL); hud_stage[a] = VK_NULL_HANDLE; hud_stage_mem[a] = VK_NULL_HANDLE; }
+    const VkDeviceSize n = (VkDeviceSize)w * h * 4;
+    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = n, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT };
+    if (vkCreateBuffer(dev, &bi, NULL, &hud_stage[a]) != VK_SUCCESS) { hud_stage[a] = VK_NULL_HANDLE; return NULL; }
+    VkMemoryRequirements mr; vkGetBufferMemoryRequirements(dev, hud_stage[a], &mr);
+    VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+        .memoryTypeIndex = mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) };
+    void *map = NULL;
+    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(dev, &ai, NULL, &hud_stage_mem[a]) != VK_SUCCESS) {
+        vkDestroyBuffer(dev, hud_stage[a], NULL); hud_stage[a] = VK_NULL_HANDLE; hud_stage_mem[a] = VK_NULL_HANDLE; return NULL;
+    }
+    if (vkBindBufferMemory(dev, hud_stage[a], hud_stage_mem[a], 0) != VK_SUCCESS || vkMapMemory(dev, hud_stage_mem[a], 0, n, 0, &map) != VK_SUCCESS) return NULL;
+    memcpy(map, px, (size_t)n);
+    vkUnmapMemory(dev, hud_stage_mem[a]);
+    if (img_make(&hud_atlas[a], w, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) { memset(&hud_atlas[a], 0, sizeof hud_atlas[a]); return NULL; }
+    barrier_img(hud_atlas[a].img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkBufferImageCopy cp = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .imageExtent = { w, h, 1 } };
+    vkCmdCopyBufferToImage(cmdbuf, hud_stage[a], hud_atlas[a].img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+    barrier_img(hud_atlas[a].img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    return &hud_atlas[a];
+}
 
 static void upload(const Img *t, VkDeviceSize off);
 /* a UI panel image of exactly w x h (remade when the UI scale changes; the previous frame has finished with it) */
@@ -1670,11 +1712,12 @@ int video_frame(void) {
         }
         case SDL_JOYDEVICEREMOVED: if (joy && e.jdevice.which == SDL_JoystickInstanceID(joy)) { SDL_JoystickClose(joy); joy = NULL; input_pad_stick(0, 0); input_pad_release(); } break;
         case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: if (g_input_none) break;
-            {   /* Samus Returns' touch navigation: L3 in menus; while on, the D-pad moves, the menus' choosing button is the
-                   finger and their back button leaves (msr_pad_choose, msr_pad_back: the bottom and right ones, a Nintendo
-                   pad's A and B; with the Nintendo menu layout, those bound to the game's A and B) */
+            {   /* Samus Returns' touch navigation (T on the keyboard; L3 in menus until 2026-11-17, the user: "Remove the L3
+                   stick pointer control. It's no longer needed": the D-pad reaches the touch screen's buttons); while on,
+                   the D-pad moves, the menus' choosing button is the finger and their back button leaves (msr_pad_choose,
+                   msr_pad_back: the bottom and right ones, a Nintendo pad's A and B; with the Nintendo menu layout, those
+                   bound to the game's A and B) */
                 int c = e.cbutton.button, down = e.type == SDL_CONTROLLERBUTTONDOWN, choose = msr_pad_choose(), back = msr_pad_back();
-                if (c == SDL_CONTROLLER_BUTTON_LEFTSTICK) { if (down) msr_touch_l3(); break; }
                 if (msr_touch_active()) {
                     if (down && c == SDL_CONTROLLER_BUTTON_DPAD_UP) msr_touch_step(0, -1);
                     else if (down && c == SDL_CONTROLLER_BUTTON_DPAD_DOWN) msr_touch_step(0, 1);
@@ -1690,7 +1733,7 @@ int video_frame(void) {
                 if (select_acts(e.cbutton.button, e.type == SDL_CONTROLLERBUTTONDOWN)) next_layout(); break; }
             {   /* ZL and ZR bound to a button: the triggers' taps */
                 int c = input_pad_control_now(e.cbutton.button);
-                if (c == C_ZL || c == C_ZR) { if (e.type == SDL_CONTROLLERBUTTONDOWN) msr_trigger(c == C_ZR); break; }
+                if (c == C_ZL || c == C_ZR) { msr_trigger_hold(c == C_ZR, e.type == SDL_CONTROLLERBUTTONDOWN); if (e.type == SDL_CONTROLLERBUTTONDOWN) msr_trigger(c == C_ZR); break; }
             }
             input_pad_sdl(e.cbutton.button, e.type == SDL_CONTROLLERBUTTONDOWN); break;
         case SDL_CONTROLLERAXISMOTION: if (!g_input_none) {
@@ -1708,7 +1751,7 @@ int video_frame(void) {
                 const int on = input_trigger_pulled(t, e.caxis.value, &trig[t]);
                 if (on != was) {
                     const int button = t ? PAD_TRIGGER_RIGHT : PAD_TRIGGER_LEFT, c = input_pad_control_now(button);
-                    if (c == C_ZL || c == C_ZR) { if (on) msr_trigger(c == C_ZR); }
+                    if (c == C_ZL || c == C_ZR) { msr_trigger_hold(c == C_ZR, on); if (on) msr_trigger(c == C_ZR); }
                     else input_pad_sdl(button, on);
                 }
             }
@@ -1740,7 +1783,7 @@ int video_frame(void) {
             if (e.key.repeat) break;
             {   /* ZL and ZR (Left Shift and C): the triggers' Morph Ball and next beam */
                 int c = input_key_control(e.key.keysym.sym);
-                if (c == C_ZL || c == C_ZR) { if (e.type == SDL_KEYDOWN) msr_trigger(c == C_ZR); break; }
+                if (c == C_ZL || c == C_ZR) { msr_trigger_hold(c == C_ZR, e.type == SDL_KEYDOWN); if (e.type == SDL_KEYDOWN) msr_trigger(c == C_ZR); break; }
             }
             input_key(e.key.keysym.sym, e.type == SDL_KEYDOWN); break;
         case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP: case SDL_MOUSEMOTION: {
@@ -1758,7 +1801,9 @@ int video_frame(void) {
             if (e.type == SDL_MOUSEMOTION && (!down || mouse.fire)) break;
             if (!rb.on || rb.w < 1 || rb.h < 1) { input_touch(0, -1, -1); break; }
             if (e.type == SDL_MOUSEBUTTONDOWN && inside) bottom_click = 1;
-            input_touch(down, (int)((mx - rb.x) * BOT_W / rb.w), (int)((my - rb.y) * SCR_H / rb.h));
+            int fx, fy;   /* the pause screen fitted to the window: its pieces where they are drawn (msr/compositor.cpp) */
+            if (effective_layout() == L_SINGLE && msr_panel_touch((float)mx, (float)my, (float)ww, (float)wh, &fx, &fy)) input_touch(down, fx, fy);
+            else input_touch(down, (int)((mx - rb.x) * BOT_W / rb.w), (int)((my - rb.y) * SCR_H / rb.h));
             break; }
         case SDL_MOUSEWHEEL: {   /* the wheel changes beams (down: the next, up: the one before), a notch at a time: each
                                     is a tap on the HUD's beam slots (msr_trigger), which needs ~200 ms to land */
@@ -1902,6 +1947,8 @@ int video_frame(void) {
         if (!st) st = &tex_top; if (!sb) sb = &tex_bot;
         const Img *sbeams = single ? beam_slots(sb) : sb;   /* R held: the beam slots before it (outside the passes) */
         const Img *smenu = single ? menu_panel(sb) : sb;    /* the menu as last seen */
+        const Img *satlas[MSR_ATLAS_COUNT];   /* the game's atlases (its sprites and fonts) */
+        for (int a = 0; a < MSR_ATLAS_COUNT; a++) satlas[a] = single ? hud_atlas_img(a) : NULL;
         if (toast_text && (toast_dirty || tex_toast.w != (uint32_t)(TOAST_W * ks))) {
             int w = TOAST_W * ks, h = TOAST_H * ks; ui_img(&tex_toast, w, h);
             fill(toast_px, w, 0, 0, w, h, 0x101820, 210);
@@ -1932,7 +1979,13 @@ int video_frame(void) {
         if (mf.count) {
             vk_mark(cmdbuf, VKM_HUD, frame_mark);
             vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_mode ? pipe_msr_ui : pipe_msr);
-            for (int i = 0; i < mf.count; i++) msr_quad(&mf.quads[i], mf.quads[i].source == 1 ? sbeams : mf.quads[i].source == 2 ? smenu : sb, W, H);
+            for (int i = 0; i < mf.count; i++) {
+                const int source = mf.quads[i].source;
+                const int a = mf.quads[i].atlas;
+                const Img *atlas = source == 3 && a >= 0 && a < MSR_ATLAS_COUNT ? satlas[a] : NULL;
+                if (source == 3 && !atlas) continue;
+                msr_quad(&mf.quads[i], source == 1 ? sbeams : source == 2 ? smenu : source == 3 ? atlas : sb, W, H);
+            }
         }
         if (!msr_overlay_visible() && now_s() < toast_until && tex_toast.img)   /* layout label, top centre (pixel for pixel) */
             gpu_quad(hdr_mode ? pipe_ui : pipe, &tex_toast, (Rect){ floorf((W - (float)tex_toast.w) / 2), 12, (float)tex_toast.w, (float)tex_toast.h, 1 }, W, H, 0, 1, NULL);

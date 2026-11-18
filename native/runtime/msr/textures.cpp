@@ -12,6 +12,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -683,6 +684,23 @@ extern "C" int msr_texture_take(uint64_t key, int want_staged, void** staged, co
         wake.notify_one();
         return 0;
     }
+    return 1;
+}
+
+extern "C" int msr_texture_copy(uint64_t key, uint8_t** rgba, uint32_t* w, uint32_t* h) {
+    std::lock_guard<std::mutex> guard(lock);
+    const auto it = images.find(key);
+    if (it == images.end()) return -1;
+    Image& image = it->second;
+    if (image.state == State::Failed) return -1;
+    if (image.state == State::Idle) Request(key);
+    if (image.state != State::Ready || image.rgba.empty()) return 0;
+    auto* copy = static_cast<uint8_t*>(std::malloc(image.rgba.size()));
+    if (!copy) return -1;
+    std::memcpy(copy, image.rgba.data(), image.rgba.size());
+    *rgba = copy;
+    *w = image.w;
+    *h = image.h;
     return 1;
 }
 

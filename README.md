@@ -22,7 +22,8 @@ One 16:9 screen in the style of *Metroid Dread*. Energy and missiles sit at the
 upper left with the Aeion gauge and the beam slots (the usual beam, Ice and
 Grapple) under them, and the map is at the upper right with the DNA and Metroid
 counts below it. Start brings up the game's own bottom screen (map, inventory,
-options); the right trigger switches between the usual, Ice and Grapple Beams.
+options); the right trigger switches between the usual, Ice and Grapple Beams, and
+with missiles held (RB) between Missiles and Super Missiles.
 It renders in widescreen up to 4K internal resolution, at 30 (the original), 60, 90,
 120 or 144 frames per second, and loads texture packs. A launcher picks the game
 dump and holds the settings, which are also in an in-game overlay (F1 or Select).
@@ -51,7 +52,7 @@ dump and holds the settings, which are also in an in-game overlay (F1 or Select)
 ## Extra controls
 
 - Left trigger auto-morphballs like Metroid Dread
-- Right trigger cycles between beams
+- Right trigger cycles between beams; hold RB (missiles) and it switches to Super Missiles and back
 - Start pulls up map and lower screen options
 - Select pulls up program options
 - Aeion abilities mapped to the right-stick, D-pad moves
@@ -215,9 +216,10 @@ keys.
 | Choose an Aeion ability | 1, 2, 3, 4 | D-pad |
 | Morph Ball in and out, as in *Dread* | Left Shift | LT |
 | Next beam: usual, Ice, Grapple | C, or the mouse wheel | RT |
+| Super Missiles or Missiles | Hold E, then C or the mouse wheel | Hold RB, then RT |
 | Pause menu and map | Tab | Start |
 | Settings menu | F1 | Select / View / Back |
-| Touch navigation | T | L3, in menus |
+| Touch navigation | T | |
 | Quick save, quick load | F5, F8 | |
 | Fullscreen | F11 | |
 
@@ -227,10 +229,28 @@ keys.
   game's own A and B instead.
 - **Aeion abilities on the right stick** (Controls tab): the right stick chooses
   the abilities and the D-pad moves.
-- **Touch navigation** puts a cursor on the touch screen's buttons: the D-pad or
-  stick moves it, the choose button taps (hold to drag) and the back button
-  leaves. The pause map's tools (scan, map pins, info) and copying or deleting
-  files are touch-only in the game. On the map pins tool, Up from its buttons
+- **Copy and Delete on the file select:** open a file, and Down goes through its
+  choices on to Copy, then round to Continue again (Up the other way, holding
+  either keeps going). Right from Copy is Delete, Left goes back; the one chosen
+  lights up and A chooses it. The game makes them touch-only.
+- **The pause map's buttons on the D-pad:** Left and Right go along its toolbar
+  (map pins, information, settings; amiibo is shown darkened and passed over) and
+  A chooses; the stick moves the map. D-pad icons beside the toolbar and the
+  pins' bar show it, and a pin chosen on the map shows its remove button (a bin
+  and X / Square) above the bottom-right corner. On the map pins tool, the D-pad
+  or the stick chooses a pin; Up goes to the pins already on the map (chosen by where
+  they lie; Down past the lowest comes back to the bar). A picks the chosen pin
+  up: move it with the stick (pushed against the map's edge, it scrolls the map
+  there, as the stick does on the map) and press A again to place it, or B to
+  put it back where it was. X (Square on PlayStation) removes the map pin chosen, and
+  holding LT still drags a pin with the stick. The bar ends with the tool's
+  Delete all button: A on it removes every pin in the area, once you confirm.
+  The world map keeps the game's own controls: the D-pad or the stick chooses
+  an area, A shows its map.
+- **Touch navigation** (T on the keyboard; a controller's D-pad reaches the touch
+  screen's buttons itself) puts a cursor on the touch screen's buttons: the D-pad
+  or stick moves it, the choose button taps (hold to drag) and the back button
+  leaves. On the map pins tool, Up from its buttons
   frees the cursor over the map, to pick up a pin already there: drop it on the
   bin to remove it, and move down to the buttons to go back to them. The mouse
   also touches the bottom-screen panel when it shows.
@@ -311,7 +331,11 @@ same `settings.ini`; LB and RB switch tabs.
   or less, or that share the computer's memory. Applies when the game starts.
 - **HUD:** size and opacity; the map, its size and opacity; DNA and Metroid
   counters; Aeion abilities; HUD within 16:9 (on an ultrawide screen); menu
-  panel size; title menu background; menu help text.
+  panel size; **Fit the pause screen to the window** (on by default: the pause
+  screen fills the window; its bars and background reach the edges, its
+  buttons, text and columns keep their shape, and the map fills its width,
+  showing more of the area); title menu background; menu help text (touch
+  navigation's).
 - **Controls:** every 3DS control with its key and controller button: select one
   and press the new key or button (Esc cancels). See [Controls](#controls).
 - **Mods:** game mods (see [Game mods and Randovania](#game-mods-and-randovania)).

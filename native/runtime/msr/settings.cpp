@@ -37,6 +37,7 @@ void PlayerSettings::Load(const std::string& path) {
     flag("show_abilities", show_abilities);
     flag("hud_within_16_9", hud_within_16_9);
     number("panel_scale", panel_scale);
+    flag("fit_pause", fit_pause);
     number("menu_backdrop", menu_backdrop);
     flag("control_hints", control_hints);
     number("menu_scale", menu_scale);
@@ -100,6 +101,7 @@ void PlayerSettings::Save(const std::string& path) const {
     flag("show_abilities", show_abilities);
     flag("hud_within_16_9", hud_within_16_9);
     number("panel_scale", panel_scale);
+    flag("fit_pause", fit_pause);
     number("menu_backdrop", menu_backdrop);
     flag("control_hints", control_hints);
     number("menu_scale", menu_scale);

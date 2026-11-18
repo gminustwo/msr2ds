@@ -46,8 +46,24 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   classification waits; the missile counter lights as the game lights it. In Morph Ball the game greys the beam row,
   but the beam can still be changed: the lit slot is then the one with by far the most of its pixels over 120
   (`bottom_classifier.h` ReadBeamSlots; before, the HUD kept its highlight on the old slot, over a dimmed icon, and
-  RT tapped the same slot again). A picture on the bottom screen with a cyan edge, such as the ship's cockpit after a
-  file's Continue, is not taken for a menu (it had shown as the panel, its outline over the view for about a second):
+  RT tapped the same slot again). Since 2026-11-16 that copy and that reading are only the fallback: the beam slots'
+  icons are the game's own sprites (`gui_assets.cpp`: `gui/textures/texturehudopaque.bctex` from the RomFS, with the
+  mods' files, or the texture pack's replacement of it; source 3, `msr.frag` mode 4, tinted as the touch screen shows
+  them), drawn at the state the game holds (`cheats.cpp msr_samus_beam`: the beam from her gun component's gun in use,
+  told by the primary slot holding it, as the usual beam has a gun per upgrade; Morph Ball from the game object's
+  player handles; which slots show from her inventory). The touch screen's slots had
+  shown Beam Burst's frame over the first two as a blob and a smear, and in Morph Ball the Ice Beam's had faded out
+  while the Grapple Beam's had not (the user's recording). The usual beam's slot shows her best beam (Plasma, Spazer,
+  Wave or the Power Beam's icon), as the game's does. The DNA and Metroid counters (2026-11-17) are drawn the same way:
+  the numbers are her items `ITEM_ADN` and `ITEM_METROID_TOTAL_COUNT` less `ITEM_METROID_COUNT` (what the game's HUD
+  `UpdateDNACounter`, 0x4F7B4C, writes into the touch screen's bar), in its `digital_hefty` font
+  (`system/fonts/mlsix16.bfont` and the glyph atlas `defaultfnt.bctex`, both inside `packs/system/*.pkg`: a package is
+  a table of CRC-32 name hashes without the final inversion, start and end); the icons are the bar's sprites from
+  `texturehud.bctex`, and the Metroid radar's three layers and its flare take the colors its logic gives them each
+  frame (`cheats.cpp msr_metroid_radar`: the logic object, vtable 0x6E4FEC, found on the heap on a worker), its pulse
+  included. `gui_assets.cpp` holds these atlases and fonts (sprites and glyphs pulled in half a texel: drawn larger
+  than the game draws them, a rectangle's edge otherwise took in the next sprite). A picture on the bottom screen with a cyan edge, such as the
+  ship's cockpit after a file's Continue, is not taken for a menu (it had shown as the panel, its outline over the view for about a second):
   the pause menu's pages stand over its bottom bar, a rule in the last rows, which the picture lacks. The panel
   shows the bottom screen only while it reads as a menu: when it stops, the panel holds and fades out on `video.c`'s
   copy of the menu as last seen (2026-11-12; live, the cockpit picture flashed over the view for 0.2 s).
@@ -72,9 +88,13 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   resolution and stretched across, so a wide view is softer across than up: a higher internal resolution, or the FSR
   filter, sharpens it. `--window_aspect=21:9` (or `32:9`, `2.37`) opens the single layout's window at that shape.
 - Input: RT taps the next beam slot, LT the minimap (Morph Ball), as injected touches while the HUD shows (C and
-  Left Shift too, and the mouse wheel: down the next beam, up the one before); the pad's Back/Select opens the settings
-  panel (`select_layout`: `settings`, or true for the next layout, false for 3DS Select). Every pad SDL can map is
-  open; the one used last is read.
+  Left Shift too, and the mouse wheel: down the next beam, up the one before). With R held the game shows Missile,
+  Super Missile and Power Bomb in the beam slots and chooses Super Missiles only by touch: RT (or the wheel) then taps
+  Missile or Super Missile, whichever is not lit (`compositor.cpp msr_trigger`; the lit one is read from the bottom
+  screen 120 ms into R's hold, and an RT before that waits for it; the choice lasts between holds, and in Morph Ball R
+  lights the Power Bomb by itself, so nothing is tapped then). A missile tap ends when R comes up. The pad's
+  Back/Select opens the settings panel (`select_layout`: `settings`, or true for the next layout, false for 3DS
+  Select). Every pad SDL can map is open; the one used last is read.
 - The buttons as the player's device names them (`msr/glyphs.cpp`, `src/msr/button_glyphs.h`), from the last input
   (a pad's button or a stick pushed past half way, a key, a mouse button) and SDL's controller type: an Xbox pad (and
   Steam's virtual pads, and pads SDL cannot name) shows the game's letter icons as Xbox labels those buttons, a
@@ -110,7 +130,9 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   entity's position (Samus's handle at the game +0xFC, then +0xFC..+0x104, about her arm cannon's height) seen by the
   game's camera (`msr_samus_view`), then the zoom and the 16:9 squeeze, then the top screen's place in the window. The
   pointer is a crosshair over the top screen in play and hides while a pad is in use until the mouse moves.
-- Touch navigation (`src/msr/touch_nav.cpp`, compiled in as it is): T, or the pad's L3 while a menu shows, puts
+- Touch navigation (`src/msr/touch_nav.cpp`, compiled in as it is): T (the pad's L3 too, while a menu showed, until
+  2026-11-17: the user, "Remove the L3 stick pointer control. It's no longer needed", the D-pad working the pause and
+  file select's touch buttons; the settings' reference names it on the keyboard only), puts
   a highlight on the touch screen's buttons (a free cursor where none are known); the D-pad, the circle pad's keys,
   arrows or left stick move it, the pad's choosing button (above), A's key or Return touches (hold to drag), its back
   button, B's key or Escape leaves.
@@ -129,6 +151,121 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   the window, so the HUD (drawn from the bottom screen) gets the same colours; a screen decoded on the CPU gets them in
   its final quad instead. The Controls tab rebinds a key and a pad button per 3DS button (`input.c`, `settings.ini`
   `[native_controls]`); Select's binding opens the menu, ZL and ZR are the triggers' taps.
+- The title menus from the game's interface (2026-11-17, `gui_tree.cpp`): the title's prompt ("Press A to Start",
+  the prologue's pages) and the file select (its files, a file's choices, its dialogs) are drawn from the game's own
+  tree of display objects instead of the touch screen's copy, with its sprites and fonts (`gui_assets.cpp`), its
+  colors, animations and state. The GUI manager (`*0x76F240`) keeps the title menus' root first in its list at +0x244.
+  Display objects hold their drawn rectangle (+0x10, +0x1C: fractions of 320x240), scale (+0x24), color (+0x30), screen
+  (+0x40: 1 the touch screen), visibility (+0x44) and a name record (+0xD0); containers list their children from +0xFC
+  ({child, next}); sprites their texture's path hash (+0x114), rectangle (+0x118), blend (+0x12C: 1 additive), sheet
+  item (+0x150) and flips (+0x15D, +0x15E); labels their UTF-16 text (+0xF8, +0xFC), font (+0x148, whose resource names
+  its file by hash) and alignment (+0x15C). Text runs in lines of 1.2 times the font's size, broken at `|` (the game's
+  line break) or where a word would pass the box, the block centered in a taller box; `@[NAME]` embeds a button's icon.
+  The see-through panel leaves out the backdrop sprites as the renderer left them out of the copy; while the panel fades
+  after a file is chosen it shows the last live frame's. Other menus, and any screen whose tree cannot be read, keep the
+  copy; `PWR_GUI_COPY=1` draws the copy instead, to compare. On the file select the D-pad also reaches Copy and Delete
+  (`compositor.cpp msr_footer_input`, from `input.c`): with a file open, Up and Down are one list, the file's choices
+  then Copy and round again, a step a press and repeating while held; on a choice it gives the game the presses that
+  take its choice there (counted, as the interface shows a new choice only after its animation; the game wraps, so
+  from Copy one Down is Continue), on Copy the game keeps its choice and it is drawn unchosen. Right from Copy is
+  Delete, A taps the button chosen (an injected touch); the buttons the list used are kept from the game until
+  released, and the chosen footer button is lit as the game lights its chosen buttons.
+- The pause menu from the game's interface too (2026-11-17): its map, Samus and map pins pages are drawn from the
+  in-game root (the GUI manager's first element in play, vtable 0x6E4C98, which holds the HUD and the pause menu's
+  IngameMenuComposition; read only while a menu or prompt shows). The map's rooms are a tile grid (vtable 0x6E4DB8:
+  54 x 31 cells of 10 pixels over the area, each a tile of `texturehud.bctex`, the u, v of its corners kept by the mesh
+  it builds: vtable 0x6E78C0, columns +0x14, rows +0x18, cells +0x6C, column by column; wholly transparent tiles
+  skipped. It is reached by the game's own pointers: the grid's +0xF4 is its drawing object (second vtable 0x6E8560 at
+  +0x10), whose +0xE8 is the render object, whose +0x44 is the mesh (0x104 bytes made at 0x1748C4). Each is a block of
+  the game's heap, right after the grid on a fresh heap and elsewhere in a longer session; until 2026-11-17 the mesh
+  was looked for next to the grid, and the user's maps showed no rooms, the surface's too once another area's map had
+  been looked at),
+  the doors, items and Samus's icon sprites, all clipped to the map's view (the container MinimapHang). The HUD's text
+  class (0x6E5CA0: text +0x12C, font +0x11C, alignment +0x120) is drawn as labels are; a label's lines are its line
+  height apart (+0x158). The game's button icons in the font and interface atlases follow the player's device as
+  `glyphs.cpp` draws them into the game's own uploads (`msr_glyph_patch`). The D-pad works the touch buttons
+  (`compositor.cpp PauseInput`, through the same input hook as the file select's footer): on the map page Left and Right
+  go along the toolbar (the world map, map pins, information, settings; the amiibo button drawn darkened and passed
+  over), A taps the one chosen and the D-pad no longer moves the map (input.c keeps the menus' D-pad, its own bits, the
+  pad's D-pad bound to the circle pad and the arrow keys, from the game; the analog stick and WASD still move it); on
+  the map pins tool Left and Right choose a pin and LT held (video.c `msr_trigger_hold`) puts a finger on it that the
+  stick moves, lifted when LT is let go, where the game places the pin. The drag holds whatever the touch screen's
+  reading says meanwhile (the bar changes under a pin taken up). The Samus page keeps the game's own D-pad.
+  Between two pause pages the game shows its emblem on the touch screen for some 0.2 s (the classifier reads Logo):
+  the panel stays through it, its background with it, the last page's contents fading out in 0.12 s and the next
+  page's fading in as it comes (at most 0.8 s, not once play is back), every frame drawn at the game's frame rate.
+- The HUD's minimap from the game's interface too (2026-11-17, `gui_tree.cpp msr_gui_minimap`): in play only the touch
+  screen's map view is walked (IngameMenuComposition / IngameMinimap / MinimapHang, found by their names and kept while
+  they are there): its tile grid, doors, items, Samus's icon and the DNA scanner's light, past the view's edges too, over
+  the game's Background sprite tinted as the game tints it (0.34, 0.57, 0.84), in the same window round Samus's marker
+  as before (`minimap.cpp`), with the map's brightness. The tiles the game's own atlas draws all but invisible (the map's
+  empty cells, alpha 3 of 255; the HD pack draws them as dashes) are left out of it; `gui_assets.cpp` keeps each atlas's
+  own alpha for that when a pack replaces its pixels. The background and the map's dark fill round the rooms (tiles with
+  no pixel brighter than 72 of 255) are drawn at half their colors, darker than the touch screen's, so the rooms stand
+  out over play. `PWR_GUI_COPY=1` draws the copied bottom screen instead.
+- Map pins on the map with the D-pad (2026-11-17, `compositor.cpp PauseInput`): the pins placed on the map are sprites
+  named `MarkerX<column>Y<row>` (sheet item Marker_A) in the map's view. On the map pins tool Up goes to those a finger
+  can take (in the view, above the bar; left to right), Left and Right choose one (lit by a square), Down goes back to
+  the bar. Y (the left face button) removes it as a finger does: on the pin 0.15 s, to the bar in 0.25 s (the game's
+  DeleteComposition, 42-278 x 215-242, shows while a placed pin is held; dropped there, the game takes it off), lifted
+  0.1 s later. LT held moves it as a bar pin is moved. The bar ends with the tool's Delete all button
+  (ButtonSelectMarkersBase/Icon, the corner at the right), which A taps: the game asks "Remove all pins from current
+  area?" itself. `PWR_TEST_TOUCH=<s>:<x>:<y>,...` (input.c) puts a test finger on the touch screen, going in a straight
+  line between its points, `<s>:-` lifting it (a background window's posted clicks do not reach the touch screen).
+  Then (the user: "they use the circle stick or dpad to go to different markers ... Then they use A to select the
+  marker"): the stick chooses as the D-pad does (past 0x60 of 0x9C, repeating after 0.4 s every 0.15 s; not while the
+  D-pad is pressed, which comes as the circle pad's too under the right stick option), and is kept from the game there
+  (the map's view no longer moves with it on this tool). The map's pins are chosen by where they lie (the nearest the way
+  pressed, along it plus twice aside; Down past the lowest: the bar). A puts a finger on the pin chosen, the stick (or
+  the D-pad) moves it at 160 pixels a second, A again lifts it there; B takes it back to where it was taken from and
+  lifts it there 0.1 s later (a bar pin goes back to the bar, a map pin to its place). A drag ends, lifted, once the
+  pause screen has been gone 0.5 s. The bar's choice is kept while its pins are hidden (a pin held, one dropped) and
+  over a moment's other reading. `PWR_TEST_PAD` takes `sleft`, `sright`, `sup` and `sdown` for the left stick.
+  Then (the user: "allow the circle stick to move the pin around the whole map of the area ... Make this smooth like
+  it would be on the regular pause screen"): the finger stays in the map's view (MinimapHang's rectangle, which the
+  tree walk keeps: `msr_gui_map_view`; 6 pixels in; a bar pin rises into it from the bar), and the stick pushed past
+  its edge goes to the game as the circle pad (that axis only; `take` bit 4 tells input.c to keep the stick as given):
+  the game moves its map with the circle pad while a finger is down, as on the map page, so the map scrolls under the
+  pin at the game's own pace. (The game does not scroll it for a finger held at the edge.) A pin can no longer be
+  dragged onto the bar to remove it: X does, and B puts one back.
+- The world map (2026-11-17): its pixels read as the map pins page, and the pins' D-pad took the game's own from it
+  (choosing an area did nothing). `gui_tree.cpp` keeps the opacity of WorldMapComposition (0x26965E43; there on the
+  map page too, at opacity 0) as it walks the tree (`msr_gui_world_map`); over half, `PauseFromTree` gives the world map
+  a page of its own (3), where `PauseInput` takes nothing: the D-pad and the stick choose an area, A shows its map, as
+  the game does. `P::world_map` gives it its own help.
+- **Fit the pause screen to the window** (HUD tab, `fit_pause`, on by default since 2026-11-17, the user: "I want the
+  full screen pause screen to become the default"): the touch screen's menus over play
+  (the pause pages and what they open, an elevator's, the panel between two pages) laid out over the whole window from
+  the game's interface, as tall as the window, every piece where its anchor says (`MsrGuiItem.anchor`, decided by
+  `gui_tree.cpp`): as the 3DS draws it in the middle (the map's view widened to the window: the tree walk's clip of
+  MinimapHang reaches half the extra width past each side of the screen it reaches, `msr_gui_map_margin` from the last
+  frame's, so the grid's cells and icons there are read and the map fills the screen), unless it (or the first group on its way down narrower than 40%
+  of the screen) is against the screen's left or right edge (within 2 pixels), a tab that goes to the window's edge with
+  what lies in it (its icons, siblings; a tab hidden this frame too, short and in a bar: the pins tool's Delete all
+  corner); a wider piece with an end against an edge (backgrounds, bars, a bar's halves) is stretched between its ends,
+  40% of it at each end keeping its shape where that end goes and its middle taking the rest; the map's view and what it
+  holds (and the pin a finger holds) in the middle, its clip opened to the window's width. A line from an edge into the
+  middle (a sprite at most 12 pixels tall, four times as wide: the titles' header lines, HeaderUp) is stretched too,
+  whatever its width, so it still meets its tab. A piece whose anchor changes (a column the game slides in from past the
+  edge) moves to its new place over 0.1 s, kept by its name and which of the pieces so named it is (the headers' two
+  HeaderUp lines shared one place by name alone, and the right one was drawn across the title). A screen drawn as the touch
+  screen's copy stays 4:3 in the middle. The mouse touches the piece under it (`msr_panel_touch`, by its anchor); touch
+  mode's cursor goes by the piece it is on. Decided while the panel shows and kept while it fades out; taken at once
+  when the panel was hidden, eased in 0.15 s otherwise. (A first try stretched the 4:3 screen to the window: "looks
+  weird", the user said.)
+- The pause map's buttons on it (2026-11-17, `compositor.cpp PauseExtras`; the user, of the help text beside the pause
+  screen and the file select: "we no longer need but I do want them to be re-worked"): the game's own D-pad icons
+  (D-LEFT, D-RIGHT, embedded sprites) 2 pixels outside the toolbar's first and last bases, and outside the pins' bar
+  (10 pixels before its first pin; past its last pin by 48, where the count "x10" ends), in the bars on the pause
+  screen fitted to a wider window, else above them, 2 pixels over their tops (there the corners' buttons are beside
+  the bars' ends; the pins' right one short of the remove button's box), and, a pin on the map chosen, the box the
+  game's popups show "✔ Ⓐ" in (ButtonUpWindow, `texturehud` 3,181 61x25) 1 pixel above the Delete all corner, holding
+  the file select's bin (Icon_Erase, `texturehudopaque` 110,378) and the 3DS Y's icon (drawn as the player's pad names
+  that button: X on Xbox, Square on PlayStation). They are pieces added to the interface's (with the anchors of those
+  they sit by), so they fade, slide and fit as those do. msr-native shows no help column beside its menus any more
+  (`overlay.cpp DrawControlHints`): only touch navigation's (T) is named, its "Menu help text" option kept for it.
+  (GuiQuads lit a chosen button's base by its name, and with a pin chosen, which has none, lit every unnamed piece: the
+  icons came out blue. It needs a base now.)
 - Save states (`state.c`, `state.h`): the menu's Quick save and Quick load, F5 and F8. The guest's memory (the
   reservation's committed pages, without the game's code) and every part that keeps state, in sections, zlib-compressed
   on a worker thread into `<user>/states/native-quick.state` (~13 MiB); a state of other game files or game mods is

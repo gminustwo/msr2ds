@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <map>
@@ -571,4 +572,64 @@ extern "C" uint64_t msr_romfs_size(void) {
 
 extern "C" size_t msr_romfs_read(uint64_t offset, size_t length, uint8_t* out) {
     return layered ? layered->Read(offset, length, out) : 0;
+}
+
+// A file by its path in the RomFS the game reads (the dump's, or rebuilt with the game mods' files): its directory and
+// file tables walked from the level-3 header, names compared as UTF-16. Any thread (the reads take their own locks).
+extern "C" uint64_t g_romfs_offset, g_romfs_size;   // fs.c: the dump's level-3 image
+extern "C" uint8_t* msr_romfs_file(const char* path, size_t* size) {
+    const auto read = [](u64 offset, std::size_t length, void* out) {
+        if (layered) return layered->Read(offset, length, static_cast<u8*>(out)) == length;
+        return g_dump && offset + length <= g_romfs_size && dump_read(g_dump, g_romfs_offset + offset, out, length) == 0;
+    };
+    RomFSHeader header{};
+    if (!read(0, sizeof header, &header)) return nullptr;
+    const auto name_at = [&](u64 offset, u32 length) {
+        std::u16string name(length / 2, u'\0');
+        if (length && !read(offset, length, name.data())) name.clear();
+        return name;
+    };
+    u32 directory = 0;   // the root's metadata
+    std::string rest = path;
+    while (!rest.empty()) {
+        const std::size_t slash = rest.find('/');
+        const std::u16string want = Utf16(rest.substr(0, slash));
+        if (slash == std::string::npos) {   // the file, among the directory's
+            DirectoryMetadata d{};
+            if (!read(header.directory_metadata_table.offset + directory, sizeof d, &d)) return nullptr;
+            for (u32 f = d.first_file_offset, guard = 0; f != 0xFFFFFFFF && guard < 100000; ++guard) {
+                FileMetadata m{};
+                const u64 at = header.file_metadata_table.offset + f;
+                if (!read(at, sizeof m, &m)) return nullptr;
+                if (name_at(at + sizeof m, m.name_length) == want) {
+                    auto* data = static_cast<uint8_t*>(std::malloc(m.file_data_length ? m.file_data_length : 1));
+                    if (!data || !read(header.file_data_offset + m.file_data_offset, m.file_data_length, data)) {
+                        std::free(data);
+                        return nullptr;
+                    }
+                    *size = m.file_data_length;
+                    return data;
+                }
+                f = m.next_sibling_offset;
+            }
+            return nullptr;
+        }
+        DirectoryMetadata d{};
+        if (!read(header.directory_metadata_table.offset + directory, sizeof d, &d)) return nullptr;
+        u32 found = 0xFFFFFFFF;
+        for (u32 c = d.first_child_directory_offset, guard = 0; c != 0xFFFFFFFF && guard < 100000; ++guard) {
+            DirectoryMetadata child{};
+            const u64 at = header.directory_metadata_table.offset + c;
+            if (!read(at, sizeof child, &child)) return nullptr;
+            if (name_at(at + sizeof child, child.name_length) == want) {
+                found = c;
+                break;
+            }
+            c = child.next_sibling_offset;
+        }
+        if (found == 0xFFFFFFFF) return nullptr;
+        directory = found;
+        rest = rest.substr(slash + 1);
+    }
+    return nullptr;
 }

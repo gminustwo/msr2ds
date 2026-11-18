@@ -2,8 +2,9 @@
 // Samus Returns' single-screen compositor: pieces of the bottom screen over the game view, as the emulator-based
 // build's vulkan_present_msr.frag (keep the two in step). Here the bottom screen is screen-oriented, so the hard edge
 // bits are left, top, right, bottom.
-//   style: x = opacity, y/z = luma key low/high edge (modes 0 and 3: y = gain), w = mode
-//          (0 plain, 1 luma-keyed, 2 solid colour, 3 drawn over black)
+//   style: x = opacity, y/z = luma key low/high edge (modes 0, 3 and 4: y = gain; 4: z = gray), w = mode
+//          (0 plain, 1 luma-keyed, 2 solid color, 3 drawn over black, 4 a sprite of the game's HUD atlas, tinted;
+//          5 a sprite or glyph of the game's atlases, alpha-blended and tinted by color; 6 one added, tinted by color)
 //   flags.x: edge feather width, in percent of the quad (low byte); bits 8-11 keep the left, top, right and bottom
 //            sides hard. flags.y: circular mask radius, in percent (0 = none)
 // Also OpenGL's (present.vert), whose GLSL 3.30 takes const only with a constant initializer.
@@ -60,6 +61,31 @@ void main() {
         float cover = pow(coverage, 0.6);
         vec3 rgb = cover > 0.0 ? lit / cover : vec3(0.0);
         o = vec4(rgb, alpha * cover * opacity);
+        return;
+    }
+    if (mode == 4) {
+        // One of the game's own sprites (the HUD atlas, source 3: white on black, which the game draws additively),
+        // tinted by color and brightened by y, its color drained to gray by z (Morph Ball grays the beam row); its light
+        // is kept as mode 3 keeps it
+        vec3 lit = min(screen.rgb * screen.a * p.color.rgb * p.color.a * p.style.y, vec3(1.0));
+        lit = mix(lit, vec3(dot(lit, vec3(0.299, 0.587, 0.114))), p.style.z);
+        float coverage = max(lit.r, max(lit.g, lit.b));
+        float cover = pow(coverage, 0.6);
+        o = vec4(cover > 0.0 ? lit / cover : vec3(0.0), alpha * cover * opacity);
+        return;
+    }
+    if (mode == 5) {
+        // A sprite or glyph of the game's atlases drawn as the game blends it (AlphaBlend): its color times color (the
+        // game's colors may pass 1), its alpha times color's
+        o = vec4(min(screen.rgb * p.color.rgb, vec3(1.0)), min(screen.a * p.color.a, 1.0) * alpha * opacity);
+        return;
+    }
+    if (mode == 6) {
+        // An Additive one (the counters' flares): the light it adds, written so that blending over what is behind takes
+        // away no more of it than that light's brightest channel (an additive blend by the one blend the quads have)
+        vec3 lit = min(screen.rgb * screen.a * p.color.rgb * p.color.a * alpha * opacity, vec3(1.0));
+        float cover = max(lit.r, max(lit.g, lit.b));
+        o = vec4(cover > 0.0 ? lit / cover : vec3(0.0), cover);
         return;
     }
     if (mode == 1) {
