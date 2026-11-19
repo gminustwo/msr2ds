@@ -38,9 +38,14 @@ inline constexpr u32 GamePointer = 0x76F314;
 inline constexpr u32 FusionModeOffset = 0x1859;
 inline constexpr u32 ForceFusionOffset = 0x185A;
 
-/// Samus's model component (also the morph ball's): its vtable, its models (32-byte entries,
-/// the file's id at +0x14, pointing at its name), their count and capacity.
+/// Samus's model component (also the morph ball's): its vtable, its entity (+0x08: the one behind
+/// the game object's handle +0xF0 for Samus, +0xF4 for the morph ball), its models (32-byte
+/// entries, the file's id at +0x14, pointing at its name, the resource at +0x1C), their count and
+/// capacity.
 inline constexpr u32 ComponentVtable = 0x6DC880;
+inline constexpr u32 ComponentEntityOffset = 0x08;
+inline constexpr std::array<u32, 2> PlayerHandles = {0xF0, 0xF4};
+inline constexpr u32 EntryResourceOffset = 0x1C;
 inline constexpr u32 ComponentEntriesOffset = 0x2E4;
 inline constexpr u32 EntryPathOffset = 0x14;
 inline constexpr u32 ComponentCountOffset = 0x2EC;
