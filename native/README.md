@@ -317,7 +317,16 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   (`src/msr/suit_swap.h`) at the same place loads the other suit family, rebuilds Samus's model components and
   releases the first family, one command per frame on the game thread, called from the frame limiter's trap with
   its last instruction turned into a return; the fallback interpreter runs it (silently: `rt_quiet_range`), and
-  the effects hanging from her bones are moved to the bones of the same names.
+  the effects hanging from her bones are moved to the bones of the same names. The family it loads lands in the space
+  the area's sub-areas take turns in (packs/maps/<area>/subareas), until the next area load, so the game's package
+  heap is 8 MB larger (`patches.cpp` WidenPackageHeap: 28 MB, the linear memory asked for at 0x704B18 and a call hook
+  on the heap set-up 0x51BB14). At 20 MB a sub-area loaded again after a switch found no block its size (TLSF takes
+  one from a larger size class) and its models never came: in Area 2 an Alpha Metroid fought unseen (2026-11-18).
+  The swap takes only the components of the entities behind the game object's handles +0xF0 and +0xF4 (component
+  +0x08): components left from earlier loads keep the vtable and pointers to live resources. It also releases each
+  component's old model on screen once the instance shows the new one (`ReleaseShown`, 0x18FA6C), whose reference the
+  stub leaves counted as the destructor does; until then the old family's suit package and common.pkg stayed in the
+  heap. A switch and a switch back now leave the package heap as an area load leaves it.
 - Texture packs: `textures.cpp` reads the packs the launcher passes (`--texture-pack <folder>`, the Textures tab's
   enabled ones, highest priority first) in Azahar's format and matches textures as the emulator build does: by default
   the legacy hash, CityHash64 (`src/common/cityhash.cpp`) of the texture decoded exactly as Azahar's rasterizer cache

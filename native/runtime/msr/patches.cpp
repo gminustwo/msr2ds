@@ -119,6 +119,46 @@ void HookNewFileDifficulty() {
     rt_add_call_hook(MusicFade, MusicFadeHook);
 }
 
+// The package heap 8 MB larger, for the Fusion suit switched in play (cheats.cpp SuitFrame). The game keeps its resource
+// packages in a 20 MB heap (0x14480000-0x15880000, a TLSF allocator): the system's, Samus's and her suit family's
+// packages first, then the area's, then the area's sub-areas (packs/maps/<area>/subareas/subarearp<n>.pkg, up to 5.4 MB
+// each), which take turns in the space left as Samus moves between them. A switch in play loads the other suit family
+// while hers is still there, so its four packages (1.1 MB) land right behind the sub-area loaded then, in the sub-areas'
+// space, and stay there until the next area load. When that sub-area is loaded again after another one, its old place,
+// held in by them, is exactly its size, and TLSF only takes a block from a size class above the request's: the load
+// failed and its models never came. On 2026-11-18 an Alpha Metroid in Area 2 fought unseen after the user switched to
+// the Fusion suit at the save station (sub-area 0, then 2, then 0 again). After a switch the largest sub-areas need up
+// to 5.3 MB more (Area 6b's 5.4 MB one); 8 MB leaves room for switching back and forth.
+// The game asks for 56 MB of linear memory at boot (the word at 0x704B18, less 256 KB, read at 0x108EC8) and divides it
+// (0x51BBC4): 4.5 MB, the package heap's 20 MB, the main heap (the rest less 28 MB), 2 MB and 1.5 MB, each set up by
+// 0x51BB14 (this, start, end). It asks for 8 MB more here, and a call hook on that set-up ends the package heap 8 MB later
+// and starts the main heap 8 MB later: the main heap keeps its size and the last two their sizes, at the new end.
+constexpr u32 LinearSize = 0x704B18, LinearSizeOriginal = 0x03800000, LinearSizeRead = 0x108EC8;
+constexpr u32 HeapSetUp = 0x51BB14, PackageHeapSize = 0x51BC00, MainHeapSize = 0x51BBD0;   // add r5, #0x1400000; sub r7, #0x1c00000
+constexpr u32 PackageHeapReturn = 0x51BC14, MainHeapReturn = 0x51BC34;   // the set-up's calls for those two
+constexpr u32 PackageHeapExtra = 0x800000;
+
+void HeapSetUpHook(CPU* c) {
+    if (c->r[14] == PackageHeapReturn) {
+        c->r[2] += PackageHeapExtra;
+        std::fprintf(stderr, "msr: package heap %08x-%08x (%u MB, 8 MB more for the Fusion suit switched in play)\n", c->r[1],
+                     c->r[2], (c->r[2] - c->r[1]) >> 20);
+    } else if (c->r[14] == MainHeapReturn) {
+        c->r[1] += PackageHeapExtra;
+    }
+}
+
+void WidenPackageHeap() {
+    static constexpr u32 Returns[] = {PackageHeapReturn, MainHeapReturn};
+    if (rd32(LinearSize) != LinearSizeOriginal || rd32(LinearSizeRead) != 0xE5940018u || rd32(PackageHeapSize) != 0xE2855505u ||
+        rd32(MainHeapSize) != 0xE2407507u || !CallsFrom(HeapSetUp, Returns, 2)) {
+        std::fprintf(stderr, "msr: package heap: not this game's code, left at 20 MB\n");
+        return;
+    }
+    if (!rt_add_call_hook(HeapSetUp, HeapSetUpHook)) return;
+    wr32(LinearSize, LinearSizeOriginal + PackageHeapExtra);
+}
+
 } // namespace
 
 // The words patchable.txt lists that native code built before them does not check: the recompiled functions holding
@@ -130,4 +170,5 @@ extern "C" void msr_patches_module_loaded(void) {
     };
     rt_code_patchable(Unchecked, static_cast<u32>(sizeof Unchecked / sizeof Unchecked[0]));
     HookNewFileDifficulty();
+    WidenPackageHeap();
 }

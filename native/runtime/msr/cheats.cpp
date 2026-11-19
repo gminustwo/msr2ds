@@ -161,20 +161,89 @@ const std::vector<u32>& Stub() {
     return stub;
 }
 
+// Samus's entity and her morph ball's, from the game object's handles; 0 for one not there
+std::array<u32, 2> SuitEntities() {
+    std::array<u32, 2> entities{};
+    const u32 game = Valid(S::GamePointer) ? rd32(S::GamePointer) : 0;
+    for (std::size_t i = 0; i < entities.size(); ++i) {
+        const u32 handle = Valid(game + S::PlayerHandles[i]) ? rd32(game + S::PlayerHandles[i]) : 0;
+        entities[i] = Valid(handle + 8) ? rd32(handle + 8) : 0;
+    }
+    return entities;
+}
+
+bool OwnedBySamus(u32 entity, const std::array<u32, 2>& entities) {
+    return entity != 0 && (entity == entities[0] || entity == entities[1]);
+}
+
+// Her model components: those of her two entities only. Components left on the heap from earlier loads keep the
+// vtable and their models' resource pointers, which can be the live ones (the 2026-11-14 test save had two beside hers),
+// and the stub would have released resources through them.
 std::vector<u32> FindModelComponents() {
-    return FindObjects(S::ComponentVtable, S::ComponentSize, [](auto word) {
+    const auto entities = SuitEntities();
+    if (!entities[0] && !entities[1]) return {};
+    return FindObjects(S::ComponentVtable, S::ComponentSize, [&entities](auto word) {
         const u32 count = word(S::ComponentCountOffset);
-        return count != 0 && count <= 8 && word(S::ComponentCapacityOffset) >= count;
+        return count != 0 && count <= 8 && word(S::ComponentCapacityOffset) >= count &&
+               OwnedBySamus(word(S::ComponentEntityOffset), entities);
     }, S::MaxComponents);
 }
 
 bool ComponentsCurrent(const std::vector<u32>& components) {
+    const auto entities = SuitEntities();
     for (const u32 c : components) {
         if (!Valid(c) || !Valid(c + S::ComponentSize - 4) || rd32(c) != S::ComponentVtable) return false;
         const u32 count = rd32(c + S::ComponentCountOffset);
-        if (count == 0 || count > 8) return false;
+        if (count == 0 || count > 8 || !OwnedBySamus(rd32(c + S::ComponentEntityOffset), entities)) return false;
     }
     return !components.empty();
+}
+
+// The model on screen before a swap, released after it. Each of a component's models holds a reference to its resource
+// (+4 counts them), and the model instance on screen one more; the stub, as the component's destructor (0x403260),
+// releases the models' references except the one on screen, the instance moves its own to the new model (0x402E1C),
+// and the old model's entry is gone with its reference still counted. The old suit's model, its suit package
+// (varia.pkg when she wears the Varia Suit) and the family's common.pkg then stayed in the package heap, at refcount
+// 0 but in use, until the next area load (2026-11-18). Released through the resource manager as the destructor does.
+constexpr u32 ResourceManager = 0x76F2D8, ResourceRelease = 0x18FA6C, ResourceVtable = 0x6E77C4, ResourceRefs = 4;
+constexpr u32 InstanceResourceOffset = 0;   // the model instance's resource (the instance at component +0x30)
+
+u32 ShownResource(u32 component) {
+    const u32 instance = rd32(component + S::ComponentInstanceOffset);
+    return Valid(instance + InstanceResourceOffset) ? rd32(instance + InstanceResourceOffset) : 0;
+}
+
+bool HasModel(u32 component, u32 resource) {
+    const u32 entries = rd32(component + S::ComponentEntriesOffset), count = rd32(component + S::ComponentCountOffset);
+    for (u32 i = 0; i < count && i < 8; ++i) {
+        const u32 entry = entries + i * 32;
+        if (Valid(entry + S::EntryResourceOffset) && rd32(entry + S::EntryResourceOffset) == resource) return true;
+    }
+    return false;
+}
+
+// Before the swap: each component's model on screen, where one of its models holds it
+std::vector<std::pair<u32, u32>> ShownModels(const std::vector<u32>& components) {
+    std::vector<std::pair<u32, u32>> shown;
+    for (const u32 c : components) {
+        const u32 resource = ShownResource(c);
+        if (Valid(resource + ResourceRefs) && rd32(resource) == ResourceVtable && HasModel(c, resource)) shown.emplace_back(c, resource);
+    }
+    return shown;
+}
+
+// After it: the ones no longer on screen nor among the component's models, still referenced, released on the game thread
+void ReleaseShown(const std::vector<std::pair<u32, u32>>& shown) {
+    const u32 manager = Valid(ResourceManager) ? rd32(ResourceManager) : 0;
+    if (!manager) return;
+    int released = 0;
+    for (const auto& [c, resource] : shown) {
+        if (!ComponentsCurrent({c}) || ShownResource(c) == resource || HasModel(c, resource)) continue;
+        if (!Valid(resource + ResourceRefs) || rd32(resource) != ResourceVtable || static_cast<s32>(rd32(resource + ResourceRefs)) < 1) continue;
+        Queue({ResourceRelease, manager, resource, 0});
+        ++released;
+    }
+    if (released) std::fprintf(stderr, "msr: Fusion suit: the old models on screen released (%d)\n", released);
 }
 
 // 1 when the component's models are the Fusion ones (actors/characters/samusfusion/...), 0 if not, -1 unreadable
@@ -259,6 +328,7 @@ struct Swap {
     u32 runs = 0;
     std::vector<u32> components;
     std::vector<std::pair<u32, u32>> attachments;
+    std::vector<std::pair<u32, u32>> shown;   // (component, its model on screen) before the swap
 } swap;
 
 // A command for the stub, run on the game's next frame.
@@ -330,6 +400,7 @@ void SuitFrame(double now) {
         }
         std::fprintf(stderr, "msr: Fusion suit: replacing the models of %zu components\n", swap.components.size());
         swap.attachments = BoneAttachments(swap.components);
+        swap.shown = ShownModels(swap.components);
         Send(S::SwapModels, swap.target, now);
         swap.step = Step::Swapping;
         return;
@@ -353,6 +424,8 @@ void SuitFrame(double now) {
         break;
     case Step::Swapping:
         Reattach(swap.components, swap.attachments);
+        ReleaseShown(swap.shown);   // queued before the family's release: the same trap, in order
+        swap.shown.clear();
         Send(S::ReleaseFamily, !swap.target, now);
         swap.step = Step::Releasing;
         break;
