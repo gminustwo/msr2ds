@@ -20,9 +20,9 @@
 > I don't provide the HD texture pack. For one, I didn't create them. Secondly, it would make the download over a GB.
 > You can find them at the link below. Don't trust the link? No problem, Google where to find it yourself.
 >
-> > Recommended: https://www.mediafire.com/file/iaucrbrgkff6no3/Metroid2HD_v2.9.zip/file?action=check
+> > Recommended Pack: https://www.mediafire.com/file/iaucrbrgkff6no3/Metroid2HD_v2.9.zip/file?action=check
 > 
-> > HD Texture Pack link: https://drive.google.com/file/d/1GxvnzsPQznZ_v_6s-YMgETyLe5rN2Fak/view
+> > Older pack but still good: https://drive.google.com/file/d/1GxvnzsPQznZ_v_6s-YMgETyLe5rN2Fak/view
 
 
 *Metroid: Samus Returns* as a native, single-screen PC game. This is a full PC Port. It is no longer built on emulation.
