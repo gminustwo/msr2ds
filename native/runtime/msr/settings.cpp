@@ -3,8 +3,10 @@
 // (overlay_host.cpp) and published to the same shared state (src/msr/presentation.h, cheats.h, frame_rate.h).
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include "ini.h"
+#include "log.h"
 #include "msr.h"
 #include "msr/cheats.h"
 #include "msr/frame_rate.h"
@@ -149,6 +151,7 @@ extern "C" int msr_settings_load(const char* path) {
     MSR::GetOverlay().SetPlayerSettings(p);   // publishes them (presentation, extras, frame rate)
     std::fprintf(stderr, "msr: settings %s%s (extras %#x)\n", path ? path : "(none)", f ? "" : " not found, defaults",
                  MSR::Cheats::enabled.load());
+    if (f) log_settings_file(path);   // all of them, for the log (log.c)
     return f ? 0 : -1;
 }
 
@@ -174,7 +177,12 @@ extern "C" int msr_settings_region(void) {
 
 extern "C" int msr_settings_save(void) {
     if (settings_path.empty()) return -1;
+    char* before = log_read_text(settings_path.c_str());   // what this save changed, for the log (log.c)
     MSR::GetOverlay().GetPlayerSettings().Save(settings_path);
+    char* after = log_read_text(settings_path.c_str());
+    log_settings_changes(before, after);
+    std::free(before);
+    std::free(after);
     return 0;
 }
 
