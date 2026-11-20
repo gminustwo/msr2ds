@@ -13,6 +13,12 @@ set(CMAKE_CXX_STANDARD 20)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
+# Paths in the builder's home folder stay out of the program: a dependency built from source there names its files in
+# its assert messages (SDL's did: the AppImages through 2.2.0's first build held /home/<name>/.../SDL/src/...). Linux and
+# macOS; Windows and Android builds take their dependencies from elsewhere.
+if(NOT CMAKE_HOST_WIN32 AND NOT "$ENV{HOME}" STREQUAL "" AND NOT "$ENV{HOME}" STREQUAL "/" AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+  add_compile_options("-ffile-prefix-map=$ENV{HOME}=~")
+endif()
 
 set(MSR_AOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/arm/msr_aot)
 # The module is accepted only when it was compiled against the same aot_runtime.h (as src/core/CMakeLists.txt checks).
