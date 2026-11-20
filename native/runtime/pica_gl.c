@@ -1412,6 +1412,16 @@ int pica_gl_texture_copy(uint32_t in, uint32_t out, uint32_t size, uint32_t in_l
     return 1;
 }
 
+/* the outputs of scaled DisplayTransfers (bloom_scale), noted by both paths (pica_vk.c's bloom_out_note) */
+#define BLOOM_OUTS 16
+static uint32_t bloom_out[BLOOM_OUTS]; static int nbloom_out, bloom_next;
+static void bloom_out_note(uint32_t out, uint32_t flags) {
+    if (!((flags >> 24) & 3)) return;
+    for (int k = 0; k < nbloom_out; k++) if (bloom_out[k] == out) return;
+    bloom_out[bloom_next] = out; bloom_next = (bloom_next + 1) % BLOOM_OUTS;
+    if (nbloom_out < BLOOM_OUTS) nbloom_out++;
+}
+
 /* gsp.c's DisplayTransfer halving such a copy, tiled RGBA8 to tiled RGBA8 (pica_vk_transfer_gpu's conditions): a linear
    blit between the aliases; 1 when done here */
 int pica_gl_transfer_gpu(uint32_t in, uint32_t out, uint32_t in_dim, uint32_t out_dim, uint32_t flags) {
@@ -1431,6 +1441,7 @@ int pica_gl_transfer_gpu(uint32_t in, uint32_t out, uint32_t in_dim, uint32_t ou
     alias_issue(a);
     glFlush();
     a->hash = hash_mem(out, a->span); a->checked_list = list_no;
+    bloom_out_note(out, flags);
     return 1;
 }
 
@@ -1500,10 +1511,9 @@ static void scans_drop(void) {
 }
 
 /* gsp.c's DisplayTransfer: what Samus Returns' features need from it, and the scan-out copy (1: the CPU's is not needed) */
-static uint32_t bloom_out[8]; static int nbloom_out;
 int pica_gl_display_transfer(uint32_t in, uint32_t out, uint32_t in_dim, uint32_t out_dim, uint32_t flags) {
     msr_bottom_frame();   /* a frame was finished: the next bottom-screen draw starts one */
-    if ((flags >> 24) & 3) { int k = 0; for (; k < nbloom_out && bloom_out[k] != out; k++) {} if (k == nbloom_out && nbloom_out < 8) bloom_out[nbloom_out++] = out; }
+    bloom_out_note(out, flags);
     const uint32_t iw = in_dim & 0xffff, ih = in_dim >> 16, ow = out_dim & 0xffff, oh = out_dim >> 16;
     static const uint32_t obpp[8] = { 4, 3, 2, 2, 2, 4, 4, 4 };
     pica_gl_scanout_invalidate(out, out + ow * oh * obpp[(flags >> 12) & 7]);
