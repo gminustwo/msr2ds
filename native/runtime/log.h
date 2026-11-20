@@ -1,6 +1,7 @@
 /* The game's log, one file for each play session (log.c) */
 #ifndef MSR_LOG_H
 #define MSR_LOG_H
+#include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -10,6 +11,7 @@ extern "C" {
 int log_start(const char *dir);
 const char *log_path(void);             /* this session's file, or "" */
 void log_start_lines(void);             /* the log's first lines: the build, how it was started, the folder, the system */
+void log_drive(const char *path, char *out, size_t n);   /* what kind of drive path is on ("a fixed drive D: (NTFS, NVMe)") */
 void log_tick(void);                    /* the watchdog, every 25 ms: the lines so far to the writer, every 100 ms */
 void log_crash_sync(void);              /* a crash: the lines so far reach the file; later ones go straight to it */
 void log_finish(const char *how);       /* the last line ("exit: ..."), then straight to the file */

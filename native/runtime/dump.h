@@ -10,6 +10,7 @@ extern "C" {
 typedef struct DumpFile DumpFile;
 DumpFile *dump_open(const char *path);   /* NULL when it cannot be opened, or its compressed form cannot be read */
 int dump_read(DumpFile *d, uint64_t offset, void *dst, size_t size);   /* 0 when all of it was read */
+const char *dump_error(void);            /* why this thread's last dump_read failed ("" when it did not) */
 uint64_t dump_size(const DumpFile *d);   /* the game file's size (uncompressed) */
 int dump_compressed(const DumpFile *d);  /* a Z3DS file */
 void dump_close(DumpFile *d);

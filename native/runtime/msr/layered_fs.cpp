@@ -4,6 +4,7 @@
 // or adds files and its romfs_ext/ removes (.stub) or patches (.ips, .bps) them, applied from the lowest priority up,
 // then new tables are written and each file's data comes from the dump, a mod's file or the patched copy.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -28,6 +29,9 @@ namespace {
 using u8 = std::uint8_t;
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
+
+thread_local bool base_failed;          // a read of the dump inside LayeredFS::Read failed (msr_romfs_read logs it, outside its lock)
+thread_local std::string base_error;    // why the last one failed (dump_error, kept: the next read clears it)
 
 struct Descriptor {
     u32 offset, length;
@@ -183,8 +187,13 @@ private:
 };
 
 bool LayeredFS::ReadBase(u64 offset, std::size_t length, u8* out) {
-    if (offset > base_size || length > base_size - offset) return false;
-    return dump_read(base, base_offset + offset, out, length) == 0;
+    if (offset > base_size || length > base_size - offset) {
+        base_error = "past the game's own RomFS";
+        return false;
+    }
+    if (dump_read(base, base_offset + offset, out, length) == 0) return true;
+    base_error = dump_error();
+    return false;
 }
 
 std::string LayeredFS::ReadName(u64 offset, u32 length) {
@@ -521,7 +530,7 @@ std::size_t LayeredFS::Read(u64 offset, std::size_t length, u8* out) {
         const std::size_t n = file.size > relative ? static_cast<std::size_t>(std::min<u64>(file.size - relative, length - done)) : 0;
         const std::size_t pad = static_cast<std::size_t>(std::min<u64>(AlignUp(file.size, 16) - relative, length - done)) - n;
         if (file.type == 0) {
-            ReadBase(file.original_offset + relative, n, out + done);
+            if (!ReadBase(file.original_offset + relative, n, out + done)) base_failed = true;
         } else if (file.type == 1) {
             if (open_path != file.replace_path) {
                 if (open_file) std::fclose(open_file);
@@ -571,8 +580,14 @@ extern "C" uint64_t msr_romfs_size(void) {
     return layered ? layered->Size() : 0;
 }
 
+static void ReadFailed(u64 offset, u64 length, const char* reason);   // (below, with the "where:" lines)
+
 extern "C" size_t msr_romfs_read(uint64_t offset, size_t length, uint8_t* out) {
-    return layered ? layered->Read(offset, length, out) : 0;
+    if (!layered) return 0;
+    base_failed = false;
+    const std::size_t n = layered->Read(offset, length, out);
+    if (base_failed) ReadFailed(offset, length, base_error.c_str());
+    return n;
 }
 
 // A file by its path in the RomFS the game reads (the dump's, or rebuilt with the game mods' files): its directory and
@@ -635,16 +650,18 @@ extern "C" uint8_t* msr_romfs_file(const char* path, size_t* size) {
     return nullptr;
 }
 
-// The packages the game reads, for the log's "where:" lines (2026-11-19): each .pkg of the RomFS the game reads (the dump's,
+// The packages the game reads, for the log's "where:" lines (2026-11-19): each file of the RomFS the game reads (the dump's,
 // or the one rebuilt with the game mods' files) by its data's offset, from the level-3 header's directory and file tables
-// (read whole, at the game's first read). A package read to its end gets a line: its path (packs/maps/<area>/... names the
-// area and the sub-area being loaded), its size and the time since its first read. The game itself reads by offset only
-// (fs.c), so nothing else in the program knows which file a read was.
+// (read whole, at the game's first read). A package (.pkg) read to its end gets a line: its path (packs/maps/<area>/...
+// names the area and the sub-area being loaded), its size and the time since its first read. A read that failed names its
+// file, whichever it is (msr_romfs_read_failed). The game itself reads by offset only (fs.c), so nothing else in the
+// program knows which file a read was.
 namespace {
 
 struct Package {
     u64 start = 0, size = 0;
     std::string path;
+    bool package = false;   // a .pkg: its "where:" line
     std::chrono::steady_clock::time_point first{};
     u64 got = 0;
     bool reading = false;
@@ -686,8 +703,9 @@ void IndexPackages() {
             FileMetadata m{};
             std::memcpy(&m, files.data() + f, sizeof m);
             const std::string name = name_of(files, f + sizeof m, m.name_length);
-            if (name.size() > 4 && name.compare(name.size() - 4, 4, ".pkg") == 0)
-                packages.push_back({header.file_data_offset + m.file_data_offset, m.file_data_length, t.path + name});
+            const bool pkg = name.size() > 4 && name.compare(name.size() - 4, 4, ".pkg") == 0;
+            if (m.file_data_length)   // an empty file shares its offset with the next one: left out
+                packages.push_back({header.file_data_offset + m.file_data_offset, m.file_data_length, t.path + name, pkg});
             f = m.next_sibling_offset;
         }
         for (u32 c = d.first_child_directory_offset, g = 0; c != 0xFFFFFFFF && c + sizeof(DirectoryMetadata) <= dirs.size() && g < 100000; ++g) {
@@ -709,7 +727,7 @@ extern "C" void msr_romfs_note_read(uint64_t offset, uint64_t length) {
     auto it = std::upper_bound(packages.begin(), packages.end(), offset, [](u64 o, const Package& p) { return o < p.start; });
     if (it == packages.begin()) return;
     --it;
-    if (offset >= it->start + it->size) return;
+    if (!it->package || offset >= it->start + it->size) return;
     std::scoped_lock lock{packages_lock};
     const auto now = std::chrono::steady_clock::now();
     if (!it->reading || offset == it->start) {
@@ -724,4 +742,31 @@ extern "C" void msr_romfs_note_read(uint64_t offset, uint64_t length) {
         if (ms >= 1) std::fprintf(stderr, "where: %s, %.1f MB, read in %.0f ms\n", it->path.c_str(), static_cast<double>(it->size) / 1048576.0, ms);
         else std::fprintf(stderr, "where: %s, %.1f MB\n", it->path.c_str(), static_cast<double>(it->size) / 1048576.0);
     }
+}
+
+// A read of the game file that failed: the game is given nothing for it (fs.c) and goes on as its code does, which looked
+// like an area that never loads (msr2ds issue 68: Area 4's level not drawn, the elevator back up loading forever, and
+// nothing in the log). The line names the file in the RomFS and why the read failed (dump.c dump_error): the system's
+// error (a cloud or network drive, a failing USB drive), the file ending early, or a compressed frame. The first 20, then
+// every 100th, with the count.
+static void ReadFailed(u64 offset, u64 length, const char* reason) {
+    static std::atomic<unsigned> count{0};
+    const unsigned k = ++count;
+    if (k > 20 && k % 100) return;
+    const std::string why = reason && reason[0] ? reason : "no reason given";   // (indexing below reads, which clears dump_error)
+    std::call_once(packages_once, IndexPackages);
+    std::string where = "the RomFS's own tables";
+    auto it = std::upper_bound(packages.begin(), packages.end(), offset, [](u64 o, const Package& p) { return o < p.start; });
+    if (it != packages.begin()) {
+        --it;
+        where = offset < it->start + it->size ? it->path + " at " + std::to_string(offset - it->start) + " of its " + std::to_string(it->size) + " bytes"
+                                              : "the RomFS between files, after " + it->path;
+    }
+    const std::string tail = k == 20 ? " (20 failed reads: from here on every 100th is written)" : k > 20 ? " (failed read " + std::to_string(k) + ")" : "";
+    std::fprintf(stderr, "fs: a read of the game file failed: %llu bytes of %s (%s); the game got nothing for it%s\n",
+                 static_cast<unsigned long long>(length), where.c_str(), why.c_str(), tail.c_str());
+}
+
+extern "C" void msr_romfs_read_failed(uint64_t offset, uint64_t length) {
+    ReadFailed(offset, length, dump_error());
 }

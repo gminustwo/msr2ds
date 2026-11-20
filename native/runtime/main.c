@@ -179,6 +179,8 @@ code_done:;
         fprintf(stderr, "game: %s (%s), program %016llx, remaster version %u, its code %016llx%s, from %s\n", product[0] ? product : "?", region,
                 (unsigned long long)le64(h + 0x118), (unsigned)(ex[0x0E] | ex[0x0F] << 8), (unsigned long long)g_code_hash,
                 g_code_orig ? " (changed by a game mod)" : "", file ? file + 1 : path);
+        char drive[200]; log_drive(path, drive, sizeof drive);   /* the game reads it all along: a drive failing a read (fs.c) */
+        fprintf(stderr, "game: its file is on %s\n", drive);
     }
     /* RomFS: IVFC header, master hash, then level 3 (the file system) at the next level-3 block boundary */
     uint64_t romfs = ncch + (uint64_t)le32(h + 0x1B0) * MEDIA;
