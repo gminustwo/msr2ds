@@ -110,7 +110,10 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   progress?"), touch navigation and the settings, while in play the bottom button stays B (jump) and the right one A,
   as bound (`input.c` input_pad_bound, the menus' layout). The layout applies unless the HUD shows: from the
   classifier's Menu at once, from anything else once held 300 ms (a dialog over play shows the emblem below, as
-  cutscenes and loading do; `compositor.cpp` msr_buttons_state). A button keeps the 3DS button it pressed until it
+  cutscenes and loading do; `compositor.cpp` msr_buttons_state), and while the top screen's message box shows, the HUD
+  below or not (USMComposition, `gui_tree.cpp msr_gui_dialog`: a Recharge Station's "Ammo is already filled to
+  capacity." keeps the HUD, and until 2026-11-18 its A, drawn as the pad's bottom button, was Jump there and did
+  nothing). A button keeps the 3DS button it pressed until it
   comes up, so the button that chose Continue does not jump. The reminders follow, and the icons: the bottom screen's
   and text's from a Menu or a Prompt held 300 ms until the HUD shows (the menus' check mark shows A or Cross there; a
   dialog over play keeps play's, as its text names play's buttons), the dialogs' "A check mark" and "B cross" always.
@@ -175,7 +178,9 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   IngameMenuComposition; read only while a menu or prompt shows). The map's rooms are a tile grid (vtable 0x6E4DB8:
   54 x 31 cells of 10 pixels over the area, each a tile of `texturehud.bctex`, the u, v of its corners kept by the mesh
   it builds: vtable 0x6E78C0, columns +0x14, rows +0x18, cells +0x6C, column by column; wholly transparent tiles
-  skipped. It is reached by the game's own pointers: the grid's +0xF4 is its drawing object (second vtable 0x6E8560 at
+  skipped. Each corner's color is at +0x70 (RGBA floats, 64 bytes a cell): 0.25 for the rooms Samus has been in, 0.15
+  for those a Scan Pulse showed but she has not been in, which the game draws at 60%; until 2026-11-18 the colors were
+  left out and a scan drew its rooms as visited. It is reached by the game's own pointers: the grid's +0xF4 is its drawing object (second vtable 0x6E8560 at
   +0x10), whose +0xE8 is the render object, whose +0x44 is the mesh (0x104 bytes made at 0x1748C4). Each is a block of
   the game's heap, right after the grid on a fresh heap and elsewhere in a longer session; until 2026-11-17 the mesh
   was looked for next to the grid, and the user's maps showed no rooms, the surface's too once another area's map had
@@ -203,6 +208,30 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   own alpha for that when a pack replaces its pixels. The background and the map's dark fill round the rooms (tiles with
   no pixel brighter than 72 of 255) are drawn at half their colors, darker than the touch screen's, so the rooms stand
   out over play. `PWR_GUI_COPY=1` draws the copied bottom screen instead.
+- The Aeion abilities' page over the view (2026-11-18, `compositor.cpp AbilitiesOverlay`): when Samus gains an Aeion
+  ability the game shows a page on the touch screen after the top screen's "- Lightning Armor -" box and dims the top
+  screen. That page is the container AbilitiesCore (`gui_tree.cpp msr_gui_abilities`, found by name and checked with
+  every container above it; the pause's Samus page lists the abilities otherwise and keeps it hidden), so it is read
+  from the game at once, not from the bottom screen's picture, and the panel is kept away until the touch screen no
+  longer reads as a menu. Over the view, from the game's interface: the title, the four slots as the game lays them out
+  on the D-pad (ScanningPulseBase up, EnergyShieldBase left, EnergyWaveBase right, PhaseDisplacementBase down, an icon
+  each once found, the new one lit), each on a light plate as the counters are, and the description (LabelInfoBig) in
+  the top screen's own message box (USMComposition: its corners, edges and middle stretched round two lines; its
+  interface lays the top screen's 400 pixels across 320). The box's A shows while a page waits to turn; the last page
+  closes on B (Back), not A, and shows the box's B icons in the A's place on the A's base (the box's own B corner, the
+  A's base unturned at the left, is left out). Each shows once the label has read typed out for 0.1 s: a page turning,
+  the game writes the page and its typed count apart, and the label can read typed out for a moment.
+  The game slides the page in and out on the touch screen (the label up 2 pixels a frame as it comes, down as it goes,
+  the cross across): the overlay is drawn from the page as it comes and stands, and fades out on it as it stood once
+  the label goes down again from the highest it came (until then the text shook as the page went, its box read a
+  moment after its glyphs). Told by the way it moves, not by frames it holds still: at 120 FPS the window's frames
+  outnumber the game's, and the page was taken for going as it came. The description is a paged label: CLabel +0x168 its pages, +0x17C the page shown,
+  +0x190 that page's length and +0x194 how much of it is typed out (an embedded sprite one character). `Label` draws that
+  page only, typed out as far as the game has (until 2026-11-18 every page was laid out at once, the first in the box
+  and the rest past it). A label of one page is typed out too: the pause's Samus page types each description with its
+  sound, and it was drawn whole at once (the user: "it sounds like text is appearing ... but when you look text is just
+  there"); the labels the game shows at once count all their characters typed. +0x190 is not relied on: it reads
+  another number for a moment now and then. `msr_gui_named` finds objects by name shown or not, on either screen.
 - Map pins on the map with the D-pad (2026-11-17, `compositor.cpp PauseInput`): the pins placed on the map are sprites
   named `MarkerX<column>Y<row>` (sheet item Marker_A) in the map's view. On the map pins tool Up goes to those a finger
   can take (in the view, above the bar; left to right), Left and Right choose one (lit by a square), Down goes back to
@@ -244,7 +273,12 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   what lies in it (its icons, siblings; a tab hidden this frame too, short and in a bar: the pins tool's Delete all
   corner); a wider piece with an end against an edge (backgrounds, bars, a bar's halves) is stretched between its ends,
   40% of it at each end keeping its shape where that end goes and its middle taking the rest; the map's view and what it
-  holds (and the pin a finger holds) in the middle, its clip opened to the window's width. A line from an edge into the
+  holds (and the pin a finger holds) in the middle, its clip opened to the window's width. The map page's explored
+  percentage and pins count (PercentComposition, 5 pixels in from the left edge) goes to the left edge by its name
+  (`gui_tree.cpp LeftAnchored`, 2026-11-18: it stood in the middle's place). So does the Samus page's description bar,
+  its slanted start against the Back tab (DescriptionOrnament02) and its text (LabelInfoBig), and its line
+  (ButtonOrnament, from the middle to the right edge) is stretched from the left edge's place (`compositor.cpp
+  LeftEnded`): it stood apart from the Back tab by half the window's extra width. A line from an edge into the
   middle (a sprite at most 12 pixels tall, four times as wide: the titles' header lines, HeaderUp) is stretched too,
   whatever its width, so it still meets its tab. A piece whose anchor changes (a column the game slides in from past the
   edge) moves to its new place over 0.1 s, kept by its name and which of the pieces so named it is (the headers' two
