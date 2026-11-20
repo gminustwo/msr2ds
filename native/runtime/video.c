@@ -204,11 +204,31 @@ int video_option(const char *name, const char *value) {
     return 0;
 }
 
+/* The window and its display, for the log: once the graphics are open, and at each change of the window's mode after that
+   (2026-11-19) */
+static int display_told;
+static void display_line(void) {
+    if (!win) return;
+    display_told = 1;
+    const int d = SDL_GetWindowDisplayIndex(win); SDL_DisplayMode dm; memset(&dm, 0, sizeof dm);
+    if (d < 0 || SDL_GetDesktopDisplayMode(d, &dm)) memset(&dm, 0, sizeof dm);
+    int ww = 0, wh = 0; SDL_GetWindowSize(win, &ww, &wh);
+    char dpi[32] = ""; float ddpi = 0;
+    if (d >= 0 && !SDL_GetDisplayDPI(d, &ddpi, NULL, NULL) && ddpi > 0) snprintf(dpi, sizeof dpi, ", %.0f%% scaling", ddpi / 96.f * 100.f);
+    fprintf(stderr, "video: display: the window %s, %dx%d; the display %dx%d at %d Hz (%d of %d)%s; layout %s, window aspect %.2f\n",
+#ifdef __ANDROID__
+            "the whole screen",
+#else
+            opt_fs == 1 ? "borderless fullscreen" : opt_fs == 2 ? "exclusive fullscreen" : "windowed",
+#endif
+            ww, wh, dm.w, dm.h, dm.refresh_rate, d + 1, SDL_GetNumVideoDisplays(), dpi, layout_names[opt_layout], opt_window_aspect);
+}
 static void apply_fullscreen(void) {
 #ifdef __ANDROID__
     return;   /* always the whole screen there (video_init) */
 #endif
     SDL_SetWindowFullscreen(win, opt_fs == 1 ? SDL_WINDOW_FULLSCREEN_DESKTOP : opt_fs == 2 ? SDL_WINDOW_FULLSCREEN : 0);
+    if (display_told) display_line();   /* (the first comes once the graphics are open: the window is still being made here) */
 }
 /* A window to go fullscreen is made hidden and shown once it is: made at its windowed size, it showed for two frames
    first, a small window with a blank title bar in the middle of the screen (2026-11-14, the user's video: "a flash"
@@ -624,8 +644,15 @@ static int create_swapchain(void) {
     sc_count = MAX_IMAGES; VK(vkGetSwapchainImagesKHR(dev, swap, &sc_count, sc_images));
     {   /* what the presentation waits on (main.c's "presenting waits" line) */
         static const char *pm[4] = { "immediate", "mailbox", "FIFO", "FIFO relaxed" };
-        fprintf(stderr, "video: swapchain %ux%u, %u images (at least %u), %s\n", sc_extent.width, sc_extent.height, sc_count, caps.minImageCount,
-                (unsigned)ci.presentMode < 4 ? pm[ci.presentMode] : "other");
+        char hdr[96] = ", SDR";   /* the picture as it is sent: HDR in use, and at what brightness (the settings, else the display's) */
+        if (ci.imageColorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT || ci.imageColorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT) {
+            float pk, pp; msr_hdr(&pk, &pp);
+            snprintf(hdr, sizeof hdr, ", HDR on (%s, highlights %.0f nits, paper white %.0f nits%s)",
+                     ci.imageColorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT ? "HDR10" : "scRGB", pk > 0 ? pk : disp_peak, pp > 0 ? pp : disp_paper,
+                     pk > 0 || pp > 0 ? "" : ": the display's");
+        }
+        fprintf(stderr, "video: swapchain %ux%u, %u images (at least %u), %s%s\n", sc_extent.width, sc_extent.height, sc_count, caps.minImageCount,
+                (unsigned)ci.presentMode < 4 ? pm[ci.presentMode] : "other", hdr);
     }
     sc_bgra = sc_format == VK_FORMAT_B8G8R8A8_UNORM || sc_format == VK_FORMAT_B8G8R8A8_SRGB;
     for (int i = 0; i < MAX_IMAGES; i++) if (sc_views[i]) { if (g_vk_rp) vk_rp_forget(sc_views[i]); vkDestroyImageView(dev, sc_views[i], NULL); sc_views[i] = VK_NULL_HANDLE; }
@@ -809,8 +836,8 @@ int video_game_ended_opening(void) {
     if (fscanf(f, "%d %31s", &level, ver) < 1) level = 0;
     if (fscanf(f, " %511[^\r\n]", name) != 1) name[0] = 0;
     fclose(f);
-    const size_t n = strlen(name);
-    return n >= 14 && !strcmp(name + n - 14, "msr-native.log");
+    const char *base = strrchr(name, '/'); base = base ? base + 1 : name;   /* the game's logs: user/logs/msr-native_<date>... (log.c) */
+    return !strncmp(base, "msr-native", 10);
 }
 /* ...and when it did: the next opening (the launcher's, then the game's with the system's driver) takes no safe level */
 void video_forget_ended_opening(void) { remove(GFX_OPENING); }
@@ -961,7 +988,19 @@ static int vk_open(int win_w, int win_h, int probe) {
         else if (pp.vendorID == 0x8086) snprintf(driver, sizeof driver, "%u.%u", v >> 14, v & 0x3fff);
 #endif
         else snprintf(driver, sizeof driver, "%u.%u.%u", v >> 22, (v >> 12) & 0x3ff, v & 0xfff);
-        fprintf(stderr, "video: Vulkan device %s (%s, %.1f GB of graphics memory, driver %s)\n", pp.deviceName, kind, local / 1073741824.0, driver);
+        /* how much of a discrete card's memory the processor can write (Resizable BAR: all of it; without, 256 MB), for the
+           stutter reports, where uploads without it go the long way */
+        double bar = 0;
+        for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+            const VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+            const double s = (double)mp.memoryHeaps[mp.memoryTypes[i].heapIndex].size;
+            if ((f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) && (f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && s > bar) bar = s;
+        }
+        char bar_text[64] = "";
+        if (pp.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+            snprintf(bar_text, sizeof bar_text, bar > 300.0 * 1048576 ? ", Resizable BAR on (%.1f GB)" : bar > 0 ? ", Resizable BAR off (%.0f MB)"
+                     : ", no graphics memory the processor writes", bar > 300.0 * 1048576 ? bar / 1073741824.0 : bar / 1048576.0);
+        fprintf(stderr, "video: Vulkan device %s (%s, %.1f GB of graphics memory, driver %s%s)\n", pp.deviceName, kind, local / 1073741824.0, driver, bar_text);
     }
     /* whose driver (pica_vk.c: ARM's gets the depth and stencil state in its pipelines). Vulkan 1.2's driver ID where the
        device has it, else the vendor: ARM's and Qualcomm's own drivers on the phones of before 1.2 (Mesa's report 1.2+) */
@@ -1109,6 +1148,7 @@ static int vk_open(int win_w, int win_h, int probe) {
     }
     stage_set(STAGE_MAIN, NULL);
     fprintf(stderr, "video: presenting with Vulkan\n");
+    display_line();
     return 0;
 }
 /* vk_open, its stage cleared after it; a failure it reports (or OpenGL to try first) is not a crash: no safe level for it */
@@ -1160,6 +1200,7 @@ static int gl_open(int win_w, int win_h) {
     msr_overlay_hdr(0, disp_peak, disp_paper);   /* no HDR output with OpenGL */
     if (opt_res_match) { int w, h; drawable_size(&w, &h); match_resolution(w, h); }   /* --resolution=0 */
     fprintf(stderr, "video: presenting with OpenGL\n");
+    display_line();
     return 0;
 }
 static void gl_close(void) {
@@ -1441,6 +1482,21 @@ static int select_acts(int button, int down) {
     return act;
 }
 
+/* A controller, for the log (2026-11-19): its maker and product ids, how it is connected (from the system's device path:
+   Windows names Bluetooth's HID service in it, and USB's; XInput says neither), Steam Input's virtual pad (the real one
+   behind it), and whether it has a gyro. The path itself is not logged: a Bluetooth one holds the pad's address. */
+static void pad_describe(SDL_Joystick *j, int gyro, char *out, size_t n) {
+    const unsigned vid = SDL_JoystickGetVendor(j), pid = SDL_JoystickGetProduct(j);
+    const char *path = SDL_JoystickPath(j); char p[512] = "";
+    if (path) { snprintf(p, sizeof p, "%s", path); for (char *c = p; *c; c++) *c = (char)toupper((unsigned char)*c); }
+    const char *how = vid == 0x28DE && pid == 0x11FF ? "Steam Input's virtual pad (the real one is behind Steam)"
+                    : strstr(p, "{00001124-") || strstr(p, "BTHENUM") || strstr(p, "_VID&0002") ? "Bluetooth"
+                    : strstr(p, "{00001812-") || strstr(p, "BTHLE") ? "Bluetooth LE"
+                    : strstr(p, "XINPUT") ? "XInput (USB, Bluetooth or a receiver: Windows does not say)"
+                    : strstr(p, "USB") || strstr(p, "HID#VID_") ? "USB or a 2.4 GHz receiver"
+                    : "connection unknown";
+    snprintf(out, n, "%04x:%04x, %s, %s", vid, pid, how, gyro ? "a gyro" : "no gyro reported");   /* (SDL2: a DualSense on Bluetooth reports one only in its enhanced mode) */
+}
 /* gamepads: only without --input=none. Controllers with an SDL mapping use the controller API; others fall back to raw joystick
    buttons/axes/hat (0..3 = south,east,west,north as most pads number them, 4/5 = L/R, 6/7 = select/start) */
 static void pad_open(int idx) {
@@ -1452,14 +1508,19 @@ static void pad_open(int idx) {
             static const char *const types[] = { "unknown", "Xbox 360", "Xbox One", "PS3", "PS4", "Nintendo Switch Pro", "virtual", "PS5",
                                                  "Amazon Luna", "Google Stadia", "NVIDIA Shield", "Joy-Con (L)", "Joy-Con (R)", "Joy-Con pair" };
             int t = (int)SDL_GameControllerGetType(gcs[i]);
-            fprintf(stderr, "pwr: controller opened: %s (%s)\n", SDL_GameControllerName(gcs[i]), t >= 0 && t < (int)(sizeof types / sizeof *types) ? types[t] : "?");
+            char about[200]; pad_describe(SDL_GameControllerGetJoystick(gcs[i]), SDL_GameControllerHasSensor(gcs[i], SDL_SENSOR_GYRO), about, sizeof about);
+            fprintf(stderr, "pwr: controller opened: %s (%s; %s)\n", SDL_GameControllerName(gcs[i]), t >= 0 && t < (int)(sizeof types / sizeof *types) ? types[t] : "?", about);
             if (!gc) pad_used(gcs[i]);   /* the first one names the buttons until another is used */
             return;
         }
         return;
     }
     if (gc || joy) return;
-    if ((joy = SDL_JoystickOpen(idx))) fprintf(stderr, "pwr: controller opened: %s (joystick, %d buttons, %d axes, %d hats)\n", SDL_JoystickName(joy), SDL_JoystickNumButtons(joy), SDL_JoystickNumAxes(joy), SDL_JoystickNumHats(joy));
+    if ((joy = SDL_JoystickOpen(idx))) {
+        char about[200]; pad_describe(joy, 0, about, sizeof about);
+        fprintf(stderr, "pwr: controller opened: %s (joystick, %d buttons, %d axes, %d hats; %s)\n", SDL_JoystickName(joy), SDL_JoystickNumButtons(joy),
+                SDL_JoystickNumAxes(joy), SDL_JoystickNumHats(joy), about);
+    }
 }
 static void pad_axes(void) {
     int x, y, rx, ry;
@@ -1839,6 +1900,7 @@ int video_frame(void) {
         case SDL_CONTROLLERDEVICEREMOVED: {
             SDL_GameController *c = pad_of(e.cdevice.which);
             if (!c) break;
+            fprintf(stderr, "pwr: controller removed: %s\n", SDL_GameControllerName(c) ? SDL_GameControllerName(c) : "?");
             for (int i = 0; i < MAX_PADS; i++) if (gcs[i] == c) gcs[i] = NULL;
             SDL_GameControllerClose(c);
             if (gc == c) {
@@ -1848,7 +1910,7 @@ int video_frame(void) {
             }
             break;
         }
-        case SDL_JOYDEVICEREMOVED: if (joy && e.jdevice.which == SDL_JoystickInstanceID(joy)) { SDL_JoystickClose(joy); joy = NULL; input_pad_stick(0, 0); input_pad_release(); } break;
+        case SDL_JOYDEVICEREMOVED: if (joy && e.jdevice.which == SDL_JoystickInstanceID(joy)) { fprintf(stderr, "pwr: controller removed: %s\n", SDL_JoystickName(joy) ? SDL_JoystickName(joy) : "?"); SDL_JoystickClose(joy); joy = NULL; input_pad_stick(0, 0); input_pad_release(); } break;
         case SDL_CONTROLLERBUTTONDOWN: case SDL_CONTROLLERBUTTONUP: if (g_input_none) break;
             {   /* Samus Returns' touch navigation (T on the keyboard; L3 in menus until 2026-11-17, the user: "Remove the L3
                    stick pointer control. It's no longer needed": the D-pad reaches the touch screen's buttons); while on,

@@ -8,7 +8,9 @@
 #include "runtime.h"
 #include "dump.h"
 #include "msr/msr.h"
+#include <stdint.h>
 #include <stdio.h>
+void msr_romfs_note_read(uint64_t offset, uint64_t length);   /* msr/layered_fs.cpp: the log's "where:" lines (the packages read) */
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -186,6 +188,7 @@ static void file_handle(KThread *t, uint32_t *cmd, KObject *s) {
         if (ff->romfs && msr_romfs_layered()) {   /* rebuilt with the game mods' files (msr/layered_fs.cpp) */
             rt_mem_commit(buf, size);
             size_t n = msr_romfs_read(off, size, g_mem + buf);
+            msr_romfs_note_read(off, n);
             cmd[0] = HDR(0x802, 2, 2); cmd[1] = RES_OK; cmd[2] = (uint32_t)n; cmd[3] = (size << 4) | 0xC; cmd[4] = buf; return;
         }
         size_t n;
@@ -194,6 +197,7 @@ static void file_handle(KThread *t, uint32_t *cmd, KObject *s) {
             if (size > g_romfs_size - off) size = (uint32_t)(g_romfs_size - off);
             rt_mem_commit(buf, size);
             n = dump_read(g_dump, g_romfs_offset + off, g_mem + buf, size) ? 0 : size;
+            msr_romfs_note_read(off, n);
         } else {
             fseeko(ff->f, (off_t)off, SEEK_SET);
             rt_mem_commit(buf, size);
