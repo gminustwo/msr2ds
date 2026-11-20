@@ -61,6 +61,10 @@ void PlayerSettings::Load(const std::string& path) {
     brightness = std::clamp(brightness, .5f, 1.5f);
     contrast = std::clamp(contrast, .5f, 1.5f);
     saturation = std::clamp(saturation, .5f, 1.5f);
+    stereo = std::clamp(static_cast<int>(file.Number("General", "stereo", stereo)), 0, static_cast<int>(StereoNames.size()) - 1);
+    number("stereo_depth", stereo_depth);
+    stereo_depth = std::clamp(stereo_depth, StereoDepthMin, 1.f);
+    flag("stereo_swap", stereo_swap);
     flag("unlock_galleries", unlock_galleries);
     flag("unlock_fusion_mode", unlock_fusion_mode);
     flag("unlock_hard_mode", unlock_hard_mode);
@@ -118,6 +122,9 @@ void PlayerSettings::Save(const std::string& path) const {
     number("brightness", brightness);
     number("contrast", contrast);
     number("saturation", saturation);
+    number("stereo", stereo);
+    number("stereo_depth", stereo_depth);
+    flag("stereo_swap", stereo_swap);
     flag("unlock_galleries", unlock_galleries);
     flag("unlock_fusion_mode", unlock_fusion_mode);
     flag("unlock_hard_mode", unlock_hard_mode);
@@ -209,6 +216,14 @@ extern "C" int msr_grade(float* v) {
     v[2] = P::saturation.load(std::memory_order_relaxed);
     v[3] = 0.f;
     return v[0] == 1.f && v[1] == 1.f && v[2] == 1.f ? 0 : 1;
+}
+
+/// Stereoscopic 3D (#17): the mode (0 off), the 3DS's 3D slider and the eyes swapped (gsp.c, video.c)
+extern "C" int msr_stereo(float* depth, int* swap) {
+    namespace P = MSR::Presentation;
+    *depth = P::stereo_depth.load(std::memory_order_relaxed);
+    *swap = P::stereo_swap.load(std::memory_order_relaxed);
+    return P::stereo.load(std::memory_order_relaxed);
 }
 
 extern "C" int msr_hdr(float* peak, float* paper) {

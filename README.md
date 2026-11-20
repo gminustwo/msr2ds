@@ -45,6 +45,7 @@ dump and holds the settings, which are also in an in-game overlay (F1 or Select)
 - 30 (original), 60, 120, 144 FPS support
 - Vsync
 - HDR support
+- Stereoscopic 3D, side by side, for 3D TVs, Acer SpatialLabs displays and VR headsets
 - Ultrawide 32:9 support
 - HUD controls (turn off/on each element & change their size)
 - Texture Pack support
@@ -297,7 +298,8 @@ same `settings.ini`; LB and RB switch tabs.
   (0-100%, default 75%); HDR (Windows, once Use HDR is on in Windows' display
   settings) with its highlights and paper white (by default the display's peak,
   up to 1000 nits, and Windows' SDR content brightness; **Reset HDR to the
-  defaults** brings those back); **Anti-aliasing (FXAA)**;
+  defaults** brings those back); **Stereoscopic 3D** (below), with its 3D depth
+  and Swap eyes; **Anti-aliasing (FXAA)**;
   **Smooth texture packs** (a pack's textures filtered smoothly, also where the
   game shows its own with sharp pixels); brightness, contrast and saturation
   (50-150%); internal resolution (Match
@@ -322,7 +324,7 @@ same `settings.ini`; LB and RB switch tabs.
   display), and leave Power-saving waits as they are (it follows the processor).
   Changing any of these yourself makes it **Custom**: choosing a preset afterward
   keeps your values, and choosing Custom brings them back. Bloom, V-Sync, HDR,
-  anti-aliasing and the colors stay as you set them. On a Steam Deck, the **Steam Deck: 60 FPS with texture
+  stereoscopic 3D, anti-aliasing and the colors stay as you set them. On a Steam Deck, the **Steam Deck: 60 FPS with texture
   packs** button above the presets is still there.
 
   **Power-saving waits:** while the game waits (for the next frame, for the
@@ -331,6 +333,21 @@ same `settings.ini`; LB and RB switch tabs.
   It is on by default on a processor with 4 threads or fewer. Measured on a
   desktop at the title screen, it used 20-38% less processor time with the same
   frame rate.
+
+  **Stereoscopic 3D** (Off by default; Side by side at half width or at full
+  width): the game's own 3D, as a 3DS shows it with its 3D slider up. The game
+  draws a picture for each eye, and both show side by side. **Half width**
+  squeezes each eye's picture into half the screen, which is what 3D TVs (in
+  their side-by-side 3D mode) and Acer SpatialLabs displays take: play in
+  fullscreen. **Full width** gives each eye half the window at its own shape,
+  for VR players that show a window or the desktop in side-by-side 3D (Virtual
+  Desktop, Bigscreen and the like) and for a window twice as wide as one eye's
+  picture (a 32:9 window shows two 16:9 eyes). **3D depth** is the 3DS's 3D
+  slider (10-100%, default 100%); **Swap eyes** puts the right eye's picture on
+  the left, for cross-eyed viewing or a display that takes the eyes the other
+  way round. The HUD and the menus show in both eyes, at the screen's depth. It
+  needs Vulkan (Graphics API: Automatic or Vulkan); with OpenGL the game stays
+  in 2D.
 
   **Draw only the 3DS's view** (off by default, on in Minimum): normally, with
   widescreen, ultrawide or a camera zoom below 1, the game draws everything the

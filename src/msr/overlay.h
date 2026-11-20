@@ -59,6 +59,9 @@ struct PlayerSettings {
     float brightness = 1.f;     ///< The picture's brightness, contrast and saturation, 1 = as drawn (#25; 0.5..1.5)
     float contrast = 1.f;
     float saturation = 1.f;
+    int stereo = 0;             ///< Stereoscopic 3D (#17): 0 off, 1 side by side at half width, 2 at full width
+    float stereo_depth = 1.f;   ///< 3D depth: the 3DS's 3D slider (StereoDepthMin..1)
+    bool stereo_swap = false;   ///< The eyes swapped: the right eye's picture on the left
     // Extras otherwise given by amiibo (msr/cheats.h)
     bool unlock_galleries = true;
     bool unlock_fusion_mode = true;
@@ -111,6 +114,11 @@ inline constexpr std::array<Language, 6> Languages{{
 /// Camera zoom range: the widest and the closest view in play (1 is the game's).
 inline constexpr float CameraZoomMin = .7f;
 inline constexpr float CameraZoomMax = 1.5f;
+
+/// Stereoscopic 3D choices (PlayerSettings::stereo) and the depth's lowest value (the 3DS's slider at its first step).
+inline constexpr std::array<const char*, 3> StereoNames = {"Off", "Side by side (half width)",
+                                                           "Side by side (full width)"};
+inline constexpr float StereoDepthMin = .1f;
 
 /// Frame rate choices, as FrameRate::Choices.
 inline constexpr std::array<const char*, 5> FrameRateNames = {"30 FPS (original)", "60 FPS",
@@ -169,6 +177,7 @@ struct EmulatorSettings {
     int max_resolution = 10; ///< The largest factor offered
     bool quick_saves = true; ///< Quick save and load
     bool bloom_option = false; ///< The Bloom slider (msr-native)
+    bool stereo_option = false; ///< The Stereoscopic 3D rows (msr-native; with Vulkan only: renderer_active)
     bool ultrawide_option = false; ///< The Ultrawide and HUD within 16:9 rows (msr-native)
     bool deck_preset = false;  ///< The Steam Deck preset button (msr-native on a Steam Deck)
     int aniso = 1;             ///< Anisotropic filtering, one of AnisoChoices (1 = off)
