@@ -47,6 +47,12 @@
 #endif
 #ifdef __APPLE__
 #include <sys/sysctl.h>
+#include <sys/mount.h>
+#elif !defined(_WIN32)
+#include <sys/vfs.h>
+#endif
+#ifdef _WIN32
+#include <winioctl.h>
 #endif
 
 #define LOG_KEEP 10                 /* sessions kept, this one included */
@@ -510,6 +516,56 @@ static void os_text(char *out, size_t n) {
 
 static int file_exists(const char *p) { struct stat st; return !stat(p, &st); }
 
+/* What kind of drive a path is on: a cloud, network or USB drive can fail a read the game's file needs, which looks like
+   a level that never loads (msr2ds issue 68, 2026-11-18: an install on P:, and the reply had to ask what P: was). Windows
+   says the drive's type, its file system and what connects it; Linux and Android the file system; macOS the file system
+   and whether it is local. A network share's or a volume's name is left out (it can hold a person's name). */
+void log_drive(const char *path, char *out, size_t n) {
+#ifdef _WIN32
+    char full[MAX_PATH], root[MAX_PATH];
+    if (!GetFullPathNameA(path, sizeof full, full, NULL) || !GetVolumePathNameA(full, root, sizeof root)) { snprintf(out, n, "a drive Windows did not name"); return; }
+    const UINT type = GetDriveTypeA(root);
+    const char *kind = type == DRIVE_FIXED ? "a fixed drive" : type == DRIVE_REMOTE ? "a network drive" : type == DRIVE_REMOVABLE ? "a removable drive"
+                     : type == DRIVE_CDROM ? "an optical drive" : type == DRIVE_RAMDISK ? "a RAM disk" : "a drive of unknown type";
+    char fs[64] = "";
+    if (!GetVolumeInformationA(root, NULL, 0, NULL, NULL, NULL, fs, sizeof fs)) fs[0] = 0;
+    char letter[8] = "";
+    const char *bus = "";
+    if (isalpha((unsigned char)root[0]) && root[1] == ':' && (!root[2] || (root[2] == '\\' && !root[3]))) {   /* a drive letter: what connects it */
+        snprintf(letter, sizeof letter, " %c:", toupper((unsigned char)root[0]));
+        char dev[8]; snprintf(dev, sizeof dev, "\\\\.\\%c:", root[0]);
+        HANDLE h = CreateFileA(dev, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            STORAGE_PROPERTY_QUERY q; memset(&q, 0, sizeof q); q.PropertyId = StorageDeviceProperty; q.QueryType = PropertyStandardQuery;
+            STORAGE_DEVICE_DESCRIPTOR d; memset(&d, 0, sizeof d); DWORD got = 0;
+            static const char *const buses[] = { "", "SCSI", "ATAPI", "ATA", "FireWire", "SSA", "Fibre Channel", "USB", "RAID", "iSCSI",
+                                                 "SAS", "SATA", "SD card", "MMC", "virtual", "a virtual disk file", "Storage Spaces", "NVMe", "SCM", "UFS" };
+            if (DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &q, sizeof q, &d, sizeof d, &got, NULL) && got >= sizeof d && (unsigned)d.BusType < sizeof buses / sizeof *buses)
+                bus = buses[d.BusType];
+            CloseHandle(h);
+        }
+    }
+    snprintf(out, n, "%s%s (%s%s%s)", kind, letter, fs[0] ? fs : "file system not named", bus[0] ? ", " : "", bus);
+#elif defined(__APPLE__)
+    struct statfs s;
+    if (statfs(path, &s)) { snprintf(out, n, "a drive the system did not name (%s)", strerror(errno)); return; }
+    snprintf(out, n, "a %s drive (%s)", (s.f_flags & MNT_LOCAL) ? "local" : "network", s.f_fstypename);
+#else
+    struct statfs s;
+    if (statfs(path, &s)) { snprintf(out, n, "a drive the system did not name (%s)", strerror(errno)); return; }
+    static const struct { unsigned long magic; const char *name; } kinds[] = {
+        { 0xEF53, "ext4" }, { 0x9123683E, "Btrfs" }, { 0x58465342, "XFS" }, { 0xF2F52010, "F2FS" }, { 0x01021994, "tmpfs" },
+        { 0x6969, "NFS, a network drive" }, { 0xFF534D42, "CIFS, a network drive" }, { 0xFE534D42, "SMB, a network drive" },
+        { 0x65735546, "FUSE (a file system run by a program: cloud drives, ntfs-3g, Android's shared storage)" }, { 0x01021997, "9p (WSL's view of a Windows drive)" },
+        { 0x4D44, "FAT" }, { 0x2011BAB0, "exFAT" }, { 0x7366746E, "NTFS (ntfs3)" }, { 0x5346544E, "NTFS" }, { 0x794C7630, "overlayfs" },
+        { 0x73717368, "squashfs" }, { 0x9660, "ISO 9660" }, { 0xCA451A4E, "bcachefs" }, { 0x2FC12FC1, "ZFS" },
+    };
+    for (size_t i = 0; i < sizeof kinds / sizeof *kinds; i++)
+        if ((unsigned long)s.f_type == kinds[i].magic) { snprintf(out, n, "a drive with %s", kinds[i].name); return; }
+    snprintf(out, n, "a drive with file system %#lx", (unsigned long)s.f_type);
+#endif
+}
+
 void log_start_lines(void) {
     char *base = SDL_GetBasePath();   /* the program's folder, with a separator at the end */
     char package[600] = "", probe[1100];
@@ -570,7 +626,8 @@ void log_start_lines(void) {
         if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, "?");
         const int same = base && !strncmp(cwd, base, strlen(cwd)) && strlen(base) == strlen(cwd) + 1;
 #endif
-        fprintf(stderr, "start: the folder %s (user/ there%s)\n", cwd, same ? ", beside the program: portable" : "");
+        char drive[200]; log_drive(cwd, drive, sizeof drive);
+        fprintf(stderr, "start: the folder %s (user/ there%s), on %s\n", cwd, same ? ", beside the program: portable" : "", drive);
     }
     if (g_on) fprintf(stderr, "start: this session's log: %s (the newest %d are kept; one without an \"exit:\" line at its end "
                       "ended in a crash, or its process was ended)\n", g_path, LOG_KEEP);

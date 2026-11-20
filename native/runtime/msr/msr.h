@@ -49,6 +49,8 @@ int      msr_romfs_open(const char *dump, uint64_t offset, uint64_t size);
 int      msr_romfs_layered(void);
 uint64_t msr_romfs_size(void);
 size_t   msr_romfs_read(uint64_t offset, size_t length, uint8_t *out);
+/* A read of the game file for the game failed (fs.c, msr_romfs_read): the log names the file and why (dump_error) */
+void     msr_romfs_read_failed(uint64_t offset, uint64_t length);
 
 /* Rewrites the game's instructions for the extras that are on (src/msr/cheats.h Patches: galleries, Fusion Mode, the
    Fusion suit, Hard Mode), after .code is in memory. The recompiled code hands each rewritten word to interp.c. */

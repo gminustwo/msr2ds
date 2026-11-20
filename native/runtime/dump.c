@@ -10,14 +10,28 @@
  * straight into the caller's buffer, partial ones through a few cached frames. zstd's own decoder (libzstd; the build
  * takes the system's or MSR_ZSTD_SOURCE, native/CMakeLists.txt). */
 #include "dump.h"
+#include <errno.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include <zstd.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 DumpFile *g_dump;
+
+/* why this thread's last read failed (dump_error), for the log: a game file on a drive that fails a read (a cloud or
+   network drive, a failing USB drive) otherwise looks like a level that never loads (msr2ds issue 68, 2026-11-18) */
+static _Thread_local char read_error[200];
+static void failed(const char *fmt, ...) {
+    va_list a; va_start(a, fmt); vsnprintf(read_error, sizeof read_error, fmt, a); va_end(a);
+}
+const char *dump_error(void) { return read_error; }
 
 #define CACHE_BYTES (8u << 20)   /* the partly read frames kept decompressed */
 #define CACHE_MAX 16
@@ -39,7 +53,21 @@ struct DumpFile {
 static uint32_t le32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
 static uint64_t le64(const uint8_t *p) { return le32(p) | (uint64_t)le32(p + 4) << 32; }
 static int raw_read(FILE *f, uint64_t off, void *dst, size_t n) {
-    return fseeko(f, (off_t)off, SEEK_SET) || fread(dst, 1, n, f) != n ? -1 : 0;
+    if (fseeko(f, (off_t)off, SEEK_SET)) { failed("it could not go to %llu in the file: %s", (unsigned long long)off, strerror(errno)); clearerr(f); return -1; }
+    const size_t got = fread(dst, 1, n, f);
+    if (got == n) return 0;
+    if (ferror(f)) {
+#ifdef _WIN32
+        const unsigned long os = GetLastError();   /* the system's own code (cloud drives have their own: 362-400) */
+        failed("the system's read failed after %zu of %zu bytes: %s, Windows error %lu", got, n, strerror(errno), os);
+#else
+        failed("the system's read failed after %zu of %zu bytes: %s", got, n, strerror(errno));
+#endif
+    } else {
+        failed("the file ended after %zu of %zu bytes", got, n);
+    }
+    clearerr(f);
+    return -1;
 }
 
 /* the seek table of a Z3DS file of `file_size` bytes; 0 when it is whole */
@@ -111,12 +139,14 @@ static int frame_into(DumpFile *d, uint32_t i, uint8_t *dst) {
     const uint64_t cs = d->coff[i + 1] - d->coff[i], ds = d->doff[i + 1] - d->doff[i];
     if (cs > d->cbuf_cap) {
         uint8_t *b = realloc(d->cbuf, (size_t)cs);
-        if (!b) return -1;
+        if (!b) { failed("no memory for compressed frame %u", i); return -1; }
         d->cbuf = b; d->cbuf_cap = (size_t)cs;
     }
     if (raw_read(d->f, d->base + d->coff[i], d->cbuf, (size_t)cs)) return -1;
     const size_t n = ZSTD_decompressDCtx(d->dctx, dst, (size_t)ds, d->cbuf, (size_t)cs);
-    return ZSTD_isError(n) || n != ds ? -1 : 0;
+    if (ZSTD_isError(n)) { failed("compressed frame %u of %u did not decompress: %s", i, d->frames, ZSTD_getErrorName(n)); return -1; }
+    if (n != ds) { failed("compressed frame %u of %u gave %zu bytes, not %llu", i, d->frames, n, (unsigned long long)ds); return -1; }
+    return 0;
 }
 
 /* frame i, decompressed: from the cache, else into its least recently used slot */
@@ -134,7 +164,7 @@ static const uint8_t *frame_cached(DumpFile *d, uint32_t i) {
     slot->used = 0;
     const size_t ds = (size_t)(d->doff[i + 1] - d->doff[i]);
     uint8_t *data = realloc(slot->data, ds);
-    if (!data) return NULL;
+    if (!data) { failed("no memory for compressed frame %u", i); return NULL; }
     slot->data = data;
     if (frame_into(d, i, data)) return NULL;
     slot->frame = i;
@@ -143,7 +173,8 @@ static const uint8_t *frame_cached(DumpFile *d, uint32_t i) {
 }
 
 int dump_read(DumpFile *d, uint64_t offset, void *dst, size_t size) {
-    if (!d || offset > d->size || size > d->size - offset) return -1;
+    read_error[0] = 0;
+    if (!d || offset > d->size || size > d->size - offset) { failed("%zu bytes at %llu are past the game file's end", size, (unsigned long long)offset); return -1; }
     if (!size) return 0;
     pthread_mutex_lock(&d->lock);
     int r = 0;

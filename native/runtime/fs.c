@@ -197,6 +197,7 @@ static void file_handle(KThread *t, uint32_t *cmd, KObject *s) {
             if (size > g_romfs_size - off) size = (uint32_t)(g_romfs_size - off);
             rt_mem_commit(buf, size);
             n = dump_read(g_dump, g_romfs_offset + off, g_mem + buf, size) ? 0 : size;
+            if (n < size) msr_romfs_read_failed(off, size);   /* the log names the file and why (layered_fs.cpp) */
             msr_romfs_note_read(off, n);
         } else {
             fseeko(ff->f, (off_t)off, SEEK_SET);
