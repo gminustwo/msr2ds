@@ -235,6 +235,19 @@ static inline int msr_anchor_end(float x) { return x <= 2.f ? MSR_ANCHOR_LEFT : 
 /* This frame's (main thread): the count, 0 when the game holds no interface tree here (the title menus' root, or in
    play the in-game root with the HUD and the pause menu). Valid until the next call. */
 int msr_gui_tree(const MsrGuiItem **items);
+/* The Aeion abilities' page the game shows on the touch screen when Samus gains an Aeion ability (AbilitiesCore): 1
+   while it shows. Main thread. */
+int msr_gui_abilities(void);
+/* The top screen's message box (USMComposition: an item's name, "Use the Teleport Station?", a Recharge Station's
+   message): 1 while it shows. Main thread. */
+int msr_gui_dialog(void);
+/* Objects of the in-game interface by their name hashes, shown or not, on either screen: each as msr_gui_tree's pieces
+   (a sprite with its picture; anything else its rectangle and color, atlas -1), w 0 for one not found. The count found.
+   Main thread. */
+int msr_gui_named(const uint32_t *names, int count, MsrGuiItem *items);
+/* A paged label of the in-game interface by its name hash: 2 when its page is typed out and another follows on A, 1
+   typed out and the last, 0 while it types, -1 for none. Main thread. */
+int msr_gui_label_waits(uint32_t name);
 /* The pause map's world map (SR388's areas; the Teleport Station's too): its opacity in msr_gui_tree's last call, 0 when
    it is not shown */
 float msr_gui_world_map(void);

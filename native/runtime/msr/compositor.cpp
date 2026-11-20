@@ -121,6 +121,13 @@ struct State {
     s64 pause_seen_us = -1;          // a pause page last drawn from the game's interface
     s64 pause_bridge_us = -1;        // the touch screen between two pause pages since then (-1: not)
     s64 pause_arrive_us = -1;        // the next page came then (its contents fade in)
+    float abilities_alpha = 0.f;     // the Aeion abilities' page over the view (AbilitiesOverlay), faded in
+    bool abilities_hold = false;     // ...and no panel for it until the touch screen no longer reads as a menu
+    bool abilities_seen = false;     // ...its description's box seen since the page came (the game slides it in and out)
+    float abilities_top = 0.f;       // ...the highest it has come up
+    bool abilities_going = false;    // ...and it has gone down from there since: it is going (the overlay fades out)
+    int abilities_prompt = 0;        // ...the button its box would show (AbilitiesPage.prompt)...
+    s64 abilities_prompt_us = 0;     // ...since then
 } st;
 
 std::vector<MsrQuad> quads;
@@ -206,10 +213,14 @@ float AnchorX(float tx, int anchor, float x, float s, float extra) {
 }
 // ...and for one stretched between its ends: its ends (40% of it each: a bar's tab, its step to the title) keep their
 // shape where each end goes (msr_anchor_end), its middle (a bar's straight run) takes the rest
+// The Samus page's description line (ButtonOrnament, from the middle to the right edge) starts where its slanted start
+// ends, kept to the left edge with the Back tab (gui_tree.cpp LeftAnchored): its left end goes with them
+constexpr uint32_t LeftEnded[] = {0xC212104Fu /* ButtonOrnament */};
 constexpr float StretchCap = .4f;
 float StretchX(const MsrGuiItem& it, float tx, float x, float s, float extra) {
     const float cap = it.w * StretchCap, a = it.x + cap, b = it.x + it.w - cap;
-    const int left = msr_anchor_end(it.x), right = msr_anchor_end(it.x + it.w);
+    const bool left_ended = std::find(std::begin(LeftEnded), std::end(LeftEnded), it.name) != std::end(LeftEnded);
+    const int left = left_ended ? MSR_ANCHOR_LEFT : msr_anchor_end(it.x), right = msr_anchor_end(it.x + it.w);
     if (tx <= a || b <= a) return AnchorX(tx, left, x, s, extra);
     if (tx >= b) return AnchorX(tx, right, x, s, extra);
     const float from = AnchorX(a, left, x, s, extra), to = AnchorX(b, right, x, s, extra);
@@ -382,6 +393,156 @@ std::vector<MsrGuiItem> gui_now, gui_last, gui_minimap;
 bool GuiCopy() {
     static const bool copy = std::getenv("PWR_GUI_COPY") != nullptr;
     return copy;
+}
+
+// The Aeion abilities' page over the view (2026-11-18, the user: after gaining an Aeion ability "it pulls up the bottom
+// screen ... draw from the code whats happening. take nothing from the bottom screen. display whatever text appears
+// over samus as normal and then make room for this cross to appear"; the four buttons "above the text box with a light
+// background behind each box like we do for the metroid symbols"). The touch screen's page (AbilitiesCore, gui_tree.cpp
+// msr_gui_abilities) is not shown as the panel: the view stays, dimmed by the game itself, and over it, from the game's
+// interface, its title, the four slots on the D-pad as the game lays them out (Scan Pulse up, Lightning Armor left, Beam
+// Burst right, Phase Drift down; empty until found, the new one lit), each on a light plate, and below them the
+// description (LabelInfoBig: the page the game shows, typed out as it types it, gui_tree.cpp Label) in the game's own
+// message box for the top screen (USMComposition: the box "- Lightning Armor -" came in), with its A while a page waits
+// for one to turn to the next and its B in the same place on the last page, which closes on B (Back), not A. The game
+// slides the page in and out on the touch
+// screen; that is not followed here (2026-11-18, the user: "the text starts shaking before it goes away": the label
+// moved 2 pixels a frame as it went, read again a moment after its glyphs). The page is drawn as it comes in and
+// stands; once its description goes down again (the page going), the overlay fades out on it as it stood.
+constexpr std::array<uint32_t, 4> AbilityBases = {0xB4B207DAu /* ScanningPulseBase */, 0x12A95560u /* EnergyShieldBase */,
+                                                  0xD98676CBu /* EnergyWaveBase */, 0x343BCA46u /* PhaseDisplacementBase */};
+constexpr std::array<uint32_t, 4> AbilityIcons = {0x1192D060u /* ScanningPulseIcon */, 0xB78982DAu /* EnergyShieldIcon */,
+                                                  0x7CA6A171u /* EnergyWaveIcon */, 0x911B1DFCu /* PhaseDisplacementIcon */};
+constexpr uint32_t AbilityInfo = 0xE61669C8u /* LabelInfoBig */, AbilityTitle = 0x01D973EEu /* LabelTitleAlt */;
+// USMComposition's box (TL T TR, L M R, BL B BR), its A (USMABase, USMAIconA, USMAIconB) and its B's icons (USMBIconA,
+// USMBIconB). The B shows in the A's place, on its base, on the last page (2026-11-18, the user: "at the end of the text
+// box, add the (B) back but put it on the (A) side so users know to hit (B) there"; the game's B corner, the A's base
+// unturned at the left, "blurs into the background image there")
+constexpr std::array<uint32_t, 14> MessageBox = {0xC969636Du, 0x6543EB3Fu, 0x33665E0Eu, 0x762F7369u, 0x012843FFu,
+                                                 0x8C204E0Au, 0xD5F1D6BAu, 0x91975E6Eu, 0x2FFEEBD9u,
+                                                 0x02B1C816u, 0xDE1C0FDAu, 0x47155E60u,
+                                                 0x58887D74u, 0xC1812CCEu};
+bool AbilityPiece(const MsrGuiItem& it) {
+    if (it.glyph) return it.name == AbilityInfo || it.name == AbilityTitle;
+    return std::find(AbilityBases.begin(), AbilityBases.end(), it.name) != AbilityBases.end() ||
+           std::find(AbilityIcons.begin(), AbilityIcons.end(), it.name) != AbilityIcons.end();
+}
+// The page as one frame of the game's interface holds it: its pieces, the description's box (the label's rectangle on
+// the touch screen) and the button its box shows
+enum { PromptNone, PromptA, PromptB };
+struct AbilitiesPage {
+    std::vector<MsrGuiItem> items;
+    Rect room{77.f, 208.f, 304.f, 244.f};
+    int prompt = PromptNone;
+};
+// ...this frame's (msr_gui_tree's walk just made, and the label read now): A once the page is typed out and another
+// follows, B once the last is, as the game's label counts them
+AbilitiesPage AbilitiesNow(const std::vector<MsrGuiItem>& tree) {
+    AbilitiesPage page;
+    for (const MsrGuiItem& it : tree)
+        if (AbilityPiece(it)) page.items.push_back(it);
+    MsrGuiItem label{};
+    if (msr_gui_named(&AbilityInfo, 1, &label) == 1 && label.w > 0.f && label.h > 0.f)
+        page.room = {label.x, label.y, label.x + label.w, label.y + label.h};
+    const int typed_out = msr_gui_label_waits(AbilityInfo);
+    page.prompt = typed_out == 2 ? PromptA : typed_out == 1 ? PromptB : PromptNone;
+    return page;
+}
+AbilitiesPage abilities_page;   // as drawn (as it came in and stood, until it goes)
+void AbilitiesOverlay(const Rect& view, const AbilitiesPage& page, float alpha) {
+    std::vector<MsrGuiItem> cross, title, info;
+    for (const MsrGuiItem& it : page.items) {
+        if (it.glyph) (it.name == AbilityInfo ? info : title).push_back(it);
+        else cross.push_back(it);
+    }
+    if (cross.empty()) return;
+    const Rect& room = page.room;
+    const auto bounds = [](const std::vector<MsrGuiItem>& v) {
+        Rect r{1e9f, 1e9f, -1e9f, -1e9f};
+        for (const MsrGuiItem& it : v) r = {std::min(r.l, it.x), std::min(r.t, it.y), std::max(r.r, it.x + it.w), std::max(r.b, it.y + it.h)};
+        return r;
+    };
+    // touch-screen pixels drawn at k window pixels each, (tx, ty) of them at (x, y): GuiQuads' rectangle
+    const auto place = [](const std::vector<MsrGuiItem>& v, float tx, float ty, float x, float y, float k, float a) {
+        GuiQuads(v, x - tx * k, y - ty * k, 320.f * k, 240.f * k, a, true);
+    };
+    const float u = view.H() / 240.f;   // the top screen's pixels
+    const float k_title = .9f * u, k_cross = .6f * u, k_text = u;
+    std::array<MsrGuiItem, MessageBox.size()> box{};
+    const bool framed = msr_gui_named(MessageBox.data(), static_cast<int>(MessageBox.size()), box.data()) ==
+                        static_cast<int>(MessageBox.size());
+    // the box round it: the room for the game's corners (26 x 26 of the top screen's pixels: its interface lays the
+    // top screen's 400 out across 320, the corner 20.8 wide), the bottom row for its A
+    constexpr float top_x = 400.f / 320.f;
+    const float corner_w = (framed ? box[0].w : 20.8f) * top_x * u, corner_h = (framed ? box[0].h : 26.f) * u;
+    const float pad_x = corner_w, pad_top = 13.f * u, pad_bottom = corner_h;
+    const float box_w = room.W() * k_text + 2.f * pad_x, box_h = room.H() * k_text + pad_top + pad_bottom;
+    const Rect cb = bounds(cross), tb = bounds(title);
+    const float title_h = title.empty() ? 0.f : tb.H() * k_title + 6.f * u;
+    const float total = title_h + cb.H() * k_cross + 10.f * u + box_h;
+    const float cx = view.l + view.W() / 2;
+    float y = view.t + std::max(4.f * u, (view.H() - total) / 2);
+    if (!title.empty()) {
+        place(title, tb.l + tb.W() / 2, tb.t, cx, y, k_title, alpha);
+        y += title_h;
+    }
+    // the slots, each on a light plate as the counters are (in the touch screen's blue, the view being dimmed behind it),
+    // a little past its frame (the frames meet at their corners, the plates' soft edges there)
+    const float cross_x = cx - (cb.l + cb.W() / 2) * k_cross, cross_y = y - cb.t * k_cross;
+    for (const MsrGuiItem& it : cross) {
+        if (std::find(AbilityBases.begin(), AbilityBases.end(), it.name) == AbilityBases.end()) continue;
+        const float grow = 3.f * k_cross;
+        Fill(cross_x + it.x * k_cross - grow, cross_y + it.y * k_cross - grow, it.w * k_cross + 2 * grow,
+             it.h * k_cross + 2 * grow, .34f, .57f, .84f, .26f * alpha, 30);
+    }
+    GuiQuads(cross, cross_x, cross_y, 320.f * k_cross, 240.f * k_cross, alpha, true);
+    y += cb.H() * k_cross + 10.f * u;
+    // the message box: its corners as the game draws them, its edges and middle stretched between
+    const float bx = cx - box_w / 2, by = y;
+    if (framed) {
+        const float xs[4] = {bx, bx + corner_w, bx + box_w - corner_w, bx + box_w};
+        const float ys[4] = {by, by + corner_h, by + box_h - corner_h, by + box_h};
+        for (int row = 0; row < 3; ++row)
+            for (int col = 0; col < 3; ++col) {
+                const MsrGuiItem& piece = box[static_cast<std::size_t>(row * 3 + col)];
+                if (piece.atlas < 0 || xs[col + 1] <= xs[col] || ys[row + 1] <= ys[row]) continue;
+                MsrQuad q{};
+                q.dst[0] = xs[col]; q.dst[1] = ys[row]; q.dst[2] = xs[col + 1] - xs[col]; q.dst[3] = ys[row + 1] - ys[row];
+                std::copy(piece.uv, piece.uv + 4, q.src);
+                q.color[0] = q.color[1] = q.color[2] = q.color[3] = 1.f;   // (its own alpha: 0 while the game hides it)
+                q.style[0] = alpha; q.style[1] = 1.f; q.style[3] = piece.additive ? 4.f : 5.f;
+                q.source = 3;
+                q.atlas = piece.atlas;
+                quads.push_back(q);
+            }
+    } else {
+        Fill(bx, by, box_w, box_h, .2f, .45f, .65f, .85f * alpha, 6);
+    }
+    // the page, in the box's text color (USMLM's)
+    for (MsrGuiItem& it : info) {
+        it.color[0] = .8f; it.color[1] = .9f; it.color[2] = 1.f; it.color[3] = 1.f;
+    }
+    place(info, room.l, room.t, bx + pad_x, by + pad_top, k_text, alpha);
+    // its A at the bottom right while another page follows, where the game's box has it (from its own box's right and
+    // bottom); on the last page its B there instead: the B's mark (USMBIconA, the A's ✓ there) and button (USMBIconB) in
+    // the A's places, in the A's colors (the B's are black while the game hides them)
+    if (!framed || page.prompt == PromptNone) return;
+    const float right = box[2].x + box[2].w, bottom = box[8].y + box[8].h;
+    for (std::size_t i = 9; i < 12; ++i) {
+        const MsrGuiItem& at = box[i];
+        const MsrGuiItem& piece = page.prompt == PromptB && i > 9 ? box[i + 2] : at;
+        if (piece.atlas < 0) continue;
+        MsrQuad q{};
+        q.dst[0] = bx + box_w + (at.x - right) * top_x * u; q.dst[1] = by + box_h + (at.y - bottom) * u;
+        q.dst[2] = at.w * top_x * u; q.dst[3] = at.h * u;
+        std::copy(piece.uv, piece.uv + 4, q.src);
+        std::copy(at.color, at.color + 3, q.color);
+        q.color[3] = 1.f;   // (its own alpha: 0 while the game hides it)
+        q.style[0] = alpha; q.style[1] = 1.f; q.style[3] = piece.additive ? 4.f : 5.f;
+        q.source = 3;
+        q.atlas = piece.atlas;
+        quads.push_back(q);
+    }
 }
 
 // The file select's footer on the D-pad (2026-11-17, the user: "allow the player to use the dpad or joystick to select
@@ -972,14 +1133,41 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
                             MsrFrame* out) {
     quads.clear();
     const s64 now_us = NowUs(now_s);
+    // the Aeion abilities' page on the touch screen (AbilitiesOverlay), as the game holds it: at once, before the touch
+    // screen reads as a menu
+    const bool abilities = !GuiCopy() && st.in_play && msr_gui_abilities();
     {   // the touch screen as the game holds it (gui_tree.cpp), while a menu or a prompt shows: the title menus, the
         // pause menu (in play the tree also holds the HUD, many objects, not read for nothing)
         const auto shown = static_cast<P::Bottom>(P::bottom.load(std::memory_order_relaxed));
         // (the map filling the pause screen fitted to a wider window, as wide as last frame's: half its extra a side)
         msr_gui_map_margin(st.touch_extra / 2.f);
         const MsrGuiItem* items = nullptr;
-        const int n = shown == P::Bottom::Menu || shown == P::Bottom::Prompt ? msr_gui_tree(&items) : 0;
+        const int n = shown == P::Bottom::Menu || shown == P::Bottom::Prompt || abilities ? msr_gui_tree(&items) : 0;
         gui_now.assign(items, items + std::max(n, 0));
+    }
+    // ...as it comes in and stands; once its description goes down again from the highest it came up, it is going (it
+    // comes up 2 pixels a frame of the game's and goes down so: by the way it moves, not by frames it holds still, which
+    // the window's frames outnumber at 120 FPS: until 2026-11-18 the page was taken for going as it came, the user: "now
+    // the message doesnt appear at all")
+    bool abilities_on = false;
+    if (abilities) {
+        AbilitiesPage now = AbilitiesNow(gui_now);
+        // its button once the label has read typed out 0.1 s (2026-11-18, the user: "the (A) flashes for a few frames":
+        // a page turning, the game writes its page and its count apart, and the label can read typed out a moment)
+        if (now.prompt != st.abilities_prompt) {
+            st.abilities_prompt = now.prompt;
+            st.abilities_prompt_us = now_us;
+        }
+        if (now_us - st.abilities_prompt_us < 100'000) now.prompt = PromptNone;
+        if (!st.abilities_seen || now.room.t < st.abilities_top) st.abilities_top = now.room.t;
+        else if (now.room.t > st.abilities_top + 1.f) st.abilities_going = true;
+        st.abilities_seen = true;
+        if (!st.abilities_going) {
+            abilities_page = std::move(now);
+            abilities_on = true;
+        }
+    } else {
+        st.abilities_seen = st.abilities_going = false;
     }
     FooterFromTree();
     PauseFromTree();
@@ -1097,7 +1285,13 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     } else if (state == P::Bottom::Menu || (state == P::Bottom::Prompt && now_us - st.prompt_since_us >= 300'000)) {
         st.menu_icons = true;
     }
-    msr_buttons_state(state != P::Bottom::Hud && (state == P::Bottom::Menu || now_us - st.hud_seen_us >= 300'000), st.menu_icons);
+    // ...and while the top screen's message box shows over play, the HUD below or not (a Recharge Station's "Ammo is
+    // already filled to capacity." keeps the HUD; 2026-11-18, the user: "says to press a. but a does nothing. b is
+    // letting you out of that menu": the box's A, drawn in the menus' layout always, was the pad's bottom button, which
+    // in play is bound to Jump, 3DS B)
+    const bool dialog = st.in_play && msr_gui_dialog();
+    msr_buttons_state(dialog || (state != P::Bottom::Hud && (state == P::Bottom::Menu || now_us - st.hud_seen_us >= 300'000)),
+                      st.menu_icons);
     const auto page = static_cast<P::Page>(P::page.load(std::memory_order_relaxed));
     // Play ends at the title menus or a prompt (the title's, the prologue's), but not at the pause menu's own dialogs,
     // prompts straight over it (the map pins tool's first use): play went on behind them (2026-11-07, #43: the title
@@ -1122,7 +1316,10 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     const bool prompt_on = st.prompt_alpha > 0.f;
     const bool prompt = (state == P::Bottom::Prompt && (prompt_on || now_us - st.prompt_since_us >= 300'000)) ||
                         (prompt_on && state == P::Bottom::Logo && now_us - st.prompt_seen_us < 1'500'000);
-    const bool show_hud = state == P::Bottom::Hud && !forced && !pausing && !map_focus;
+    // (the abilities' page over the view: the touch screen's panel kept away until it no longer reads as a menu)
+    if (abilities) st.abilities_hold = true;
+    else if (state != P::Bottom::Menu) st.abilities_hold = false;
+    const bool show_hud = state == P::Bottom::Hud && !forced && !pausing && !map_focus && !abilities;
     // Between two pause pages (2026-11-17, the user: "it moves somewhat slow between the tabs on the pause screen. make
     // them transition smooth between each tab. it should maintain the same frame rate as the main game"): the game
     // shows its emblem on the touch screen for some 0.2 s, which reads as loading, and the panel faded out to the view
@@ -1141,7 +1338,7 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     if (pause_bridge && st.pause_bridge_us < 0) st.pause_bridge_us = now_us;
     if (!pause_bridge && !pause_page) st.pause_bridge_us = -1;
     if (state == P::Bottom::Hud) st.pause_seen_us = -1;
-    const bool show_panel = state == P::Bottom::Menu || forced || map_focus || pause_bridge;
+    const bool show_panel = (state == P::Bottom::Menu && !st.abilities_hold) || forced || map_focus || pause_bridge;
     const bool show_prompt = prompt && !forced && !pausing && !resuming && now_us - st.prompt_foreign_us >= 300'000;
     const float fade = FadePerSecond * seconds;
     // The pause screen fitted to the window (the menu's "Fit the pause screen to the window", 2026-11-17, the user: "a
@@ -1466,6 +1663,10 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
             }
         }
     }
+
+    st.abilities_alpha = Approach(st.abilities_alpha, abilities_on ? 1.f : 0.f, fade);
+    if (st.abilities_alpha > 0.f) AbilitiesOverlay(layout_top, abilities_page, st.abilities_alpha);
+    else abilities_page = {};
 
     if (st.prompt_alpha > 0.f) {
         // The title's prompt from the game's interface when the title menus hold it, its card around what it shows;

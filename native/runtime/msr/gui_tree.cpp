@@ -83,17 +83,20 @@ void Push(const MsrGuiItem& item) {
     if (out->size() < MaxItems) out->push_back(item);
 }
 
-// A tile grid (0x6E4DB8: the map's rooms): columns (+0x13C) x rows (+0x140) cells over its rectangle, column by
-// column, each a tile of its texture (+0x108, a path hash). The mesh it builds (vtable 0x6E78C0) keeps each cell's u, v
-// of four corners (32 bytes: u0 v0 u1 v0 u0 v1 u1 v1) from the pointer at its +0x6C. It is reached as the game reaches
+// A tile grid (0x6E4DB8: the map's rooms): columns (+0x13C) x rows (+0x140) cells over its rectangle, column by column,
+// each a tile of its texture (+0x108, a path hash). The mesh it builds (vtable 0x6E78C0) keeps each cell's u, v of four
+// corners (32 bytes: u0 v0 u1 v0 u0 v1 u1 v1) from the pointer at its +0x6C, and each corner's color (RGBA floats, 64
+// bytes a cell) from the pointer at its +0x70: 0.25 draws the tile as it is (the rooms Samus has been in), 0.15 at 60%
+// (the rooms a Scan Pulse showed but she has not been in yet, darker on the 3DS; until 2026-11-18 the colors were left
+// out, the user: "the scan pulse now reveals the map as if you've visited there"). It is reached as the game reaches
 // it, by pointers: the grid's +0xF4 points at its drawing object (its second vtable 0x6E8560 at +0x10, whose methods
 // 0x174874 and 0x58074C set and release the mesh), whose +0xE8 points at the render object, whose +0x44 points at the
 // mesh (a block of 0x104 bytes made at 0x1748C4; its columns at +0x14, rows at +0x18). Each is a block of the game's
 // heap: on a fresh heap they lie one after the other right after the grid, elsewhere in a longer session. (Until
 // 2026-11-17 the mesh was looked for right after the grid, the user: "areas 1, 2, 3, 4, 6 are missing their maps in
 // game", then by a pointer to it inside the grid, the user: "pick a different map look at it. then hit b to go back to
-// the game and then pause to look at the map again it disappears": the surface's grid made again had its drawing
-// object elsewhere.) Only the cells inside the clip, and none whose tile is wholly transparent (cached per tile).
+// the game and then pause to look at the map again it disappears": the surface's grid made again had its drawing object
+// elsewhere.) Only the cells inside the clip, and none whose tile is wholly transparent (cached per tile).
 constexpr u32 GridMeshVtable = 0x6E78C0, GridDrawVtable = 0x6E8560;
 
 u32 GridMesh(u32 o, u32 cols, u32 rows) {
@@ -102,7 +105,7 @@ u32 GridMesh(u32 o, u32 cols, u32 rows) {
     const u32 render = rd32(draw + 0xE8);
     if (!ValidRange(render, 0x48)) return 0;
     const u32 mesh = rd32(render + 0x44);
-    return ValidRange(mesh, 0x70) && rd32(mesh) == GridMeshVtable && rd32(mesh + 0x14) == cols && rd32(mesh + 0x18) == rows
+    return ValidRange(mesh, 0x74) && rd32(mesh) == GridMeshVtable && rd32(mesh + 0x14) == cols && rd32(mesh + 0x18) == rows
                ? mesh : 0;
 }
 
@@ -113,6 +116,8 @@ void Grid(u32 o, const MsrGuiItem& base, const Clip& clip) {
     if (!mesh) return;
     const u32 cells = rd32(mesh + 0x6C);
     if (!ValidRange(cells, cols * rows * 32)) return;
+    u32 colors = rd32(mesh + 0x70);
+    if (!ValidRange(colors, cols * rows * 64)) colors = 0;   // (none: the tiles as they are)
     const int atlas = msr_gui_atlas_by_path(rd32(o + 0x108));
     const uint8_t* px = nullptr;
     uint32_t aw = 0, ah = 0;
@@ -182,6 +187,12 @@ void Grid(u32 o, const MsrGuiItem& base, const Clip& clip) {
             it.additive = 0;
             if (tile.dark)
                 for (int k = 0; k < 3; ++k) it.color[k] *= dark_shade;
+            if (colors)   // the cell's color, its corners' average: 0.25 as the tile is
+                for (int k = 0; k < 4; ++k) {
+                    const u32 at = colors + 64 * (c * rows + r) + 4 * k;
+                    const float mean = (F(at) + F(at + 16) + F(at + 32) + F(at + 48)) * .25f;
+                    it.color[k] *= std::clamp(mean * 4.f, 0.f, 1.f);
+                }
             Push(it);
         }
     }
@@ -318,14 +329,35 @@ void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
     // starts at their top, the copy prompt's in its 90 is centered, the Samus page's two-line description 15 apart.
     const u32 game_line = at.text == LabelFields.text ? rd32(o + 0x158) : 0;
     const float line_height = (game_line >= 4 && game_line <= 64 ? static_cast<float>(game_line) : std::round(size * .9f)) * sy;
-    const float block = line_height * static_cast<float>(lines.size() - 1) + std::round(size * 1.2f) * sy;
+    // A paged label (CLabel: +0x168 its pages, +0x17C the page shown, +0x194 how many of that page's characters are
+    // typed out so far, an embedded sprite one): the game shows as many lines as its box holds, types them out and turns
+    // the page on A (the Aeion abilities' description). Laid out whole, every page showed at once, the first in the box
+    // and the rest past it (until 2026-11-18). Its pages as the game counts them, else (a text wrapped otherwise here)
+    // all of it as before. A label of one page is typed out too (the pause's Samus page: the user, "it sounds like text
+    // is appearing or something but when you look text is just there"); one the game shows at once counts all of its
+    // characters typed. (Not by +0x190, the page's length: it reads another number for a moment now and then.)
+    std::size_t first = 0, shown = lines.size();
+    long typed = -1;   // (-1: every character)
+    if (at.text == LabelFields.text && ValidRange(o, 0x198)) {
+        const u32 pages = rd32(o + 0x168), page = rd32(o + 0x17C), chars = rd32(o + 0x194);
+        const auto per = line_height > 0.f ? static_cast<std::size_t>(std::max(1.f, std::floor((base.h + 1.f) / line_height))) : 0;
+        if (pages == 1 && page == 0) {
+            if (chars < 4096) typed = static_cast<long>(chars);
+        } else if (pages >= 2 && pages <= 32 && page < pages && per > 0 && (lines.size() + per - 1) / per == pages) {
+            first = page * per;
+            shown = std::min(per, lines.size() - first);
+            if (chars < 4096) typed = static_cast<long>(chars);
+        }
+    }
+    const float block = line_height * static_cast<float>(shown - 1) + std::round(size * 1.2f) * sy;
     const float top = base.y + std::max(0.f, std::floor((base.h - block) / 2));
-    for (std::size_t l = 0; l < lines.size(); ++l) {
+    for (std::size_t l = first; l < first + shown; ++l) {
         const Line& line = lines[l];
         const float bx = base.x, bw = base.w;
         float pen = align == 1 ? bx + (bw - line.width * sx) / 2 : align == 2 ? bx + bw - line.width * sx : bx;
-        const float baseline = top + ascent * sy + line_height * static_cast<float>(l);
+        const float baseline = top + ascent * sy + line_height * static_cast<float>(l - first);
         for (const Piece& p : line.pieces) {
+            if (typed >= 0 && typed-- == 0) return;   // (not typed out yet)
             if (p.kind == Space) {
                 pen += p.advance * sx;
                 continue;
@@ -380,6 +412,14 @@ int AnchorOf(u32 o) {
 }
 // ...the map's view and what it holds, and the pin a finger holds over it (MarkerComposition, MarkerCell): the map's
 constexpr u32 MapAnchored[] = {0x1055A6E5u /* MinimapHang */, 0xB9370011u /* MarkerComposition */, 0xCA37DA0Au /* MarkerCell */};
+// ...and those kept to the left edge though they stand off it: the map page's explored percentage and pins count
+// (PercentComposition, 5 pixels in; 2026-11-18, the user: the "little percentage box on the map screen ... should be
+// moved to the left of the screen like the rest of the icons"), and the Samus page's description bar, its slanted start
+// against the Back tab (DescriptionOrnament02, from 50) and its text (LabelInfoBig): its line (ButtonOrnament, from 160
+// to the right edge) is stretched from there (compositor.cpp StretchX; the user: "the bottom bars meet like how they would
+// on the normal pause screen"; they stood apart by half the window's extra width)
+constexpr u32 LeftAnchored[] = {0xBA47EEF5u /* PercentComposition */, 0xD9FB45AFu /* DescriptionOrnament02 */,
+                                0xE61669C8u /* LabelInfoBig */};
 // Containers whose pieces the compositor tells apart (MsrGuiItem.group): the pause's Controls page, whose icons name
 // play's buttons (compositor.cpp ControlsIcons)
 constexpr u32 GroupContainers[] = {0xB1E17D10u /* ControlsComposition */};
@@ -392,6 +432,8 @@ void Walk(u32 o, int depth, Clip clip, int anchor = -1, u32 group = 0) {
     if (anchor != MSR_ANCHOR_MAP) {
         const u32 name = NameHash(o);
         if (std::find(std::begin(MapAnchored), std::end(MapAnchored), name) != std::end(MapAnchored)) anchor = MSR_ANCHOR_MAP;
+        else if (std::find(std::begin(LeftAnchored), std::end(LeftAnchored), name) != std::end(LeftAnchored))
+            anchor = MSR_ANCHOR_LEFT;
         else if (anchor < 0) anchor = AnchorOf(o);
     }
     if (Leaf(vt)) {
@@ -475,6 +517,56 @@ u32 Child(u32 o, u32 name) {
         node = rd32(node + 4);
     }
     return 0;
+}
+
+// An object of the in-game interface by its name hash, shown or not, on either screen, and the containers on its way
+// down from the in-game root (each shown or not, as it holds it): searched depth first, at most MaxNodes objects
+struct Found { u32 object = 0; std::vector<u32> path; };
+bool Search(u32 o, u32 name, int depth, std::size_t& budget, Found& found) {
+    if (depth > 32 || budget == 0 || !ValidRange(o, ObjectSize)) return false;
+    --budget;
+    const u32 vt = rd32(o);
+    if (vt < 0x600000 || vt >= 0x800000) return false;
+    if (NameHash(o) == name) {
+        found.object = o;
+        return true;
+    }
+    if (Leaf(vt)) return false;   // (a label's +0xF8 is its text, not children)
+    const u32 count = rd32(o + 0xF8);
+    u32 node = rd32(o + 0xFC);
+    if (count == 0 || count > 2000) return false;
+    found.path.push_back(o);
+    for (int guard = 0; node && guard < 2000 && ValidRange(node, 8); ++guard) {
+        if (Search(rd32(node), name, depth + 1, budget, found)) return true;
+        node = rd32(node + 4);
+    }
+    found.path.pop_back();
+    return false;
+}
+// ...kept once found, while it is still there (the same name at the same place); looked for again a second later when
+// it is not
+const Found* Named(u32 name) {
+    struct Entry { u32 name; Found found; unsigned wait; };
+    static std::vector<Entry> cache;
+    auto e = std::find_if(cache.begin(), cache.end(), [name](const Entry& c) { return c.name == name; });
+    if (e == cache.end()) {
+        if (cache.size() >= 64) cache.clear();
+        cache.push_back({name, {}, 0});
+        e = cache.end() - 1;
+    }
+    const auto here = [](u32 o, u32 n) { return ValidRange(o, ObjectSize) && rd32(o) >= 0x600000 && rd32(o) < 0x800000 && NameHash(o) == n; };
+    if (e->found.object && here(e->found.object, name)) return &e->found;
+    e->found = {};
+    if (e->wait) {
+        --e->wait;
+        return nullptr;
+    }
+    const u32 root = IngameRoot();
+    std::size_t budget = MaxNodes;
+    if (root && Search(root, name, 0, budget, e->found)) return &e->found;
+    e->found = {};
+    e->wait = 60;
+    return nullptr;
 }
 
 } // namespace
@@ -567,4 +659,74 @@ extern "C" int msr_gui_map_view(float view[4]) {
 // The pause map's view widened by so many touch-screen pixels at each side it reaches (next walks)
 extern "C" void msr_gui_map_margin(float margin) {
     map_margin = margin > 0.f ? margin : 0.f;
+}
+
+// The Aeion abilities' page the game shows on the touch screen when Samus gains an Aeion ability (AbilitiesCore: the
+// four slots on the D-pad and the ability's description below; the pause's Samus page lists them otherwise, this
+// container hidden): 1 while it and every container above it are shown
+namespace {
+// a container found by name shown, with every container above it
+bool Shown(const Found* found) {
+    if (!found || rd32(found->object) != ContainerVtable || (rd32(found->object + 0x44) & 0xFF) == 0) return false;
+    for (const u32 above : found->path)
+        if (!ValidRange(above, ObjectSize) || (rd32(above + 0x44) & 0xFF) == 0) return false;
+    return true;
+}
+} // namespace
+
+extern "C" int msr_gui_abilities(void) {
+    return Shown(Named(0x7EFF1FBFu /* AbilitiesCore */)) ? 1 : 0;
+}
+
+// The top screen's message box (USMComposition: "- Lightning Armor -", "Use the Teleport Station?", "Ammo is already
+// filled to capacity."), waiting for its A: 1 while it shows (its opacity, +0x3C, above 0)
+extern "C" int msr_gui_dialog(void) {
+    const Found* box = Named(0x7604B315u /* USMComposition */);
+    return Shown(box) && F(box->object + 0x3C) > 0.f ? 1 : 0;
+}
+
+// A paged label of the in-game interface by its name hash (Label: its page's length +0x190, how much of it is typed
+// out +0x194): 2 when its page is typed out and another follows on A, 1 typed out and the last, 0 while it types, -1
+// for none
+extern "C" int msr_gui_label_waits(uint32_t name) {
+    const Found* named = Named(name);
+    if (!named || rd32(named->object) != LabelVtable || !ValidRange(named->object, 0x198)) return -1;
+    const u32 o = named->object, pages = rd32(o + 0x168), page = rd32(o + 0x17C), length = rd32(o + 0x190),
+              typed = rd32(o + 0x194);
+    if (pages < 1 || pages > 32 || page >= pages || length > 4096 || typed > 4096) return -1;
+    return typed < length ? 0 : page + 1 < pages ? 2 : 1;
+}
+
+// Objects of the in-game interface by their name hashes, shown or not, on either screen (the top screen's message box
+// for the compositor's Aeion abilities): each as a piece of msr_gui_tree's (a sprite with its picture; anything else
+// its rectangle and color, atlas -1); w 0 for one not found. The count found.
+extern "C" int msr_gui_named(const uint32_t* names, int count, MsrGuiItem* items) {
+    int found = 0;
+    std::vector<MsrGuiItem> one;
+    for (int i = 0; i < count; ++i) {
+        items[i] = MsrGuiItem{};
+        items[i].atlas = -1;
+        const Found* named = Named(names[i]);
+        if (!named) continue;
+        const u32 o = named->object;
+        MsrGuiItem base{};
+        base.x = F(o + 0x10) * 320.f;
+        base.y = F(o + 0x14) * 240.f;
+        base.w = F(o + 0x1C) * 320.f;
+        base.h = F(o + 0x20) * 240.f;
+        for (int k = 0; k < 4; ++k) base.color[k] = F(o + 0x30 + 4 * k);
+        base.name = names[i];
+        base.atlas = -1;
+        items[i] = base;
+        if (rd32(o) == SpriteVtable) {
+            one.clear();
+            std::vector<MsrGuiItem>* const keep = out;
+            out = &one;
+            Sprite(o, base);
+            out = keep;
+            if (!one.empty()) items[i] = one.front();
+        }
+        ++found;
+    }
+    return found;
 }
