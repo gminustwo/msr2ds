@@ -24,6 +24,7 @@
 #include "runtime.h"
 #include "dump.h"
 #include "input.h"
+#include "log.h"
 #include "msr/msr.h"
 #include <SDL_filesystem.h>
 #include <math.h>
@@ -168,6 +169,17 @@ static int load_dump(const char *path) {
     }
     fprintf(stderr, "native: no .code in the ExeFS\n"); dump_close(f); return -1;
 code_done:;
+    {   /* which game: its product code and region, title, version and code as loaded (the log's "game:" line) */
+        char product[17]; memcpy(product, h + 0x150, 16); product[16] = 0;
+        for (int i = 0; i < 16 && product[i]; i++) if (product[i] < 0x20 || product[i] > 0x7e) product[i] = '?';
+        const char r = strlen(product) >= 10 ? product[9] : 0;   /* CTR-P-A9AE: E USA, P Europe, J Japan... */
+        const char *region = r == 'E' ? "USA" : r == 'P' ? "Europe" : r == 'J' ? "Japan" : r == 'K' ? "Korea" : r == 'Z' ? "Europe (Z)" : "?";
+        const char *file = strrchr(path, '/'), *bs = strrchr(path, '\\');
+        if (bs && (!file || bs > file)) file = bs;
+        fprintf(stderr, "game: %s (%s), program %016llx, remaster version %u, its code %016llx%s, from %s\n", product[0] ? product : "?", region,
+                (unsigned long long)le64(h + 0x118), (unsigned)(ex[0x0E] | ex[0x0F] << 8), (unsigned long long)g_code_hash,
+                g_code_orig ? " (changed by a game mod)" : "", file ? file + 1 : path);
+    }
     /* RomFS: IVFC header, master hash, then level 3 (the file system) at the next level-3 block boundary */
     uint64_t romfs = ncch + (uint64_t)le32(h + 0x1B0) * MEDIA;
     uint8_t iv[0x60];
@@ -323,7 +335,8 @@ static void stages_print(void) {
 /* Frames over 200 ms, in every log (2026-11-15: freezes of 0.3-0.5 s in play, the main loop and the game's thread both
    stopped with little processor use, which the 2 s lines could not place): from 50 ms into a frame, every 25 ms, what the
    main thread, the GX thread and the game's frame thread are doing (their stages; kernel.c k_frame_where); a frame that
-   ends over 200 ms gets a line with each one's share. At most 40 lines a run. */
+   ends over 200 ms gets a line with each one's share. At most 10 lines a minute (until 2026-11-19, 40 a run, which a long
+   session used up early), then how many more there were. */
 #define LF_KINDS 4
 #define LF_TEXT 200
 typedef struct { unsigned frame; int samples; struct { char what[LF_KINDS][LF_TEXT]; double ms[LF_KINDS], other; } th[3]; } LfSamples;
@@ -340,13 +353,18 @@ static void lf_add(LfSamples *s, int th, const char *what, double ms) {
 static void long_frames(double t) {
     extern volatile double g_frame_last_ms, g_long_frame_ms; extern volatile unsigned g_long_frame_end, g_long_frames;
     extern unsigned g_gsp_top_swaps;
-    static unsigned seen; static int told;
+    static unsigned seen; static int told, untold; static double minute;
+    if (t - minute >= 60) {   /* each minute: up to 10 lines, and the count of the rest */
+        if (untold) fprintf(stderr, "native: %d more frames over 200 ms in the last minute (not listed: 10 a minute)\n", untold);
+        minute = t; told = untold = 0;
+    }
     const unsigned longs = __atomic_load_n(&g_long_frames, __ATOMIC_ACQUIRE);
     if (longs != seen) {   /* a frame over 200 ms ended: its samples, taken while it ran (the frame before swap g_long_frame_end) */
         seen = longs;
         const unsigned end = g_long_frame_end; const double ms = g_long_frame_ms;
         LfSamples *s = lf_now.frame + 1 == end ? &lf_now : lf_prev.frame + 1 == end ? &lf_prev : NULL;
-        if (told < 40 && s && s->samples) {
+        if (told >= 10 && s && s->samples) untold++;
+        else if (s && s->samples) {
             static const char *const who[3] = { "the main thread", "the GX thread", "the game's thread" };
             char line[4096]; size_t at = 0;   /* one write: other threads log meanwhile */
 #define LF_PUT(...) do { if (at < sizeof line) { int w_ = snprintf(line + at, sizeof line - at, __VA_ARGS__); if (w_ > 0) at += (size_t)w_; } } while (0)
@@ -359,7 +377,7 @@ static void long_frames(double t) {
             }
 #undef LF_PUT
             fprintf(stderr, "%s\n", line);
-            if (++told == 40) fprintf(stderr, "native: frames over 200 ms from here on are not listed\n");
+            told++;
         }
     }
     const unsigned frame = g_gsp_top_swaps;
@@ -389,6 +407,7 @@ static void *watchdog(void *arg) {
         usleep(25000);
 #endif
         const double t = now_s();
+        log_tick();   /* the log's lines so far, to its writer every 100 ms (log.c) */
         if (g_booted) long_frames(t);
         for (int i = 0; i < STAGE_COUNT; i++) {
             const char *w = stages[i].what; const double since = stages[i].since;
@@ -418,7 +437,7 @@ static void watchdog_start(void) {
    lookup (dispatch.cpp, its tables gone), which the log does not report, as before the crash report existed. */
 #ifdef _WIN32
 static volatile int g_teardown;
-static void log_flush_on_abort(int sig) { (void)sig; fprintf(stderr, "native: aborted\n"); stages_print(); fflush(stderr); }
+static void log_flush_on_abort(int sig) { (void)sig; fprintf(stderr, "native: aborted\n"); stages_print(); fflush(stderr); log_crash_sync(); }
 /* Where an address is, for the crash report: its module + offset (addr2line -e <module> <offset> for this program's own),
    and the module's nearest exported name below it (a system library's function: #70 crashed in ucrtbase.dll, at an offset
    that names nothing without that Windows' own copy of it). 0 when no module holds it. */
@@ -456,6 +475,7 @@ static LONG WINAPI log_flush_on_crash(EXCEPTION_POINTERS *e) {
     if (g_teardown) { fflush(stderr); return EXCEPTION_CONTINUE_SEARCH; }
     static volatile LONG busy;
     if (InterlockedExchange(&busy, 1)) return EXCEPTION_CONTINUE_SEARCH;   /* the first thread to crash reports */
+    log_crash_sync();   /* the lines before it into the file; the report then straight there (log.c) */
     const EXCEPTION_RECORD *r = e ? e->ExceptionRecord : NULL;
     void *at = r ? r->ExceptionAddress : NULL;
     HMODULE m = NULL; char path[MAX_PATH] = "?";   /* where: module + offset (addr2line -e <module> <offset>) */
@@ -524,6 +544,7 @@ static void crash_handler(int sig, siginfo_t *si, void *ctx) {
     if (!busy) {   /* the first thread to crash reports */
         busy = 1;
         fflush(stderr);   /* the lines since the last stats */
+        log_crash_sync();   /* ...into the file, and the report straight there (log.c) */
         crash_fd = fileno(stderr);
         const char *name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGBUS ? "SIGBUS" : sig == SIGILL ? "SIGILL" : sig == SIGFPE ? "SIGFPE" : sig == SIGABRT ? "SIGABRT" : "?";
         char line[256];
@@ -622,6 +643,30 @@ static double memory_gb(void) {
     return pages > 0 && size > 0 ? (double)pages * (double)size / 1073741824.0 : 0;
 #endif
 }
+static double memory_free_gb(void) {   /* what the computer has left at the start (#70: a laptop with 3.7 GB) */
+#ifdef _WIN32
+    MEMORYSTATUSEX m; memset(&m, 0, sizeof m); m.dwLength = sizeof m;
+    return GlobalMemoryStatusEx(&m) ? (double)m.ullAvailPhys / 1073741824.0 : 0;
+#elif defined(__linux__)
+    long avail = -1; char l[128]; FILE *f = fopen("/proc/meminfo", "r");
+    while (f && fgets(l, sizeof l, f)) sscanf(l, "MemAvailable: %ld kB", &avail);
+    if (f) fclose(f);
+    return avail > 0 ? (double)avail / 1048576.0 : 0;
+#else
+    return 0;
+#endif
+}
+/* the processor's vector extensions, for the reports from older processors */
+static const char *cpu_features(void) {
+#if (defined(__x86_64__) || defined(__i386__)) && (defined(__GNUC__) || defined(__clang__))
+    __builtin_cpu_init();
+    return __builtin_cpu_supports("avx2") ? "AVX2 yes" : __builtin_cpu_supports("avx") ? "AVX2 no (AVX yes)" : "AVX2 no, AVX no";
+#elif defined(__aarch64__)
+    return "NEON";
+#else
+    return "?";
+#endif
+}
 /* once, at boot: the settings that decide the load, and the computer (video.c has logged the graphics) */
 static void settings_line(int fps) {
     char cpu[160]; cpu_name(cpu, sizeof cpu);
@@ -631,9 +676,9 @@ static void settings_line(int fps) {
     char aniso_text[24];
     if (aniso > 1) snprintf(aniso_text, sizeof aniso_text, "%dx", aniso); else snprintf(aniso_text, sizeof aniso_text, "off");
     fprintf(stderr, "native: running at %s, %d FPS, V-Sync %s, %s upscaling, anisotropic filtering %s, power-saving waits %s, %s; "
-            "on %s, %d threads, %.1f GB of memory\n", res_text, fps, video_vsync() ? "on" : "off", video_filter_fsr() ? "FSR 1" : "linear",
+            "on %s, %d threads, %s, %.1f GB of memory (%.1f GB free)\n", res_text, fps, video_vsync() ? "on" : "off", video_filter_fsr() ? "FSR 1" : "linear",
             aniso_text, k_power_saving() ? "on" : "off", msr_settings_wide_culling() ? "the wider view drawn" : "only the 3DS's view drawn",
-            cpu, k_cpu_threads(), memory_gb());
+            cpu, k_cpu_threads(), cpu_features(), memory_gb(), memory_free_gb());
 }
 /* Every 2 s, per game frame: the game's frame thread at work (the frame less its time waiting or asleep: kernel.c), the
    GX commands' time (the worker's, and the small ones the game's thread runs), the GPU's drawing (the 3D batches'
@@ -683,8 +728,8 @@ int main(int argc, char **argv) {   /* SDL_main */
     if (chdir(msr_android_root())) return 1;   /* the paths are user/..., as in the PC's folder */
     if (argc > 1) {
         mkdir("user", 0777);
-        video_keep_crashed_log("user/msr-native.log");   /* (a start that ended while opening the graphics: video.c) */
-        if (freopen("user/msr-native.log", "w", stderr)) setvbuf(stderr, NULL, _IONBF, 0);   /* the launcher's is its own */
+        log_start("user/logs");   /* this session's own log (log.c); the launcher's is its own */
+        video_keep_crashed_log(log_path());   /* (a start that ended while opening the graphics: video.c) */
         /* user/env.txt: test switches (PWR_..., one NAME=value a line, # comments), as a PC's environment would give them;
            a phone has no other way to set them */
         FILE *ef = fopen("user/env.txt", "r"); char line[512];
@@ -721,25 +766,12 @@ int main(int argc, char **argv) {
     log_buffered();
     if (argc == 1 || (argc == 2 && !strcmp(argv[1], "--launcher"))) return msr_launcher_main();
     if (argc == 2 && !strcmp(argv[1], "--direct")) return msr_launcher_direct();
-    /* the log's first line: which release and package this is (a player's log said nothing of it; launcher.log does) */
-    fprintf(stderr, "native: msr-native %s, %s\n", MSR_NATIVE_VERSION,
-#if defined(__ANDROID__)
-            "Android"
-#elif defined(_WIN32)
-            "Windows"
-#elif defined(__APPLE__)
-            "macOS"
-#else
-            "Linux"
+#ifndef __ANDROID__
+    log_start("user/logs");   /* this session's own log, the newest 10 kept (log.c; Android's main started it) */
 #endif
-#if defined(__aarch64__) || defined(_M_ARM64)
-            " arm64"
-#elif defined(__x86_64__) || defined(_M_X64)
-            " x64"
-#else
-            ""
-#endif
-            );
+    /* the log's first lines: which release, build and package this is, how it was started, the folder and the system
+       (a player's log said nothing of the release; launcher.log does) */
+    log_start_lines();
     int scale = 2, fps = 0, volume = 100, packs_given = 0, saving = -1;
     const char *dump = getenv("MSR_DUMP"), *module = NULL, *settings = NULL;
     static char game_path[4096], module_path[4096], save_path[4096];
@@ -833,7 +865,7 @@ int main(int argc, char **argv) {
     dsp_set_volume(g_mute ? 0.f : (float)volume / 100.f);
     msr_overlay_start(video_fullscreen(), video_resolution(), video_vsync(), g_mute ? 0 : volume, video_aniso(), video_filter_fsr(),
                       power_saving);
-    if (video_init(scale)) { fprintf(stderr, "native: video init failed\n"); video_explain("user/msr-native.log"); return 1; }
+    if (video_init(scale)) { fprintf(stderr, "native: video init failed\n"); video_explain(log_path()[0] ? log_path() : "user/logs"); return 1; }
     settings_line(fps);
     fprintf(stderr, "native: boot (input=%s, audio=%s)\n", g_input_none ? "none" : "default", g_mute ? "muted" : "on");
 
@@ -894,16 +926,34 @@ int main(int argc, char **argv) {
         if (next > t) k_sleep_ns((int64_t)((next - t) * 1e9));   /* to the microsecond: the game's frame limiter wakes just before it */
         else if (t - next > 0.25) next = t;          /* fell behind: don't try to catch up */
         if (t - last_stat >= 2.0) {
-            stage_set(STAGE_MAIN, "writing the 2 s stats and the log");
+            stage_set(STAGE_MAIN, "writing the stats and the log");
             uint32_t lists, draws; pica_stats(&lists, &draws);
             extern unsigned g_vid_acquire_fail, g_vid_present_fail, g_vid_presented; extern int g_vid_last_err;
             extern unsigned g_gsp_top_swaps; static unsigned last_swaps;
             extern double g_frame_max_ms; extern unsigned g_frame_over[3];
+            /* The stats block (2026-11-19): every 30 s, and after any 2 s with a dip in it (the game under 90% of its frame
+               rate, a frame over 50 ms, a gap in the sound, a failed present), each block covering the time since the one
+               before; a dip that goes on is told every 10 s after its first five blocks. Written every 2 s, it put 2.3 MB an
+               hour of mostly "all well" into the log, which a long session would take past the log's 10 MB (log.c).
+               PWR_STATS_EVERY=<s> sets the 30 (2: every 2 s, as before). */
+            static double every = -1, block_t0, block_max_ms; static unsigned block_swaps, block_over[3], told_underruns, told_fails;
+            static int dip_run;
+            if (every < 0) { const char *e = getenv("PWR_STATS_EVERY"); every = e && atof(e) > 0 ? atof(e) : 30; block_t0 = last_stat; block_swaps = last_swaps; }
+            extern unsigned dsp_underruns(void);
+            const unsigned underruns = dsp_underruns(), fails = g_vid_acquire_fail + g_vid_present_fail;
+            const double window_fps = (g_gsp_top_swaps - last_swaps) / (t - last_stat);
+            const int dip = (g_gsp_top_swaps && window_fps < fps * 0.9) || g_frame_over[2] || underruns != told_underruns || fails != told_fails;
+            dip_run = dip ? dip_run + 1 : 0;
+            if (g_frame_max_ms > block_max_ms) block_max_ms = g_frame_max_ms;
+            for (int i = 0; i < 3; i++) block_over[i] += g_frame_over[i];
+            g_frame_max_ms = 0; memset(g_frame_over, 0, sizeof g_frame_over);
+            if ((dip && (dip_run <= 5 || t - block_t0 >= 9.5)) || t - block_t0 >= every - 0.5) {
+            const double span = t - block_t0;
             fprintf(stderr, "native: frames=%u gpu-lists=%u draws=%u presented=%u acquire-fail=%u present-fail=%u last-err=%d game-fps=%.1f "
-                    "frame-max=%.1fms over10=%u over20=%u over50=%u\n",
-                    frames, lists, draws, g_vid_presented, g_vid_acquire_fail, g_vid_present_fail, g_vid_last_err, (g_gsp_top_swaps - last_swaps) / (t - last_stat),
-                    g_frame_max_ms, g_frame_over[0], g_frame_over[1], g_frame_over[2]);
-            load_line(t - last_stat, g_gsp_top_swaps - last_swaps, g_frame_max_ms, fps);
+                    "frame-max=%.1fms over10=%u over20=%u over50=%u (the last %.0f s%s)\n",
+                    frames, lists, draws, g_vid_presented, g_vid_acquire_fail, g_vid_present_fail, g_vid_last_err, (g_gsp_top_swaps - block_swaps) / span,
+                    block_max_ms, block_over[0], block_over[1], block_over[2], span, dip ? ", a dip in its last 2 s" : "");
+            load_line(span, g_gsp_top_swaps - block_swaps, block_max_ms, fps);
             {   /* the main thread's waits in presenting, per presented frame (video.c) */
                 extern double g_vid_wait_fence, g_vid_wait_acquire, g_vid_wait_present, g_vid_wait_queue_gx; extern unsigned g_vid_gx_kept;
                 static unsigned last_presented, last_kept;
@@ -914,21 +964,6 @@ int main(int argc, char **argv) {
                                 g_vid_wait_queue_gx * 1e3 / np, (double)kept / np);
                 g_vid_wait_fence = g_vid_wait_acquire = g_vid_wait_present = g_vid_wait_queue_gx = 0;
             }
-            g_frame_max_ms = 0; memset(g_frame_over, 0, sizeof g_frame_over);
-            {   /* no new top-screen frame for 6 s after the game had started drawing: say where everything waits, once */
-                static unsigned still; static int reported;
-                if (g_gsp_top_swaps == last_swaps && g_gsp_top_swaps) still++; else still = 0;
-                if (still == 3 && !reported) { reported = 1; fprintf(stderr, "hang: no game frame for 6 s\n"); k_hang_report(); gsp_hang_report(); }
-                static double t0; if (!t0) t0 = t;   /* PWR_HANG_AT=<s>: the same report at that run time, frames or not */
-                if (getenv("PWR_HANG_AT") && !reported && t - t0 >= atof(getenv("PWR_HANG_AT"))) {
-                    reported = 1; fprintf(stderr, "hang: report at %.0f s (PWR_HANG_AT)\n", t - t0); k_hang_report(); gsp_hang_report();
-                }
-                static int quick_loaded;   /* PWR_QUICK_LOAD_AT=<s>: the quick state loaded at that run time (F8 without a keyboard: tests) */
-                if (getenv("PWR_QUICK_LOAD_AT") && !quick_loaded && t - t0 >= atof(getenv("PWR_QUICK_LOAD_AT"))) {
-                    extern void msr_state_quick_load(void); quick_loaded = 1; msr_state_quick_load();
-                }
-            }
-            last_swaps = g_gsp_top_swaps;
             { extern void dsp_stats(void); dsp_stats(); extern void gsp_stats(void); gsp_stats(); }
             if (msr_textures_active()) { unsigned nt, nl, nf; msr_textures_stats(&nt, &nl, &nf);
                                          fprintf(stderr, "msr: texture pack: %u loaded of %u, %u unreadable\n", nl, nt, nf); }
@@ -942,9 +977,11 @@ int main(int argc, char **argv) {
             extern unsigned long long g_sw_tri_in, g_sw_tri_drawn, g_sw_px_cov, g_sw_px_zfail, g_sw_px_afail, g_sw_px_written;
             ScreenSource st, sb; gsp_screens(&st, &sb);
             extern unsigned long long g_sw_clip_plane[7];
-            fprintf(stderr, "native: clipped by plane x<w %llu x>-w %llu y<w %llu y>-w %llu z<0 %llu z>-w %llu w>0 %llu\n", g_sw_clip_plane[0], g_sw_clip_plane[1], g_sw_clip_plane[2], g_sw_clip_plane[3], g_sw_clip_plane[4], g_sw_clip_plane[5], g_sw_clip_plane[6]);
-            fprintf(stderr, "native: sw tris=%llu drawn=%llu px covered=%llu zfail=%llu afail=%llu written=%llu | top %08x fmt%u bottom %08x fmt%u\n",
-                    g_sw_tri_in, g_sw_tri_drawn, g_sw_px_cov, g_sw_px_zfail, g_sw_px_afail, g_sw_px_written, st.addr, st.format, sb.addr, sb.format);
+            if (g_sw_tri_in) {   /* the software renderer's (all 0 with the GPU's) */
+                fprintf(stderr, "native: clipped by plane x<w %llu x>-w %llu y<w %llu y>-w %llu z<0 %llu z>-w %llu w>0 %llu\n", g_sw_clip_plane[0], g_sw_clip_plane[1], g_sw_clip_plane[2], g_sw_clip_plane[3], g_sw_clip_plane[4], g_sw_clip_plane[5], g_sw_clip_plane[6]);
+                fprintf(stderr, "native: sw tris=%llu drawn=%llu px covered=%llu zfail=%llu afail=%llu written=%llu | top %08x fmt%u bottom %08x fmt%u\n",
+                        g_sw_tri_in, g_sw_tri_drawn, g_sw_px_cov, g_sw_px_zfail, g_sw_px_afail, g_sw_px_written, st.addr, st.format, sb.addr, sb.format);
+            }
             extern unsigned long long g_vk_draws, g_vk_batches, g_vk_uploads, g_vk_tex_uploads, g_vk_passes, g_vk_gpu_us, g_vk_wait_us, g_vk_flush_us, g_vk_verts, g_vk_idx;
             extern unsigned long long g_vk_gpu_depth_us, g_vk_gpu_flat_us, g_vk_passes_flat;
             extern unsigned g_vsgen_compiled, g_vsgen_failed;
@@ -978,13 +1015,38 @@ int main(int argc, char **argv) {
                             (unsigned long long)ms.ullTotalPageFile >> 20);
             }
 #endif
-            fflush(stderr);   /* the log, in one write (log_buffered) */
+            fflush(stderr);   /* the block, in one write (log_buffered) */
+            block_t0 = t; block_swaps = g_gsp_top_swaps; block_max_ms = 0; memset(block_over, 0, sizeof block_over);
+            told_underruns = underruns; told_fails = fails;
+            }
+            {   /* no new top-screen frame for 6 s after the game had started drawing: say where everything waits, once */
+                static unsigned still; static int reported;
+                if (g_gsp_top_swaps == last_swaps && g_gsp_top_swaps) still++; else still = 0;
+                if (still == 3 && !reported) { reported = 1; fprintf(stderr, "hang: no game frame for 6 s\n"); k_hang_report(); gsp_hang_report(); }
+                static double t0; if (!t0) t0 = t;   /* PWR_HANG_AT=<s>: the same report at that run time, frames or not */
+                if (getenv("PWR_HANG_AT") && !reported && t - t0 >= atof(getenv("PWR_HANG_AT"))) {
+                    reported = 1; fprintf(stderr, "hang: report at %.0f s (PWR_HANG_AT)\n", t - t0); k_hang_report(); gsp_hang_report();
+                }
+                static int quick_loaded;   /* PWR_QUICK_LOAD_AT=<s>: the quick state loaded at that run time (F8 without a keyboard: tests) */
+                if (getenv("PWR_QUICK_LOAD_AT") && !quick_loaded && t - t0 >= atof(getenv("PWR_QUICK_LOAD_AT"))) {
+                    extern void msr_state_quick_load(void); quick_loaded = 1; msr_state_quick_load();
+                }
+                if (getenv("PWR_TEST_CRASH") && t - t0 >= atof(getenv("PWR_TEST_CRASH"))) {   /* a crash on purpose at that run time: the crash report's test */
+                    fprintf(stderr, "native: PWR_TEST_CRASH: crashing on purpose\n");
+#ifdef _WIN32
+                    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);   /* (no Windows dialog over the desktop) */
+#endif
+                    *(volatile int *)(uintptr_t)8 = 1;
+                }
+            }
+            last_swaps = g_gsp_top_swaps;
             last_stat = t;
             stage_set(STAGE_MAIN, NULL);
         }
     }
     stage_set(STAGE_MAIN, "closing the game");
     fprintf(stderr, "native: %s\n", *done ? "guest main returned" : g_exit == MSR_EXIT_RESTART ? "restart" : "window closed");
+    const char *how = *done ? "the game's main returned" : g_exit == MSR_EXIT_RESTART ? "Restart: the game starts again" : "the window was closed";
     { extern void pica_vk_saves_wait(void); pica_vk_saves_wait(); }   /* a shader cache save under way lands first */
     video_shutdown();
 #ifndef _WIN32
@@ -993,6 +1055,7 @@ int main(int argc, char **argv) {
        the PNG workers' (msr/textures.cpp) never left, so the game never exited once its window closed or Restart was
        chosen (2026-11-03, Steam Deck: the launcher waited for it). Windows' runtime does not wait there. */
     { extern void dsp_close_wav(void); dsp_close_wav(); }   /* PWR_DSP_WAV's header (atexit) */
+    log_finish(how);   /* the log's last line (log.c) */
     fflush(NULL);
 #ifdef __ANDROID__
     android_after_game(g_exit == MSR_EXIT_RESTART, *done || g_exit == 0);   /* the window closed: the app stays closed */
@@ -1000,7 +1063,10 @@ int main(int argc, char **argv) {
     _exit(g_exit > 0 ? g_exit : 0);
 #endif
 #ifdef _WIN32
+    log_finish(how);   /* the log's last line (log.c) */
     g_teardown = 1;   /* (log_flush_on_crash) */
+#else
+    (void)how;
 #endif
     return g_exit > 0 ? g_exit : 0;
 }

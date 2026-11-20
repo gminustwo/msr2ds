@@ -258,8 +258,17 @@ static void audio_open(void) {
     adev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);
     if (!adev) { fprintf(stderr, "dsp: SDL_OpenAudioDevice: %s\n", SDL_GetError()); return; }
     SDL_PauseAudioDevice(adev, 0);
-    fprintf(stderr, "pwr: audio output opened (%d Hz)\n", got.freq);
+    {   /* and the system's output it plays on, for the log (2026-11-19: which device, and as how many channels) */
+        char *name = NULL; SDL_AudioSpec dev; memset(&dev, 0, sizeof dev);
+        const int known = SDL_GetDefaultAudioInfo(&name, &dev, 0) == 0;
+        fprintf(stderr, "pwr: audio output opened (%d Hz, %d channels, %d-frame buffer; SDL's %s driver) on %s", got.freq, got.channels, got.samples,
+                SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?", known && name ? name : "the system's default output");
+        if (known) fprintf(stderr, " (the device: %d Hz, %d channels)", dev.freq, dev.channels);
+        fputc('\n', stderr);
+        SDL_free(name);
+    }
 }
+unsigned dsp_underruns(void) { return a_underruns; }   /* main.c's stats: a gap in the sound since the last block */
 
 /* final mix: each intermediate mix times its volume (master, aux return A/B), downmixed to stereo (left = front + rear), clamped */
 static void audio_push(const float vol[3]) {

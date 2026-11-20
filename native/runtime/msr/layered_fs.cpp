@@ -4,6 +4,7 @@
 // or adds files and its romfs_ext/ removes (.stub) or patches (.ips, .bps) them, applied from the lowest priority up,
 // then new tables are written and each file's data comes from the dump, a mod's file or the patched copy.
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -632,4 +633,95 @@ extern "C" uint8_t* msr_romfs_file(const char* path, size_t* size) {
         rest = rest.substr(slash + 1);
     }
     return nullptr;
+}
+
+// The packages the game reads, for the log's "where:" lines (2026-11-19): each .pkg of the RomFS the game reads (the dump's,
+// or the one rebuilt with the game mods' files) by its data's offset, from the level-3 header's directory and file tables
+// (read whole, at the game's first read). A package read to its end gets a line: its path (packs/maps/<area>/... names the
+// area and the sub-area being loaded), its size and the time since its first read. The game itself reads by offset only
+// (fs.c), so nothing else in the program knows which file a read was.
+namespace {
+
+struct Package {
+    u64 start = 0, size = 0;
+    std::string path;
+    std::chrono::steady_clock::time_point first{};
+    u64 got = 0;
+    bool reading = false;
+};
+std::vector<Package> packages;
+std::once_flag packages_once;
+std::mutex packages_lock;
+
+bool ReadImage(u64 offset, std::size_t length, void* out) {   // as msr_romfs_file reads
+    if (layered) return layered->Read(offset, length, static_cast<u8*>(out)) == length;
+    return g_dump && offset + length <= g_romfs_size && dump_read(g_dump, g_romfs_offset + offset, out, length) == 0;
+}
+
+void IndexPackages() {
+    RomFSHeader header{};
+    if (!ReadImage(0, sizeof header, &header)) return;
+    const std::size_t dl = header.directory_metadata_table.length, fl = header.file_metadata_table.length;
+    if (!dl || !fl || dl > (64u << 20) || fl > (64u << 20)) return;
+    std::vector<u8> dirs(dl), files(fl);
+    if (!ReadImage(header.directory_metadata_table.offset, dl, dirs.data()) || !ReadImage(header.file_metadata_table.offset, fl, files.data()))
+        return;
+    const auto name_of = [](const std::vector<u8>& table, u64 at, u32 length) {
+        std::u16string n(length / 2, u'\0');
+        if (at + length <= table.size()) std::memcpy(n.data(), table.data() + at, n.size() * 2);
+        return Utf8(n);
+    };
+    struct Todo {
+        u32 dir;
+        std::string path;
+    };
+    std::vector<Todo> todo{{0, ""}};
+    for (int guard = 0; !todo.empty() && guard < 100000; ++guard) {
+        const Todo t = todo.back();
+        todo.pop_back();
+        if (t.dir + sizeof(DirectoryMetadata) > dirs.size()) continue;
+        DirectoryMetadata d{};
+        std::memcpy(&d, dirs.data() + t.dir, sizeof d);
+        for (u32 f = d.first_file_offset, g = 0; f != 0xFFFFFFFF && f + sizeof(FileMetadata) <= files.size() && g < 100000; ++g) {
+            FileMetadata m{};
+            std::memcpy(&m, files.data() + f, sizeof m);
+            const std::string name = name_of(files, f + sizeof m, m.name_length);
+            if (name.size() > 4 && name.compare(name.size() - 4, 4, ".pkg") == 0)
+                packages.push_back({header.file_data_offset + m.file_data_offset, m.file_data_length, t.path + name});
+            f = m.next_sibling_offset;
+        }
+        for (u32 c = d.first_child_directory_offset, g = 0; c != 0xFFFFFFFF && c + sizeof(DirectoryMetadata) <= dirs.size() && g < 100000; ++g) {
+            DirectoryMetadata child{};
+            std::memcpy(&child, dirs.data() + c, sizeof child);
+            todo.push_back({c, t.path + name_of(dirs, c + sizeof child, child.name_length) + "/"});
+            c = child.next_sibling_offset;
+        }
+    }
+    std::sort(packages.begin(), packages.end(), [](const Package& a, const Package& b) { return a.start < b.start; });
+}
+
+} // namespace
+
+// fs.c, after each read of the RomFS: a package read to its end gets its "where:" line
+extern "C" void msr_romfs_note_read(uint64_t offset, uint64_t length) {
+    std::call_once(packages_once, IndexPackages);
+    if (packages.empty() || !length) return;
+    auto it = std::upper_bound(packages.begin(), packages.end(), offset, [](u64 o, const Package& p) { return o < p.start; });
+    if (it == packages.begin()) return;
+    --it;
+    if (offset >= it->start + it->size) return;
+    std::scoped_lock lock{packages_lock};
+    const auto now = std::chrono::steady_clock::now();
+    if (!it->reading || offset == it->start) {
+        it->reading = true;
+        it->first = now;
+        it->got = 0;
+    }
+    it->got += std::min<u64>(length, it->start + it->size - offset);
+    if (it->got >= it->size) {
+        it->reading = false;
+        const double ms = std::chrono::duration<double, std::milli>(now - it->first).count();   // (one read: no time to tell)
+        if (ms >= 1) std::fprintf(stderr, "where: %s, %.1f MB, read in %.0f ms\n", it->path.c_str(), static_cast<double>(it->size) / 1048576.0, ms);
+        else std::fprintf(stderr, "where: %s, %.1f MB\n", it->path.c_str(), static_cast<double>(it->size) / 1048576.0);
+    }
 }

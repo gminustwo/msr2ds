@@ -7,7 +7,7 @@
 > [!IMPORTANT]
 > **Windows users:**
 > 
-> It would be very helpful to upload your log file. This can be found under user/msr-native.log
+> It would be very helpful to upload your log file. Each play session writes its own, in `user/logs/`, named by the date and time it started (the newest 10 are kept): attach the one from the session where the problem happened.
 >
 > **Android users:**
 >
@@ -209,7 +209,7 @@ Everything goes in the user folder (**Open the user folder** on the Game tab):
 | Saves an import replaced | `msr/save-backups/` |
 | Game mods | `mods/game/` |
 | Texture packs | `mods/textures/` |
-| Logs | `msr-native.log` (the game), `launcher.log`, `msr/recomp-build.log`, `msr/update.log` |
+| Logs | `logs/msr-native_<date>_<time>.log` (the game: one for each play session, the newest 10 kept), `launcher.log`, `msr/recomp-build.log`, `msr/update.log` |
 
 The native code is made from your dump: keep it for your own use.
 

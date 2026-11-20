@@ -2236,6 +2236,7 @@ void WriteDirect() {
 }
 
 // ---- Play: this program again, with the display settings ----
+static bool direct_start;   // msr_launcher_direct's (the game's log says how it was started)
 bool StartGame() {
     MsrIni::File file(Utf8(S.settings));
     const bool fullscreen = file.Bool("native", "fullscreen", false), vsync = file.Bool("native", "vsync", true);
@@ -2261,18 +2262,22 @@ bool StartGame() {
         std::scoped_lock lock{S.lock};
         if (S.gpu_driver_option && !S.gpu_driver.empty()) args.push_back("--gpu-driver=" + S.gpu_driver);
     }
-    {   // the app again, as the game (main.c logs to user/msr-native.log there); this process ends
+    {   // the app again, as the game (main.c starts its session's log there, user/logs); this process ends
         std::fprintf(stderr, "launcher: starting the game\n");
         std::vector<const char*> argv;
         for (std::size_t i = 1; i < args.size(); ++i) argv.push_back(args[i].c_str());
         msr_android_relaunch(static_cast<int>(argv.size()), argv.data());
     }
 #endif
-    const fs::path log = S.root / "user" / "msr-native.log";
-    std::error_code e;
-    fs::remove(log, e);   // each run's own log (the game writes it through this handle)
+    // The game writes its own log, one file for each session (user/logs, runtime/log.c; until 2026-11-19 this handle's
+    // user/msr-native.log, which each start wrote over), and says in it how it was started
+#ifdef _WIN32
+    _putenv_s("MSR_STARTED_BY", direct_start ? "direct" : "launcher");
+#else
+    setenv("MSR_STARTED_BY", direct_start ? "direct" : "launcher", 1);
+#endif
     Child c;
-    if (!Spawn(args, S.root, false, log, false, c)) {
+    if (!Spawn(args, S.root, false, {}, false, c)) {
         std::fprintf(stderr, "launcher: the game could not start (%s)\n", Utf8(ExePath()).c_str());
         return false;
     }
@@ -2601,6 +2606,7 @@ extern "C" int msr_launcher_main(void) {
 // main.c, --direct (msr-native-direct.exe, the direct start section): Play at once, without the launcher's window, and
 // again when the game's Restart asks; the game's exit code. The launcher when the game cannot start yet.
 extern "C" int msr_launcher_direct(void) {
+    direct_start = true;
     Setup();
     std::fprintf(stderr, "launcher: the direct start (--direct)\n");
     ReadGame();

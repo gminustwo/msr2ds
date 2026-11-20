@@ -175,6 +175,7 @@ set(MSR_NATIVE_SOURCES
   runtime/main.c runtime/kernel.c runtime/services.c runtime/fs.c runtime/dump.c runtime/gsp.c runtime/pica.c runtime/video.c
   runtime/dsp.c runtime/pica_sw.c runtime/input.c runtime/pica_vk.c runtime/pica_vsgen.c runtime/runtime.c
   runtime/stubs.c runtime/interp.c runtime/interp_full.c runtime/dispatch.cpp runtime/state.c runtime/vk_push.c runtime/vk_rp.c runtime/vk_diag.c
+  runtime/log.c
   runtime/msr/settings.cpp runtime/msr/patches.cpp runtime/msr/compositor.cpp runtime/msr/cheats.cpp runtime/msr/gui_assets.cpp runtime/msr/gui_tree.cpp runtime/msr/camera_fov.cpp runtime/msr/minimap.cpp runtime/msr/glyphs.cpp
   runtime/msr/textures.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/common/cityhash.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/msr/touch_nav.cpp
@@ -251,6 +252,13 @@ target_include_directories(msr-native PRIVATE runtime/msr/compat runtime ${SHO} 
                            ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_compile_definitions(msr-native PRIVATE _FILE_OFFSET_BITS=64 MSR_AOT_RUNTIME_SHA256="${MSR_AOT_RUNTIME_SHA256}" MSR_NATIVE
                            MSR_NATIVE_VERSION="${MSR_NATIVE_VERSION}" MSR_UPDATE_REPO="${MSR_UPDATE_REPO}")
+# The log's first line names the build's commit and date (runtime/log.c): build_info.h, brought up to date before each build
+add_custom_target(msr-build-info
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/.. -DOUT=${CMAKE_CURRENT_BINARY_DIR}/build_info.h
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/build_info.cmake
+    BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/build_info.h VERBATIM)
+add_dependencies(msr-native msr-build-info)
+target_include_directories(msr-native PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 # Saved vertex shaders (pwr_shaders.bin) stay valid while their generator is the same: its source's hash, not the build time
 file(READ ${CMAKE_CURRENT_SOURCE_DIR}/runtime/pica_vsgen.c MSR_VSGEN_TEXT)
 string(REPLACE "\r" "" MSR_VSGEN_TEXT "${MSR_VSGEN_TEXT}")
