@@ -1853,6 +1853,16 @@ static void dump_write(float paper, float peak, float knee, float desat) {   /* 
 
 int video_frame(void) {
     test_pad_frame();
+    {   /* PWR_TEST_STALL=<from s>,<every s>,<ms>: the main thread held that long now and then, from that run time on, as a
+           controller scan after a Bluetooth reconnect held it (292 ms on 2026-11-19): the game's next frame then measures
+           all of it */
+        static double from = -2, every, ms, next;
+        if (from == -2) { const char *e = getenv("PWR_TEST_STALL"); from = -1; if (e && sscanf(e, "%lf,%lf,%lf", &from, &every, &ms) != 3) from = -1; next = from; }
+        if (from >= 0 && now_s() >= next) {
+            fprintf(stderr, "test: the main thread held %.0f ms\n", ms);
+            k_sleep_ns((int64_t)(ms * 1e6)); next = now_s() + every;
+        }
+    }
     SDL_Event e; int bottom_click = 0;
     int ww, wh; SDL_GetWindowSize(win, &ww, &wh);
     const int eye_ww = stereo_mode == 2 ? ww / 2 : ww;   /* stereo at full width: one eye's window is half of it */

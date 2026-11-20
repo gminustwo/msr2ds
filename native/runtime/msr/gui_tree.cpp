@@ -200,6 +200,13 @@ void Grid(u32 o, const MsrGuiItem& base, const Clip& clip) {
 
 void Sprite(u32 o, const MsrGuiItem& base) {
     MsrGuiItem it = base;
+    // A sprite's drawn scale (+0x24, +0x28): its drawn position is the scaled picture's corner, its drawn size the
+    // picture's own. 2026-11-19, the user: the circle on the map "is off" once an area's last Metroid is gone. That ring
+    // (ef69a551) pulses from 0.3 to 0.65 of its 40x40 about one center (195, 155 in the trace: at 0.3 its corner was at
+    // 189, 149, at 0.65 at 182, 142); drawn at 40x40 from that corner it stood off down and right and never grew.
+    const float sx = F(o + 0x24), sy = F(o + 0x28);
+    if (sx > 0.f && sx < 64.f) it.w = base.w * sx;
+    if (sy > 0.f && sy < 64.f) it.h = base.h * sy;
     it.atlas = msr_gui_atlas_by_path(rd32(o + 0x114));
     if (it.atlas < 0) return;   // a texture not loaded here: left out
     float uv[4] = {F(o + 0x118), F(o + 0x11C), 0.f, 0.f};
