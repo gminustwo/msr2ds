@@ -1129,6 +1129,11 @@ extern "C" void msr_world_scale(float* sx, float* sy) {
     *sy = P::ViewScale() * zoom;
 }
 
+extern "C" void msr_ui_scale(float* sx, float* sy) {
+    *sx = P::ViewScaleV();
+    *sy = P::ViewScale();
+}
+
 extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned buttons, float ww, float wh,
                             MsrFrame* out) {
     quads.clear();

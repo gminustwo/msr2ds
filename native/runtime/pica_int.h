@@ -73,6 +73,10 @@ typedef struct { uint32_t addr, stride; uint8_t type, n, dst, loader; } FetchOp;
 int pica_fetch_ops(FetchOp *op, V4 *def);   /* ops of the current draw (at most 48) and every attribute's default; -1 in immediate mode */
 int pica_num_attrs(void);                          /* attribute count of the current draw (array or immediate mode) */   /* attributes of one vertex (before the input permutation); returns count */
 
+/* pica_sw.c: the top screen's interface in a wider view (Samus Returns' single screen) */
+int  pica_top_ui(void);
+void pica_top_ui_scale(const Vtx *shaded, const uint32_t *slots, uint32_t count, float *msx, float *msy);
+
 /* pica_vk.c */
 int  pica_vk_enabled(void);             /* hardware renderer active (PWR_RENDERER != sw and Vulkan 1.3 present) */
 int  pica_vk_gpu_vs(void);              /* vertex shaders run on the GPU (default; PWR_VK_CPU_VS=1 shades on the CPU) */

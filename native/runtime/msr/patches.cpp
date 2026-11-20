@@ -171,4 +171,5 @@ extern "C" void msr_patches_module_loaded(void) {
     rt_code_patchable(Unchecked, static_cast<u32>(sizeof Unchecked / sizeof Unchecked[0]));
     HookNewFileDifficulty();
     WidenPackageHeap();
+    msr_draw_lists_install();
 }

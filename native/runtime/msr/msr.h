@@ -56,6 +56,7 @@ void msr_apply_patches(void);
 /* Once the native code is loaded: the functions holding the words it does not check (patches added since players
    built theirs) run on the interpreter. */
 void msr_patches_module_loaded(void);
+void msr_draw_lists_install(void);   /* the level's pieces past the 3DS's budget of 300, for the wider view (draw_lists.cpp) */
 
 /* ---- the single 16:9 screen (compositor.cpp; the emulator-based build's DrawMsrScreens) ---- */
 /* One quad over the view, in window (drawable) pixels: a region of the bottom screen (style[3] = mode 0 plain,
@@ -96,6 +97,8 @@ int  msr_menu_live(void);
 int  msr_panel_visible(void);
 /* pica_vk: the clip-space scale of the top screen's world draws (x down the screen, y across: widescreen and zoom) */
 void msr_world_scale(float *sx, float *sy);
+/* pica_sw.c: the same for the game's interface on the top screen, without the zoom (its own shape in a wider view) */
+void msr_ui_scale(float *sx, float *sy);
 int msr_world_in_play(void);   /* the compositor's "in play" (the zoom applies) */
 void msr_camera_frame(double now);   /* each VBlank: the game's camera gets the field of view the zoomed view needs (camera_fov.cpp) */
 float msr_fov_gain(float px);   /* the renderer: how much wider than the game's that field of view is, for a draw with the camera's projection (x scale px) */

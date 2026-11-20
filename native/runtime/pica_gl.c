@@ -1654,6 +1654,8 @@ static void pica_gl_draw_(const Vtx *vcache, const uint32_t *vlist_index, const 
                 if (camera) { const float g = msr_fov_gain(px); msx *= g; msy *= g; world_px = px; }
             } else if (depth && camera && world_px > 0.f && fabsf(px - world_px) < 1e-3f * world_px) {
                 msx = msy = msr_fov_gain(px);
+            } else if (!depth && vcache && pica_top_ui()) {
+                pica_top_ui_scale(vcache, vlist_slot, nvlist, &msx, &msy);   /* the game's interface (pica_sw.c) */
             }
         }
     }
