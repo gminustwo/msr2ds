@@ -13,6 +13,7 @@
 #include <pthread.h>
 
 #include "state.h"
+#include "msr/msr.h"
 #define R(i) pica_regs[i]
 
 /* ---------------- shader state ---------------- */
@@ -1008,6 +1009,36 @@ static uint32_t vstamp[65536], draw_stamp;
 static void job_shade(int id, int n) {
     for (uint32_t i = (uint32_t)id; i < nvlist; i += (uint32_t)n) vcache[vlist_slot[i]] = shade_vertex(vlist_index[i]);
 }
+
+/* Samus Returns' single screen in play: the game's own interface on the top screen (its message boxes: "Save your
+   progress?", "Use the Teleport Station?", an item's name) at its own shape in a wider view. The game draws it without
+   depth test, with its 2D shader (position, color and texture coordinates in and out; the post-processing's screen quads
+   use it too), through the scene's projection, which changes with the camera (its scale was 2 at a Teleport Station and
+   1.21 at a save station: a first version that took the scale of 2 for the interface missed the save station's box). It
+   is laid out for the 3DS top screen's 400 x 240, which the view stretches to its aspect: at 21:9 the box was 1.42 times
+   as wide (the user, 2026-11-19: "the messages boxes like that one and others should appear at their normal size even in
+   ultrawidescreen"). Its draws are squeezed as the world's are, without the zoom (msr_ui_scale), all but those across
+   the whole width (fades, the dimming behind a box), which fill the view as before, and those sampling a render target
+   (the post-processing). In play the top screen has no other draws without depth test. They are few and small, and
+   shaded on the CPU, for their corners. */
+int pica_top_ui(void) {
+    if (!msr_single() || !msr_world_in_play() || f24(R(0x041)) != 120.f || f24(R(0x043)) != 200.f || (R(0x107) & 1)) return 0;
+    if ((R(0x04F) & 7) != 3 || (R(0x242) & 15) != 2) return 0;   /* the 2D shader: 3 attributes in, 3 outputs */
+    const uint32_t tex = R(0x085) << 3;
+    return !((R(0x080) & 1) && tex >= 0x18000000u && tex < 0x18600000u);   /* not a copy of a render target (VRAM) */
+}
+void pica_top_ui_scale(const Vtx *shaded, const uint32_t *slots, uint32_t count, float *msx, float *msy) {
+    float y0 = 1e9f, y1 = -1e9f;   /* clip y runs across the screen (the top screen is turned) */
+    for (uint32_t i = 0; i < count; i++) {
+        const Vtx *v = &shaded[slots[i]];
+        if (v->pos.w <= 1e-6f) return;
+        const float y = v->pos.y / v->pos.w;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+    }
+    if (y0 <= -.98f && y1 >= .98f) return;
+    msr_ui_scale(msx, msy);
+}
 static void job_raster(int id, int n) {
     for (size_t i = 0; i < ntris; i++) raster(&tris[3 * i], &tris[3 * i + 1], &tris[3 * i + 2], id, n);
 }
@@ -1140,7 +1171,7 @@ void pica_sw_draw(int indexed) {
         idx[i] = slot;
         if (vstamp[slot] != draw_stamp) { vstamp[slot] = draw_stamp; vlist_index[nvlist] = v; vlist_slot[nvlist++] = slot; }
     }
-    if (pica_vk_enabled() && pica_vk_gpu_vs() && pica_vk_vs_ready()) { draw_debug(n, topo, idx, 0); pica_vk_draw(NULL, vlist_index, vlist_slot, nvlist, idx, n, topo); return; }
+    if (pica_vk_enabled() && pica_vk_gpu_vs() && pica_vk_vs_ready() && !pica_top_ui()) { draw_debug(n, topo, idx, 0); pica_vk_draw(NULL, vlist_index, vlist_slot, nvlist, idx, n, topo); return; }
     if (nvlist < 128) job_shade(0, 1); else pool_run(job_shade);   /* waking the pool costs more than a small draw */
     draw_debug(n, topo, idx, 1);
     if (pica_vk_enabled()) { pica_vk_draw(vcache, vlist_index, vlist_slot, nvlist, idx, n, topo); return; }
