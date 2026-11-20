@@ -27,6 +27,10 @@ int msr_smooth_packs(void);                   /* texture packs' textures filtere
 int msr_grade(float *v);                      /* brightness, contrast, saturation into v[0..2] (#25); 0 when all are 1 */
 float msr_bloom(void);                        /* the player's Bloom setting, 1 = the game's glow as drawn */
 int msr_hdr(float *peak, float *paper);       /* HDR on; its brightness in nits (0 = the display's) */
+/* stereoscopic 3D (#17): 0 off, 1 side by side at half width (each eye squeezed into half the window: 3D TVs, Acer
+   SpatialLabs), 2 side by side at full width (each eye half the window at its own shape: VR viewers, a double-wide
+   window); *depth the 3DS's 3D slider (0..1), *swap the eyes swapped (the right eye on the left) */
+int msr_stereo(float *depth, int *swap);
 int  msr_settings_save(void);           /* the overlay's player settings back into the settings file; 0 when written */
 const char *msr_settings_file(void);    /* settings.ini */
 

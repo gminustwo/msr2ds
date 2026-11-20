@@ -445,6 +445,7 @@ extern "C" void msr_overlay_start(int fullscreen, int resolution, int vsync, int
     launched.max_resolution = 10;
     launched.quick_saves = true;
     launched.bloom_option = true;
+    launched.stereo_option = true;
     launched.ultrawide_option = true;
     launched.deck_preset = SteamDeck();
     emulator = launched;

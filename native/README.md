@@ -617,10 +617,37 @@ begin_rendering: VK_ATTACHMENT_LOAD_OP_NONE and STORE_OP_NONE, where the device 
 log's `video: depth left alone by passes that don't use it: ...` says which; `PWR_VK_DEPTH_LOADSTORE=1` as before). The
 2 s `native: vk draws=...` line splits the passes and the GPU's time: `passes=N (M without depth) gpu-ms=T (passes with
 depth D, without F)`, T less D and F being the copies, read-backs and uploads between them (on the RTX 5090 at 4x about
-40% of T). Both eyes are drawn every frame (29 draws each in play, the second never shown, the 3D slider at 0 and the
+40% of T). Both eyes are drawn every frame (29 draws each in play, the second shown only with stereoscopic 3D, below; the
 model an original 3DS; reporting a 2DS changes nothing: the game never asks), and the eyes' copies feed each other's
 effects, so leaving one out would take the game's own code. Image layouts stay GENERAL (Adreno may keep such images
 uncompressed): not measured, as no phone was at hand.
+
+**Stereoscopic 3D (#17, 2026-11-19).** Samus Returns does its 3D itself: it reads the 3D slider from the shared page
+every frame (a float at 0x1FF81080; "3D on" while it is above 0 and the byte at 0x1FF81084 is 0: 0x19FFCC; the value:
+0x21B630) into its stereo camera (0x2172C4), draws both eyes (interleaved draw by draw: targets 1F08CA00 and 1F0EA600 in
+the test state), and gives the top screen a right-eye framebuffer (FrameBufferInfo +8; the format's bit 5, 0x321 here,
+the LCD's 3D mode). gsp.c keeps that framebuffer (`ScreenSource.right`) and writes the slider every VBlank: the menu's
+3D depth while video.c shows both eyes (`video_stereo`), else 0 as before, so a save state cannot keep another value.
+The presenter draws each eye's screens into an image of its own (`target`, `target_r`), the interface once into
+`ui_layer` at the same size, and hdr.frag each eye with the interface over it into its half of the swapchain image (its
+mode 0 for SDR; an sRGB swapchain is told, as it encodes what is written). Everything is laid out for one eye's window:
+at half width the whole window, squeezed into its half (3D TVs, Acer SpatialLabs); at full width half the window, whose
+shape the game's wider view then takes through `msr_compose` (VR players, a double-wide window). The mouse is taken in
+either half (`stereo_window_x`). The log says `video: stereoscopic 3D: side by side at ... width, each eye WxH` and the
+depth and eyes once they have held for a second. Measured on the test state in a 1280x720 window at half width: at 0
+the two eyes are the same picture; at 100% the right eye's picture is 20-27 px right of the left's (of a 640-px
+half), the scene behind the screen, the HUD at 0 px; at full width (2560x720) and 50%, 19-27 px of a 1280-px eye. With
+3D off the picture is unchanged (diffed against the previous build at the same moment: only what moves differs). The
+Vulkan presenter only: with OpenGL the log says so and the slider stays at 0. The camera zoom and the wider view
+(camera_fov.cpp) scale the picture in clip space, and the parallax with it; not compensated.
+
+**The Bloom setting and the GPU's bloom chain (2026-11-19).** `bloom_scale` lowers the glow pass's constant for draws
+that sample a scaled DisplayTransfer's output (`bloom_out`). Only the CPU's path (`pica_vk_display_transfer`) noted
+those; a chain done on the GPU (`pica_vk_transfer_gpu`) without ever taking that path was not, and its glow stayed at
+full strength whatever the setting. In the test state the left eye's chain was noted and the right eye's was not: with
+Bloom at 0 the right eye came out 1.49x brighter on average (1.000 with `PWR_VK_NO_GPUCOPY=1`, and with only that
+chain's transfers on the CPU). Both paths note them now (`bloom_out_note`, the 16 most recent, as the game's buffers
+can move between areas; pica_gl.c the same). OpenGL's picture is unchanged (the same mean brightness before and after).
 
 **The lighting setup per material, not with Qualcomm's Adreno driver (#37, #58, 2026-11-17).** 2.0.9 built each material's lighting setup
 into its fragment shader (pica_int.h `pica_sc_light`: specialisation constants 30-37), which took the scene's GPU time

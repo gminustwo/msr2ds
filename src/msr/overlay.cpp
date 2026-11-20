@@ -433,6 +433,9 @@ void PlayerSettings::Load(const QString& path) {
     brightness = std::clamp(file.value(QStringLiteral("brightness"), brightness).toFloat(), .5f, 1.5f);
     contrast = std::clamp(file.value(QStringLiteral("contrast"), contrast).toFloat(), .5f, 1.5f);
     saturation = std::clamp(file.value(QStringLiteral("saturation"), saturation).toFloat(), .5f, 1.5f);
+    stereo = std::clamp(file.value(QStringLiteral("stereo"), stereo).toInt(), 0, static_cast<int>(StereoNames.size()) - 1);
+    stereo_depth = std::clamp(file.value(QStringLiteral("stereo_depth"), stereo_depth).toFloat(), StereoDepthMin, 1.f);
+    stereo_swap = file.value(QStringLiteral("stereo_swap"), stereo_swap).toBool();
     if (std::find(FrameRate::Choices.begin(), FrameRate::Choices.end(), frame_rate) ==
         FrameRate::Choices.end()) {
         frame_rate = 60;
@@ -477,6 +480,9 @@ void PlayerSettings::Save(const QString& path) const {
     file.setValue(QStringLiteral("brightness"), brightness);
     file.setValue(QStringLiteral("contrast"), contrast);
     file.setValue(QStringLiteral("saturation"), saturation);
+    file.setValue(QStringLiteral("stereo"), stereo);
+    file.setValue(QStringLiteral("stereo_depth"), stereo_depth);
+    file.setValue(QStringLiteral("stereo_swap"), stereo_swap);
     file.setValue(QStringLiteral("unlock_galleries"), unlock_galleries);
     file.setValue(QStringLiteral("unlock_fusion_mode"), unlock_fusion_mode);
     file.setValue(QStringLiteral("unlock_hard_mode"), unlock_hard_mode);
@@ -515,6 +521,9 @@ void PlayerSettings::Publish() const {
     P::brightness = brightness;
     P::contrast = contrast;
     P::saturation = saturation;
+    P::stereo = stereo;
+    P::stereo_depth = stereo_depth;
+    P::stereo_swap = stereo_swap;
     FrameRate::target = frame_rate;
     Cheats::enabled = (unlock_galleries ? Cheats::Galleries : 0u) |
                       (unlock_fusion_mode ? Cheats::FusionMode : 0u) |
@@ -1702,6 +1711,32 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                                       static_cast<int>(e.display_peak), static_cast<int>(e.display_paper));
                         Note(note);
                     }
+                }
+            }
+            if (e.stereo_option) {   // msr-native: stereoscopic 3D (#17), the presenter's (video.c) with Vulkan only
+                const bool vulkan = e.renderer_active != 2;
+                row("Stereoscopic 3D");
+                ImGui::BeginDisabled(!vulkan);
+                if (ImGui::Combo("##stereo", &p.stereo, StereoNames.data(), static_cast<int>(StereoNames.size()))) {
+                    player_changed = true;
+                }
+                ImGui::EndDisabled();
+                Note(!vulkan ? "Needs Vulkan: set Graphics API to Automatic or Vulkan, then restart."
+                             : "The game's own 3D, as a 3DS shows it with its 3D slider up, for 3D TVs, Acer SpatialLabs "
+                               "displays and VR headsets. Half width squeezes each eye into half the screen (3D TVs, "
+                               "SpatialLabs). Full width gives each eye half the window at its own shape (VR players, "
+                               "a window twice as wide).");
+                if (p.stereo && vulkan) {
+                    row("3D depth");
+                    int depth = static_cast<int>(std::lround(p.stereo_depth * 100.f));
+                    if (ImGui::SliderInt("##stereodepth", &depth, static_cast<int>(StereoDepthMin * 100.f), 100, "%d%%")) {
+                        p.stereo_depth = static_cast<float>(depth) / 100.f;
+                        player_changed = true;
+                    }
+                    row("Swap eyes");
+                    player_changed |= OnOff("##stereoswap", &p.stereo_swap);
+                    Note("3D depth is the 3DS's 3D slider. Swap eyes puts the right eye's picture on the left, for "
+                         "cross-eyed viewing or a display that takes the eyes the other way round.");
                 }
             }
             if (e.bloom_option) {   // msr-native's picture: anti-aliasing, texture packs' filtering, colour (#51, #25)

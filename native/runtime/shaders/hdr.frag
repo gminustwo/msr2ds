@@ -2,11 +2,12 @@
 // HDR output (video.c): the game's picture, drawn in SDR as usual, with its highlights (lights, beams, the glow) expanded
 // towards the display's peak, and the interface layer over it at paper white (the HUD pieces, menus and the settings
 // stay as bright as Windows shows SDR content). Written to an HDR10 swapchain (PQ, BT.2020) or an scRGB one (linear
-// BT.709, 1.0 = 80 nits).
+// BT.709, 1.0 = 80 nits). Also SDR (mode 0): stereoscopic 3D (#17) draws each eye's picture with the interface over it
+// into its half of the window, one quad per eye.
 layout(push_constant) uniform P {
-    vec4 dst;      // present.vert's quad: the whole target
+    vec4 dst;      // present.vert's quad: the whole target, or an eye's half
     vec4 src;
-    ivec4 mode;    // x: 1 HDR10, 2 scRGB
+    ivec4 mode;    // x: 0 SDR, 1 HDR10, 2 scRGB; y (SDR): 1 the swapchain is sRGB (it encodes what is written)
     vec4 extra;    // x: paper white (nits), y: peak (nits), z: the knee (SDR level where the expansion starts), w: how far
                    // the expanded light moves toward white
 } p;
@@ -39,8 +40,19 @@ vec3 pq(vec3 nits) {
     return pow((c1 + c2 * y) / (1.0 + c3 * y), vec3(m2));
 }
 
+// sRGB's own curve, so that an sRGB swapchain's encoding gives back the gamma-encoded values written
+vec3 srgb_decode(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+
 void main() {
     vec4 u = texture(ui, uv);
+    if (p.mode.x == 0) {   // SDR: the interface over the picture, as it is drawn straight into the picture without 3D
+        vec3 c = texture(game, uv).rgb * (1.0 - u.a) + u.rgb;
+        o = vec4(p.mode.y == 1 ? srgb_decode(c) : c, 1.0);
+        return;
+    }
     // the highlights expand where the interface leaves the picture showing: under its cards and dims (the file select's,
     // the pause menu's; from a quarter of coverage, smoothly below) the picture stays at its SDR level, so they darken
     // it as in SDR (2026-11-03, the user: the file select's background was "not contrasted enough"; expanded first, a

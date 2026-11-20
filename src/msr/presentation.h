@@ -102,6 +102,11 @@ inline std::atomic<bool> smooth_packs{false};
 inline std::atomic<float> brightness{1.f};
 inline std::atomic<float> contrast{1.f};
 inline std::atomic<float> saturation{1.f};
+/// msr-native's stereoscopic 3D (#17): 0 off, 1 side by side at half width, 2 at full width (PlayerSettings::stereo);
+/// the 3DS's 3D slider (0..1) and the eyes swapped.
+inline std::atomic<int> stereo{0};
+inline std::atomic<float> stereo_depth{1.f};
+inline std::atomic<bool> stereo_swap{false};
 
 /// What the bottom screen is showing, classified from its pixels by the renderer.
 enum class Bottom : int {

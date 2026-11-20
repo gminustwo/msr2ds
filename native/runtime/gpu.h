@@ -12,8 +12,9 @@ static inline uint32_t pa_to_va(uint32_t pa) {
 
 enum { GSP_IRQ_PSC0, GSP_IRQ_PSC1, GSP_IRQ_VBLANK_TOP, GSP_IRQ_VBLANK_BOTTOM, GSP_IRQ_PPF, GSP_IRQ_P3D, GSP_IRQ_DMA };
 
-/* one screen as the LCD scans it out; filled by gsp_vblank() */
-typedef struct { uint32_t addr, stride, format; int valid; } ScreenSource;
+/* one screen as the LCD scans it out; filled by gsp_vblank(). right: the top screen's right-eye framebuffer (stereoscopic
+   3D, #17), 0 when the game gives none */
+typedef struct { uint32_t addr, stride, format; int valid; uint32_t right; } ScreenSource;
 
 void gsp_hang_report(void);                                     /* GX/interrupt queue state (stderr), with k_hang_report */
 void gsp_vblank(void);                                         /* host 60 Hz tick: framebuffer swaps + VBlank irqs */
@@ -68,6 +69,7 @@ void k_game_thread(void);                /* kernel.c: the calling thread is one 
 void msr_overlay_start(int fullscreen, int resolution, int vsync, int volume, int aniso, int fsr,
                        int power_saving);   /* msr/overlay_host.cpp */   /* before video_init: above 60, frames are presented without waiting for the display (mailbox) */
 int  video_frame(void);                                        /* present current screens; 0 when the window closed */
+int  video_stereo(void);                                       /* stereoscopic 3D shown now (both eyes): its mode, else 0 */
 void video_shutdown(void);
 
 /* main.c: what the main thread (the window, VBlank, presenting) and the GX thread (the PICA renderer) are doing, for the

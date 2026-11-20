@@ -317,10 +317,19 @@ static VkPipelineLayout play;
 static VkPipeline pipe, pipe_easu, pipe_rcas, pipe_rgba, pipe_msr;   /* pipe_msr: Samus Returns' compositor (msr.vert/msr.frag, play_msr) */
 static VkPipeline pipe_ui, pipe_msr_ui;   /* the same into the HDR interface layer (coverage in alpha) */
 static VkDescriptorSetLayout dsl_hdr; static VkPipelineLayout play_hdr; static VkPipeline pipe_hdr; static VkFormat pipe_hdr_fmt;
-static Img ui_layer;   /* HDR: the interface, over the game (premultiplied, gamma-encoded) */
+static Img ui_layer;   /* HDR, stereo: the interface, over the game (premultiplied, gamma-encoded) */
 static VkPipelineLayout play_msr;   /* screens/overlay; FSR upscale into fsr_tmp; FSR sharpen; un-rotate into hi_scr */
-static Img fsr_tmp[2], hi_scr[2], tex_toast;   /* FSR intermediates (top, bottom); the screens at the 3D internal resolution (pica_vk
-                                                  scan-out, screen-oriented); the layout label */
+static Img fsr_tmp[3], hi_scr[3], tex_toast;   /* FSR intermediates (top, bottom, the right eye's top); the screens at the 3D
+                                                  internal resolution (pica_vk scan-out, screen-oriented; [2] the right eye's
+                                                  top screen); the layout label */
+/* Stereoscopic 3D (#17): the game draws both eyes (gsp.c raises its 3D slider while video_stereo says so) and the
+   presenter draws each eye's screens into an image of its own (target: the left eye, target_r: the right), the
+   interface once into ui_layer at the same size, and hdr.frag each eye with the interface over it into its half of the
+   swapchain image. Everything is laid out for one eye's window (eye_w x the height): at half width, the whole window,
+   squeezed into its half (3D TVs, Acer SpatialLabs); at full width, half the window at its own shape (VR players, a
+   double-wide window: the game's wider view follows that shape). The mouse is taken in either half (stereo_window_x). */
+static int stereo_mode;   /* as the swapchain's images were made: 0 off, 1 half width, 2 full width (msr_stereo) */
+static Img target_r;
 int pica_vk_scanout(uint32_t addr, VkImageView *view, uint32_t *w, uint32_t *h);
 void pica_vk_scan_lock(int on);
 static VkBuffer up_buf; static VkDeviceMemory up_mem; static uint8_t *up_ptr;   /* uploads: screens, then the layout label */
@@ -545,6 +554,18 @@ static void hdr_detect(void) {
 }
 /* HDR wanted now: the player's setting, on a display in HDR mode */
 static int hdr_wanted(void) { float pk, pp; return msr_hdr(&pk, &pp) && hdr_option == 2 && gpu_ok && vk13; }
+/* stereoscopic 3D wanted now: the player's setting, with the GPU presenter and the hardware renderer (the right eye's
+   picture is pica_vk's scan-out image) */
+static int stereo_wanted(void) { float d; int s; return gpu_ok && vk_hw ? msr_stereo(&d, &s) : 0; }
+int video_stereo(void) { return stereo_mode; }
+/* one eye's window: its width in swapchain pixels (its height is the swapchain's) */
+static uint32_t eye_w(void) { return stereo_mode == 2 ? (sc_extent.width > 1 ? sc_extent.width / 2 : 1) : sc_extent.width; }
+/* stereo: a window x (the mouse) -> one eye's window, the same in either half */
+static int stereo_window_x(int x, int ww) {
+    if (!stereo_mode || ww < 2) return x;
+    const int half = ww / 2, xi = x >= half ? x - half : x;
+    return stereo_mode == 1 ? xi * 2 : xi;
+}
 
 static int create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps; vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, surf, &caps);
@@ -608,11 +629,21 @@ static int create_swapchain(void) {
     }
     sc_bgra = sc_format == VK_FORMAT_B8G8R8A8_UNORM || sc_format == VK_FORMAT_B8G8R8A8_SRGB;
     for (int i = 0; i < MAX_IMAGES; i++) if (sc_views[i]) { if (g_vk_rp) vk_rp_forget(sc_views[i]); vkDestroyImageView(dev, sc_views[i], NULL); sc_views[i] = VK_NULL_HANDLE; }
-    if (gpu_ok) {   /* the window-sized image the presenter draws into */
-        img_free(&target); img_free(&ui_layer);
-        if (img_make(&target, sc_extent.width, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return -1;
-        if (hdr_mode) {   /* HDR: the interface layer, views of the swapchain images (hdr.frag draws into them), the pipeline for this format */
-            if (img_make(&ui_layer, sc_extent.width, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) return -1;   /* (copied: PWR_HDR_DUMP) */
+    if (gpu_ok) {   /* the window-sized image the presenter draws into (stereo: one per eye, each eye_w wide) */
+        img_free(&target); img_free(&target_r); img_free(&ui_layer);
+        stereo_mode = stereo_wanted();
+        const uint32_t ew = eye_w();
+        if (img_make(&target, ew, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return -1;
+        if (stereo_mode && img_make(&target_r, ew, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return -1;
+        {   /* the log: stereo's layout as made (its depth and eyes: video_frame, as they change) */
+            static int told = -1;
+            if (stereo_mode) fprintf(stderr, "video: stereoscopic 3D: side by side at %s width, each eye %ux%u\n", stereo_mode == 2 ? "full" : "half", ew, sc_extent.height);
+            else if (told > 0) fprintf(stderr, "video: stereoscopic 3D off\n");
+            else if (told < 0) { float d; int s; if (msr_stereo(&d, &s)) fprintf(stderr, "video: stereoscopic 3D chosen, not shown: it needs the hardware renderer\n"); }
+            told = stereo_mode;
+        }
+        if (hdr_mode || stereo_mode) {   /* HDR, stereo: the interface layer, views of the swapchain images (hdr.frag draws into them), the pipeline for this format */
+            if (img_make(&ui_layer, ew, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) return -1;   /* (copied: PWR_HDR_DUMP) */
             for (uint32_t i = 0; i < sc_count; i++) {
                 VkImageViewCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = sc_images[i], .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sc_format,
                     .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
@@ -624,8 +655,10 @@ static int create_swapchain(void) {
                 ;
                 if (pipe_hdr) vkDestroyPipeline(dev, pipe_hdr, NULL);
                 pipe_hdr = make_pipe_ex(present_vert, sizeof present_vert, fs_hdr, sizeof fs_hdr, sc_format, play_hdr, 2); pipe_hdr_fmt = sc_format;
-                if (!pipe_hdr) { fprintf(stderr, "video: HDR pipeline failed\n"); return -1; }
+                if (!pipe_hdr) { fprintf(stderr, "video: %s pipeline failed\n", hdr_mode ? "HDR" : "stereoscopic 3D"); return -1; }
             }
+        }
+        if (hdr_mode) {
             if (has_hdr_metadata) {   /* what the game's picture reaches: the display tone-maps the rest */
                 PFN_vkSetHdrMetadataEXT set = (PFN_vkSetHdrMetadataEXT)vkGetDeviceProcAddr(dev, "vkSetHdrMetadataEXT");
                 float pk, pp; msr_hdr(&pk, &pp); if (pk <= 0) pk = disp_peak; if (pp <= 0) pp = disp_paper;
@@ -1761,7 +1794,8 @@ int video_frame(void) {
     test_pad_frame();
     SDL_Event e; int bottom_click = 0;
     int ww, wh; SDL_GetWindowSize(win, &ww, &wh);
-    Rect rt, rb; layout_rects(ww, wh, &rt, &rb);   /* window coordinates for touch; the drawing below uses drawable pixels */
+    const int eye_ww = stereo_mode == 2 ? ww / 2 : ww;   /* stereo at full width: one eye's window is half of it */
+    Rect rt, rb; layout_rects(eye_ww, wh, &rt, &rb);   /* window coordinates for touch; the drawing below uses drawable pixels */
     int dw0, dh0; drawable_size(&dw0, &dh0);
     float msx = ww > 0 ? (float)dw0 / (float)ww : 1.f, msy = wh > 0 ? (float)dh0 / (float)wh : 1.f;   /* the overlay's mouse: drawable pixels */
     /* (the stages: main.c's long-frame lines) */
@@ -1796,6 +1830,8 @@ int video_frame(void) {
             }
         }
         if (e.type == SDL_CONTROLLERBUTTONDOWN && !g_input_none) pad_used(pad_of(e.cbutton.which));   /* the settings name its buttons too */
+        if (e.type == SDL_MOUSEMOTION) e.motion.x = stereo_window_x(e.motion.x, ww);   /* stereo: in one eye's window */
+        else if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) e.button.x = stereo_window_x(e.button.x, ww);
         if (msr_overlay_event(&e, msx, msy)) continue;
         switch (e.type) {
         case SDL_QUIT: return 0;
@@ -1904,7 +1940,7 @@ int video_frame(void) {
             if (!rb.on || rb.w < 1 || rb.h < 1) { input_touch(0, -1, -1); break; }
             if (e.type == SDL_MOUSEBUTTONDOWN && inside) bottom_click = 1;
             int fx, fy;   /* the pause screen fitted to the window: its pieces where they are drawn (msr/compositor.cpp) */
-            if (effective_layout() == L_SINGLE && msr_panel_touch((float)mx, (float)my, (float)ww, (float)wh, &fx, &fy)) input_touch(down, fx, fy);
+            if (effective_layout() == L_SINGLE && msr_panel_touch((float)mx, (float)my, (float)eye_ww, (float)wh, &fx, &fy)) input_touch(down, fx, fy);
             else input_touch(down, (int)((mx - rb.x) * BOT_W / rb.w), (int)((my - rb.y) * SCR_H / rb.h));
             break; }
         case SDL_MOUSEWHEEL: {   /* the wheel changes beams (down: the next, up: the one before), a notch at a time: each
@@ -1979,13 +2015,30 @@ int video_frame(void) {
         if (m) { static char shown[64]; snprintf(shown, sizeof shown, "%s", m); toast_text = shown; toast_until = now_s() + 2.0; toast_dirty = 1; }
     }
 #ifdef MSR_OPENGL
-    if (use_gl) return gl_frame(dw, dh, &top, &bottom);
+    if (use_gl) {
+        static int told; float d; int s;
+        if (!told && msr_stereo(&d, &s)) { told = 1; fprintf(stderr, "video: stereoscopic 3D chosen, not shown: it needs Vulkan\n"); }
+        return gl_frame(dw, dh, &top, &bottom);
+    }
 #endif
     {   /* HDR: the display's state when the settings open (Windows' "Use HDR" may have changed), the player's setting */
         static int was_visible; int vis = msr_overlay_visible();
         if (vis && !was_visible) { stage_set(STAGE_MAIN, "checking for HDR (DXGI, the display configuration)"); hdr_detect(); }
         was_visible = vis;
         if (swap && gpu_ok && hdr_wanted() != (hdr_mode != 0)) { if (recreate_swapchain()) return 0; }
+    }
+    {   /* stereoscopic 3D turned on, off or to the other width: the eyes' images again (create_swapchain); its depth and
+           eyes in the log once they have held for a second (not each step of the menu's slider) */
+        if (swap && gpu_ok && stereo_wanted() != stereo_mode) { if (recreate_swapchain()) return 0; }
+        static float told_depth = -1, seen_depth = -1; static int told_swap = -1, seen_swap = -1; static double seen_at;
+        float d; int s;
+        if (stereo_mode && msr_stereo(&d, &s)) {
+            if (d != seen_depth || s != seen_swap) { seen_depth = d; seen_swap = s; seen_at = now_s(); }
+            else if ((d != told_depth || s != told_swap) && now_s() - seen_at >= 1.0) {
+                fprintf(stderr, "video: stereoscopic 3D depth %d%% (the 3DS's 3D slider), eyes %s\n", (int)lroundf(d * 100.f), s ? "swapped" : "as they are");
+                told_depth = d; told_swap = s;
+            }
+        }
     }
     /* minimised, the swapchain waits at size 0 (create_swapchain). SDL keeps the window's size through a minimise, so
        the size check above never sees the restore: try again once the window is back, or the picture froze for good */
@@ -2029,12 +2082,12 @@ int video_frame(void) {
        vk_swapchain.cpp, which never submits after a failed acquire). The fence stays signalled. */
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return 1;
     vkResetFences(dev, 1, &fence);
-    layout_rects((int)sc_extent.width, (int)sc_extent.height, &rt, &rb);   /* drawable pixels (differs from window size on HiDPI) */
+    layout_rects((int)eye_w(), (int)sc_extent.height, &rt, &rb);   /* drawable pixels (differs from window size on HiDPI); stereo: one eye's window */
     /* Samus Returns' single screen: the compositor places the view (the gallery moves it aside) and lists the HUD
        pieces, menus and prompts drawn over it; the bottom screen is never drawn as a screen */
     int single = effective_layout() == L_SINGLE; MsrFrame mf = { { 0 }, { 0 }, NULL, 0 };
     msr_set_single(single);
-    msr_compose(bot_px, now_s(), input_buttons(), (float)sc_extent.width, (float)sc_extent.height, &mf);   /* classifies in every layout (the triggers' taps need it) */
+    msr_compose(bot_px, now_s(), input_buttons(), (float)eye_w(), (float)sc_extent.height, &mf);   /* classifies in every layout (the triggers' taps need it) */
     if (single) { rt = (Rect){ mf.top[0], mf.top[1], mf.top[2], mf.top[3], 1 }; rb.on = 0; }
     else mf.count = 0;
     msr_overlay_panel(single ? mf.panel : NULL);   /* the control hints go beside the menus' panel */
@@ -2045,7 +2098,7 @@ int video_frame(void) {
     vk_mark(cmdbuf, VKM_FRAME, frame_mark);   /* (vk_diag.h: where the GPU was, if it is lost) */
     if (gpu_ok && vk_hw) pica_vk_scan_lock(1);   /* until submitted: a 3D resolution change must not free a scan-out image in use */
     if (gpu_ok) {
-        float W = (float)sc_extent.width, H = (float)sc_extent.height;
+        float W = (float)eye_w(), H = (float)sc_extent.height;   /* (stereo: one eye's window) */
         memcpy(up_ptr, top_px, sizeof top_px); memcpy(up_ptr + sizeof top_px, bot_px, sizeof bot_px);
         upload(&tex_top, 0); upload(&tex_bot, sizeof top_px);
         /* the layout label's scale: by window height */
@@ -2054,7 +2107,11 @@ int video_frame(void) {
         VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
         vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
         const Img *st = hi_screen(0, &top, TOP_W), *sb = hi_screen(1, &bottom, BOT_W);
+        /* stereo: the right eye's top screen (pica_vk's scan-out of the game's right framebuffer); without one, the left's */
+        const Img *sr = NULL;
+        if (stereo_mode && top.right) { ScreenSource r = top; r.addr = top.right; sr = hi_screen(2, &r, TOP_W); }
         if (!st) st = &tex_top; if (!sb) sb = &tex_bot;
+        if (!sr) sr = st;
         const Img *sbeams = single ? beam_slots(sb) : sb;   /* R held: the beam slots before it (outside the passes) */
         const Img *smenu = single ? menu_panel(sb) : sb;    /* the menu as last seen */
         const Img *satlas[MSR_ATLAS_COUNT];   /* the game's atlases (its sprites and fonts) */
@@ -2065,30 +2122,40 @@ int video_frame(void) {
             text(toast_px, w, h, (w - 8 * ks * (int)strlen(toast_text)) / 2, 3 * ks, toast_text, 0xffffff, ks);
             memcpy(up_ptr + UP_TOAST, toast_px, (size_t)w * h * 4); upload(&tex_toast, UP_TOAST); toast_dirty = 0;
         }
-        int fsr = opt_filter == F_FSR;
-        if (fsr) { vk_mark(cmdbuf, VKM_FSR, frame_mark); fsr_upscale(0, st, &rt); fsr_upscale(1, sb, &rb); }
-        vk_mark(cmdbuf, VKM_SCREENS, frame_mark);
-        begin_pass(&target, VK_ATTACHMENT_LOAD_OP_CLEAR);
+        const int fsr = opt_filter == F_FSR, layered = hdr_mode || stereo_mode, eyes = stereo_mode ? 2 : 1;
+        Rect rt_r = rt;   /* (FSR rounds each to whole pixels) */
         if (fsr) {
-            float et[4] = { opt_sharp, 0, rt.x, rt.y }, eb[4] = { opt_sharp, 0, rb.x, rb.y };
-            if (rt.on) gpu_quad(pipe_rcas, &fsr_tmp[0], rt, W, H, 0, 0, et);
-            if (rb.on) gpu_quad(pipe_rcas, &fsr_tmp[1], rb, W, H, 0, 0, eb);
-        } else {
-            int f = opt_filter == F_NEAREST ? 0 : opt_filter == F_SHARP ? 2 : opt_filter == F_FXAA ? 4 : 1;
-            /* a screen decoded on the CPU (no copy at the internal resolution: hi_screen) gets FXAA and the colours here */
-            float g[4]; const int grade = msr_grade(g), fx = msr_fxaa();
-            const int ft = st == &tex_top && fx ? 4 : f, fb = sb == &tex_bot && fx ? 4 : f;
-            gpu_quad_view(pipe, st->view, st->w, st->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, rt, W, H, ft, 0, g, grade && st == &tex_top);
-            gpu_quad_view(pipe, sb->view, sb->w, sb->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, rb, W, H, fb, 0, g, grade && sb == &tex_bot);
+            vk_mark(cmdbuf, VKM_FSR, frame_mark);
+            fsr_upscale(0, st, &rt); fsr_upscale(1, sb, &rb);
+            if (stereo_mode) fsr_upscale(2, sr, &rt_r);
         }
-        if (hdr_mode) {   /* HDR: the interface goes into its own layer, at paper white in hdr.frag */
-            end_pass();
-            barrier_img(target.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
-            begin_pass_a(&ui_layer, VK_ATTACHMENT_LOAD_OP_CLEAR, 0);
+        /* each eye's screens into its picture (without stereo, target alone); the bottom screen's is both eyes' */
+        for (int eye = 0; eye < eyes; eye++) {
+            const Img *s_top = eye ? sr : st; const Rect r_top = eye ? rt_r : rt;
+            Img *dst = eye ? &target_r : &target;
+            vk_mark(cmdbuf, VKM_SCREENS, frame_mark);
+            begin_pass(dst, VK_ATTACHMENT_LOAD_OP_CLEAR);
+            if (fsr) {
+                float et[4] = { opt_sharp, 0, r_top.x, r_top.y }, eb[4] = { opt_sharp, 0, rb.x, rb.y };
+                if (r_top.on) gpu_quad(pipe_rcas, &fsr_tmp[eye ? 2 : 0], r_top, W, H, 0, 0, et);
+                if (rb.on) gpu_quad(pipe_rcas, &fsr_tmp[1], rb, W, H, 0, 0, eb);
+            } else {
+                int f = opt_filter == F_NEAREST ? 0 : opt_filter == F_SHARP ? 2 : opt_filter == F_FXAA ? 4 : 1;
+                /* a screen decoded on the CPU (no copy at the internal resolution: hi_screen) gets FXAA and the colours here */
+                float g[4]; const int grade = msr_grade(g), fx = msr_fxaa();
+                const int ft = s_top == &tex_top && fx ? 4 : f, fb = sb == &tex_bot && fx ? 4 : f;
+                gpu_quad_view(pipe, s_top->view, s_top->w, s_top->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, r_top, W, H, ft, 0, g, grade && s_top == &tex_top);
+                gpu_quad_view(pipe, sb->view, sb->w, sb->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, rb, W, H, fb, 0, g, grade && sb == &tex_bot);
+            }
+            if (layered) {   /* HDR, stereo: the interface goes into its own layer (HDR: at paper white in hdr.frag) */
+                end_pass();
+                barrier_img(dst->img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+            }
         }
+        if (layered) begin_pass_a(&ui_layer, VK_ATTACHMENT_LOAD_OP_CLEAR, 0);
         if (mf.count) {
             vk_mark(cmdbuf, VKM_HUD, frame_mark);
-            vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, hdr_mode ? pipe_msr_ui : pipe_msr);
+            vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, layered ? pipe_msr_ui : pipe_msr);
             for (int i = 0; i < mf.count; i++) {
                 const int source = mf.quads[i].source;
                 const int a = mf.quads[i].atlas;
@@ -2098,11 +2165,11 @@ int video_frame(void) {
             }
         }
         if (!msr_overlay_visible() && now_s() < toast_until && tex_toast.img)   /* layout label, top centre (pixel for pixel) */
-            gpu_quad(hdr_mode ? pipe_ui : pipe, &tex_toast, (Rect){ floorf((W - (float)tex_toast.w) / 2), 12, (float)tex_toast.w, (float)tex_toast.h, 1 }, W, H, 0, 1, NULL);
+            gpu_quad(layered ? pipe_ui : pipe, &tex_toast, (Rect){ floorf((W - (float)tex_toast.w) / 2), 12, (float)tex_toast.w, (float)tex_toast.h, 1 }, W, H, 0, 1, NULL);
         vk_mark(cmdbuf, VKM_MENU, frame_mark);
-        msr_overlay_draw(cmdbuf, sc_extent.width, sc_extent.height);   /* the settings, the FPS counter, the hints: last */
+        msr_overlay_draw(cmdbuf, eye_w(), sc_extent.height);   /* the settings, the FPS counter, the hints: last */
         end_pass();
-        if (hdr_mode) {
+        if (layered) {   /* HDR, stereo: each eye's picture with the interface over it, into the swapchain image (stereo: its half) */
             barrier_img(ui_layer.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
             barrier_img(sc_images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
             vk_mark(cmdbuf, VKM_HDR, frame_mark);
@@ -2112,16 +2179,24 @@ int video_frame(void) {
                hdr.frag expand(); PWR_HDR_KNEE, PWR_HDR_DESAT for comparisons */
             static float knee = -1, desat;
             if (knee < 0) { const char *k = getenv("PWR_HDR_KNEE"), *d = getenv("PWR_HDR_DESAT"); knee = k ? (float)atof(k) : 0.75f; desat = d ? (float)atof(d) : 0.5f; }
-            Push hp = { { -1, -1, 1, 1 }, { W, H, 1, 1 }, { hdr_mode, 0, 0, 0 }, { pp, pk > pp ? pk : pp, knee, desat } };
-            VkDescriptorImageInfo ii[2] = { { smp_linear, target.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }, { smp_linear, ui_layer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } };
-            VkWriteDescriptorSet wds[2] = { { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[0] },
-                                            { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[1] } };
+            const float extra[4] = { pp, pk > pp ? pk : pp, knee, desat };
+            /* SDR (stereo without HDR): hdr.frag's mode 0, which an sRGB swapchain needs told (it encodes what is written) */
+            const int srgb = !hdr_mode && (sc_format == VK_FORMAT_B8G8R8A8_SRGB || sc_format == VK_FORMAT_R8G8B8A8_SRGB);
+            float depth; int swap_eyes = 0;
+            if (stereo_mode) msr_stereo(&depth, &swap_eyes);
             vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_hdr);
-            vk_push(&push_arena, cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, play_hdr, 0, 2, wds);
-            vkCmdPushConstants(cmdbuf, play_hdr, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof hp, &hp);
-            vkCmdDraw(cmdbuf, 4, 1, 0, 0);
+            for (int eye = 0; eye < eyes; eye++) {
+                const float x0 = !stereo_mode ? -1.f : (eye ^ (swap_eyes != 0)) ? 0.f : -1.f, x1 = !stereo_mode ? 1.f : x0 + 1.f;
+                Push hp = { { x0, -1, x1, 1 }, { W, H, 1, 1 }, { hdr_mode, srgb, 0, 0 }, { extra[0], extra[1], extra[2], extra[3] } };
+                VkDescriptorImageInfo ii[2] = { { smp_linear, eye ? target_r.view : target.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }, { smp_linear, ui_layer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } };
+                VkWriteDescriptorSet wds[2] = { { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[0] },
+                                                { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[1] } };
+                vk_push(&push_arena, cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, play_hdr, 0, 2, wds);
+                vkCmdPushConstants(cmdbuf, play_hdr, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof hp, &hp);
+                vkCmdDraw(cmdbuf, 4, 1, 0, 0);
+            }
             end_pass();
-            if (dump_wanted() && dump_record()) { dump_paper = hp.extra[0]; dump_peak = hp.extra[1]; dump_knee = hp.extra[2]; dump_desat = hp.extra[3]; }
+            if (hdr_mode && dump_wanted() && dump_record()) { dump_paper = extra[0]; dump_peak = extra[1]; dump_knee = extra[2]; dump_desat = extra[3]; }
             barrier_img(sc_images[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
         } else {
             barrier_img(target.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);

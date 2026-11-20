@@ -10,6 +10,7 @@
  * time and must not stall the host VBlank tick), then raises the completion interrupt. */
 #include "pica_int.h"
 #include "state.h"
+#include "msr/msr.h"
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
@@ -40,6 +41,7 @@ static void screen_from_lcd_regs(int scr) {
     uint32_t va = pa_to_va(pa);
     if (!va) return;
     screens[scr].addr = va; screens[scr].format = hw(b + 0x70) & 7; screens[scr].stride = hw(b + 0x90); screens[scr].valid = 1;
+    screens[scr].right = 0;   /* (only before the game's first swap: the boot logo) */
 }
 
 unsigned g_gsp_top_swaps;   /* top-screen framebuffer swaps = game frames */
@@ -120,6 +122,20 @@ static void push_irq(int id) {
     push_irq_now(id);
 }
 
+/* Stereoscopic 3D (#17). Samus Returns does it itself: it reads the 3D slider from the shared page every frame (a float
+   at +0x80; "3D on" when it is above 0 and the byte at +0x84 is 0: 0x19FFCC, 0x21B630) into its stereo camera
+   (0x2172C4), draws both eyes every frame, and gives the top screen a right-eye framebuffer (FrameBufferInfo +8, the
+   format's bit 5: the LCD in 3D mode). With the slider at 0 (as before) both eyes are the same picture. The slider is
+   up only while the presenter shows both eyes (video_stereo: not with OpenGL), and written every VBlank, so a save
+   state made with another value cannot keep it. */
+static uint32_t right_eye(uint32_t right, uint32_t format) { return (format & 0x20) ? right : 0; }
+static void stereo_slider(void) {
+    float depth = 0.f; int swap;
+    if (!video_stereo() || !msr_stereo(&depth, &swap)) depth = 0.f;
+    uint32_t u; memcpy(&u, &depth, 4);
+    wr32(VA_SHARED + 0x80, u);
+}
+
 /* framebuffer info for one screen: apply the pending entry if the update flag is set */
 static void take_fb_info(int screen) {
     for (int t = 0; t < nthreads; t++) {
@@ -128,6 +144,7 @@ static void take_fb_info(int screen) {
         uint32_t idx = rd8(base) & 1, e = base + 4 + 0x1Cu * idx;
         /* FrameBufferInfo: active_fb, left vaddr, right vaddr, stride, format, select, attribute */
         screens[screen].addr = rd32(e + 4); screens[screen].stride = rd32(e + 12);
+        screens[screen].right = screen ? 0 : right_eye(rd32(e + 8), rd32(e + 16));
         screens[screen].format = rd32(e + 16) & 7; screens[screen].valid = 1;
         wr8(base + 1, 0);
         screen_from_regs = 0;   /* per-frame swaps through shared memory take over from the initial LCD registers */
@@ -178,6 +195,7 @@ static int vblank_held;   /* a VBlank held back below: delivered once the worker
 static void deliver_vblank(void) {   /* under G */
     k_ev(0x21, 0, 0);
     vblank_held = 0;
+    stereo_slider();
     if (shmem && shmem->addr) { take_fb_info(0); take_fb_info(1); }
     push_irq(GSP_IRQ_VBLANK_TOP); push_irq(GSP_IRQ_VBLANK_BOTTOM);
 }
@@ -627,6 +645,7 @@ void gsp_handle(KThread *t, uint32_t *cmd, KObject *s) {
     case 0x05: { /* SetBufferSwap(screen, FrameBufferInfo) */
         int scr = cmd[1] & 1;
         screens[scr].addr = cmd[3]; screens[scr].stride = cmd[5]; screens[scr].format = cmd[6] & 7; screens[scr].valid = 1;
+        screens[scr].right = scr ? 0 : right_eye(cmd[4], cmd[6]);
         cmd[0] = HDR(5, 1, 0); cmd[1] = RES_OK; break;
     }
     case 0x0C: /* TriggerCmdReqQueue */
