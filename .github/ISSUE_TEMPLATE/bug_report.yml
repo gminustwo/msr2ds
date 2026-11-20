@@ -1,0 +1,93 @@
+name: Bug report
+description: Something crashes, freezes, looks wrong, sounds wrong or doesn't respond.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! A few details make a problem much quicker to find and fix. One problem per issue, please.
+        **Attach the session log of the play session where the problem happened**: a bug report can't be sent without it. "Session log" below says where it is.
+
+  - type: input
+    id: version
+    attributes:
+      label: msr2ds version
+      description: Shown at the bottom of the launcher's Game tab, e.g. "msr-native 2.2.0", and on the log's first line.
+      placeholder: "2.2.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows (the release zip)
+        - Steam Deck (the AppImage)
+        - Linux desktop, x86_64 (the AppImage)
+        - Linux, ARM64 (the AppImage)
+        - macOS, Apple Silicon
+        - Android (the APK)
+        - Built from source
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw or heard, and what you expected instead.
+      placeholder: "The level went purple and only Samus and the enemies were drawn."
+    validations:
+      required: true
+
+  - type: textarea
+    id: where
+    attributes:
+      label: Where, and how to make it happen
+      description: The area (or menu, cutscene, the launcher) and the moment. Does it happen every time? The steps to get there help a lot.
+      placeholder: |
+        Area 2, the Arachnus fight, when it rolls into a ball. Every time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Session log (required)
+      description: |
+        **A bug report needs the log of the play session where the problem happened.** Every start of the game writes a new log, named by the date and time it started (`msr-native_2026-11-20_09-43-50.log`), and the newest 10 are kept. If you started the game again after the problem, the newest log is from that later start: pick the one from the session where it happened, by its date and time. Drag it into this box.
+        It's in the `logs` folder of your user folder (**Open the user folder** on the launcher's Game tab opens it):
+        - **Windows**: `user\logs` next to `msr-native.exe` (or `%LOCALAPPDATA%\msr-native\user\logs` if that folder can't be written)
+        - **Steam Deck / Linux**: `~/.local/share/msr-native/user/logs`, or `user/logs` beside the AppImage if you made a `user` folder there
+        - **macOS**: `~/Library/Application Support/msr-native/user/logs`
+        - **Android**: `Android/data/io.github.gminustwo.msrnative/files/user/logs` (if the game didn't start at all, `launcher.log` in the `user` folder too)
+
+        It lists your settings, your PC, the frame rate every 30 seconds, the areas loaded, and what the game was doing in a freeze or a crash. Your home folder is written as `%USERPROFILE%` or `~`, so you can attach it as it is.
+      placeholder: "Drop msr-native_<date>_<time>.log here"
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup
+      description: Your controller (and whether you start msr2ds through Steam), your display and the aspect ratio you play at, the frame rate, a texture pack or game mods if you use them, your PC's CPU and graphics card (on Android, the phone or handheld).
+      placeholder: "Xbox controller over USB, started from Steam; 2560x1440, 16:9, 120 FPS; Metroid2HD texture pack; Ryzen 7 5800X, RTX 3070"
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots or video
+      description: For anything you can see, a screenshot or a short clip (drag it in) shows it best.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send it
+      options:
+        - label: I'm playing my own decrypted dump of the USA release (CTR-P-A9AE)
+          required: true
+        - label: The log I attached is from the play session where the problem happened, not from a later start of the game (I checked its date and time)
+          required: true
+        - label: I looked at the open issues, and this one isn't there yet

@@ -5,9 +5,9 @@
 [![Discord](https://img.shields.io/discord/1565552459299160188?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/u5SzfU66ZJ)
 
 > [!IMPORTANT]
-> **Windows users:**
+> **Bug reports:**
 > 
-> It would be very helpful to upload your log file. Each play session writes its own, in `user/logs/`, named by the date and time it started (the newest 10 are kept): attach the one from the session where the problem happened.
+> Use the **Bug report** form on [Issues](https://github.com/gminustwo/msr2ds/issues/new/choose) and attach the log of the play session where the problem happened. Each play session writes its own, in `user/logs/`, named by the date and time it started (the newest 10 are kept). [Reporting a problem](#reporting-a-problem) says where to find it on each platform.
 >
 > **Android users:**
 >
@@ -499,6 +499,39 @@ off until you turn it on.
 
 A **Randovania** seed for Samus Returns is a game mod: put the folder Randovania
 exports in `mods/game`. Randovania's tracker can't connect to the game.
+
+## Reporting a problem
+
+Open an issue on the [Issues](../../issues/new/choose) page and pick **Bug report** (or **Feature
+request** for an idea): the form asks for what helps. Please check the open issues first, and
+report one problem per issue. What to have at hand:
+
+- **The version**: at the bottom of the launcher's Game tab, e.g. "msr-native 2.2.0". Newer
+  versions may already fix it: the Game tab offers updates.
+- **What happened and where**: the area (or menu, cutscene, the launcher) and the moment,
+  whether it happens every time, and how to get there.
+- **The session log (required)**: a bug report needs the log of the play session where the
+  problem happened. Every start of the game writes a new one, named by the date and time it
+  started (the newest 10 are kept), so if you started the game again afterwards, the newest log
+  is from that later start: pick the right one by its date and time, and drag it into the issue.
+  It's in the `logs` folder of the user folder (**Open the user folder** on the Game tab):
+  - Windows: `user\logs` next to `msr-native.exe` (or `%LOCALAPPDATA%\msr-native\user\logs` if
+    that folder can't be written)
+  - Steam Deck / Linux: `~/.local/share/msr-native/user/logs`, or `user/logs` beside the
+    AppImage if you made a `user` folder there
+  - macOS: `~/Library/Application Support/msr-native/user/logs`
+  - Android: `Android/data/io.github.gminustwo.msrnative/files/user/logs` (if the game didn't
+    start at all, `launcher.log` in the `user` folder too)
+
+  It lists your settings, your PC, the frame rate every 30 seconds, the areas loaded, and what
+  the game was doing in a freeze or a crash. Your home folder is written as `%USERPROFILE%` or
+  `~`, so you can attach it as it is.
+- **Your setup**: the controller (and whether Steam starts the game), your display, aspect ratio
+  and frame rate, a texture pack or game mods if you use them.
+- **A screenshot or a short video** for anything you can see.
+
+A quick save (F5) from just before the problem can help too. It only loads with the same game
+file and game mods: mention that you have one, and we'll ask for it if needed.
 
 ## How it works
 
