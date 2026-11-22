@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include "msr.h"
 #include "msr/cheats.h"
 
@@ -159,6 +161,52 @@ void WidenPackageHeap() {
     wr32(LinearSize, LinearSizeOriginal + PackageHeapExtra);
 }
 
+// Floor contacts above 30 FPS. The collision's contact step (0x5440AC) keeps a contact only when the move goes at least
+// 0.1 into the surface: its collector's add (0x6BAEA8, vtable 0x6E76EC) takes the dot product of the contact's normal and
+// the move (the frame's displacement plus a 15-unit margin along it, +0x388) and drops the contact below +0x394, the 0.1
+// the step stores at its start (0x5440F0). The game was tuned at 30 FPS, where a body rolling along a floor goes into it
+// by its frame of gravity, 1100 dt^2 = 1.2 (1.37 with the margin). At 144 FPS that is 0.053 (0.085): Arachnus's roll in
+// the Area 2 arena (3500 a second) lost its floor contact every frame and sank 0.05 a frame, and once below the surface
+// it stayed below (47 units in a 6 s roll; the user's video of 2026-11-22, not at 30 FPS). The minimum scales with the
+// frame time squared like that drop (the step's own frame time, the first word of its parameters): 0.1 at 30 FPS, 0.0043
+// at 144. Only a minimum of exactly 0.1 changes; the collector's other user (0x43E9xx) asks for 0.6.
+// PWR_NO_CONTACT_FIX=1: the game's 0.1 at every frame rate.
+constexpr u32 ContactStep = 0x5440AC, ContactAdd = 0x6BAEA8, ContactCollectorVtable = 0x6E76EC;
+constexpr u32 ContactMinimum = 0x394, ContactMinimumBits = 0x3DCCCCCDu;   // the collector's field; 0.1f
+float contact_dt;   // the last contact step's frame time (the game's thread)
+
+float Rf(u32 address) { const u32 w = rd32(address); float f; std::memcpy(&f, &w, 4); return f; }
+
+void ContactStepHook(CPU* c) { contact_dt = Mapped(c->r[2]) ? Rf(c->r[2]) : 0.f; }
+
+void ContactAddHook(CPU* c) {
+    const float dt = contact_dt;
+    const u32 at = c->r[1] + ContactMinimum;
+    if (!(dt > 0.f && dt < .03f) || !Mapped(at) || rd32(at) != ContactMinimumBits) return;   // 30 FPS: as the game has it
+    const float scale = dt * 30.f, minimum = .1f * scale * scale;
+    u32 bits; std::memcpy(&bits, &minimum, 4);
+    wr32(at, bits);
+}
+
+void ScaleContactMinimum() {
+    // the step's push {r0-fp, ip, lr}, its collector at sp+0x10 (ldr r0, =vtable; str r0, [sp, #0x10]), its frame time
+    // check (ldr r0, [r0]; cmp r0, #0x34000000) and its vstr s0, [sp, #0x3a4] of the literal 0.1; the add's
+    // add r4, r1, #0x390 and vldmia r4, {s2, s3} (the minimum in s3)
+    if (rd32(ContactStep) != 0xE92D5FFFu || rd32(0x5440DC) != 0xE59F02D4u || rd32(0x5443B8) != ContactCollectorVtable ||
+        rd32(0x5440E0) != 0xE58D0010u || rd32(0x5440F8) != 0xE5900000u || rd32(0x544104) != 0xE350030Du ||
+        rd32(0x5440F0) != 0xED8D0AE9u || rd32(0x5443B0) != ContactMinimumBits || rd32(ContactCollectorVtable) != ContactAdd ||
+        rd32(0x6BAEAC) != 0xE2814E39u || rd32(0x6BAEC4) != 0xEC941A02u) {
+        std::fprintf(stderr, "msr: floor contacts: not this game's code, the collision keeps its 30 FPS minimum\n");
+        return;
+    }
+    if (std::getenv("PWR_NO_CONTACT_FIX")) {
+        std::fprintf(stderr, "msr: floor contacts: the game's 0.1 minimum at every frame rate (PWR_NO_CONTACT_FIX)\n");
+        return;
+    }
+    if (rt_add_call_hook(ContactStep, ContactStepHook) && rt_add_call_hook(ContactAdd, ContactAddHook))
+        std::fprintf(stderr, "msr: floor contacts: the collision's minimum follows the frame time above 30 FPS\n");
+}
+
 } // namespace
 
 // The words patchable.txt lists that native code built before them does not check: the recompiled functions holding
@@ -171,5 +219,6 @@ extern "C" void msr_patches_module_loaded(void) {
     rt_code_patchable(Unchecked, static_cast<u32>(sizeof Unchecked / sizeof Unchecked[0]));
     HookNewFileDifficulty();
     WidenPackageHeap();
+    ScaleContactMinimum();
     msr_draw_lists_install();
 }
