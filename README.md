@@ -58,7 +58,7 @@ dump and holds the settings, which are also in an in-game overlay (F1 or Select)
 - Mod support
 - Steamdeck preset mode to get 60fps performance
 - Discord Rich Presence: your Discord profile shows the area you're in and the Metroids left (on by default; a switch on the Game tab turns it off)
-- Bug reports from the launcher's REPORT tab, sent to Issues with the log of the session you choose
+- Bug reports from the REPORT tab (in the launcher and in the game's menu), sent to Issues with the log of the session you choose
 
 ## Extra controls
 
@@ -305,10 +305,11 @@ same `settings.ini`; LB and RB switch tabs.
   from the start** (all on by default) and **Fusion suit, any difficulty** (off);
   **Discord Rich Presence** (on: with the Discord app open on the same computer,
   your Discord profile shows that you're playing, the area you're in and the
-  Metroids left; not in the Android app); in the launcher, **Join the msr2ds
-  Discord**; in the game, Resume, Quick save, Quick load, Restart and Quit.
-- **Report** (the launcher only): a bug report for Issues, sent with the log of
-  the play session you choose (see [Reporting a problem](#reporting-a-problem)).
+  Metroids left; not in the Android app); **Join the msr2ds Discord**; in the
+  game, Resume, Quick save, Quick load, Restart and Quit.
+- **Report:** a bug report for Issues, sent with the log of the play session you
+  choose; in the game's menu, the session you're playing comes first (see
+  [Reporting a problem](#reporting-a-problem)).
 - **Display:** a video preset (below); fullscreen; Widescreen (16:9),
   Ultrawide (up to 32:9) and Fill 16:10 screens (the Steam Deck, most laptops,
   a Mac in fullscreen: more of the level above and below instead of bars), all
@@ -519,8 +520,9 @@ exports in `mods/game`. Randovania's tracker can't connect to the game.
 
 ## Reporting a problem
 
-The quickest way is the launcher's **REPORT** tab: choose the play session where the problem
-happened (by the date and time it started), say what happened and where, and send it. You sign in
+The quickest way is the **REPORT** tab, in the launcher or in the game's menu (F1): choose the play
+session where the problem happened (by the date and time it started; in the game, the one you're
+playing comes first), say what happened and where, and send it. You sign in
 to GitHub with a code shown there (on github.com/login/device, in your browser or on your phone;
 a free account is enough), and the report goes up under your name, so you see the replies: the
 log first (as a gist), then the issue that links it. Nothing is sent without the log. You can add

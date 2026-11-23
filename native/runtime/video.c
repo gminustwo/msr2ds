@@ -1945,10 +1945,11 @@ int video_frame(void) {
 #endif
         if (combo_event(&e)) continue;   /* Quick save or Quick load on a gamepad combo: its last button goes no further */
         /* the settings overlay: F1 and Select (its binding) open and close it; while it shows, or waits for a key or button to
-           bind, it takes the input */
+           bind, it takes the input. In a text field Select's key is the field's (Backspace by default: it closed the menu
+           while a bug report was being written) */
         if (!msr_overlay_capturing()) {
             int key_toggle = (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && (e.key.keysym.sym == SDLK_F1 ||
-                             (opt_select_layout == 2 && input_key_control(e.key.keysym.sym) == C_SELECT));
+                             (opt_select_layout == 2 && input_key_control(e.key.keysym.sym) == C_SELECT && !msr_overlay_typing()));
             int pad_toggle = (e.type == SDL_CONTROLLERBUTTONDOWN || e.type == SDL_CONTROLLERBUTTONUP) && !g_input_none &&
                              opt_select_layout == 2 && input_pad_control_now(e.cbutton.button) == C_SELECT;
             if (key_toggle || pad_toggle) {

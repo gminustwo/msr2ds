@@ -868,6 +868,7 @@ void Overlay::BuildFrame(std::uint32_t width, std::uint32_t height, void (*new_f
         DrawMenu(scale, !was_visible);
     }
     was_visible = show;
+    typing.store(show && ImGui::GetIO().WantTextInput);
     ImGui::Render();
 }
 
@@ -1341,8 +1342,8 @@ void Overlay::DrawMenu(float scale, bool appearing) {
     bool player_changed = false;
     bool emulator_changed = false;
 
-    // The launcher has an eighth page, REPORT (a bug report sent to GitHub with a session's log)
-    const int TabCount = l.active ? 8 : 7;
+    // An eighth page, REPORT (a bug report sent to GitHub with a session's log): the launcher's, and the game's menu's
+    const int TabCount = l.report_tab ? 8 : 7;
     if (tab >= TabCount) tab = 0;
     if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_PageUp, false)) {
         requested_tab = (tab + TabCount - 1) % TabCount;
@@ -1597,6 +1598,12 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 if (ImGui::Button("Restart", button)) {
                     Act(OverlayAction::Kind::Restart);
                     SetVisible(false);
+                }
+                if (!l.discord.empty()) {   // the project's Discord server, as in the launcher
+                    if (ImGui::Button("Join the msr2ds Discord", button)) {
+                        Act(OverlayAction::Kind::LauncherDiscord);
+                    }
+                    Note("Opens the invite in your browser. Bug reports go on GitHub Issues, from the REPORT tab.");
                 }
             }
             if (ImGui::Button("Quit", button)) {
@@ -1970,9 +1977,10 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                  "keeps what you have when you save.");
             end_tab_item();
         }
-        if (l.active && tab_item("Report", 7)) {
+        if (l.report_tab && tab_item("Report", 7)) {
             if (fresh) {
                 Act(OverlayAction::Kind::LauncherReportLogs);   // (the logs as they are now)
+                report_logs_pending = l.report_logs.empty();     // (the game's menu reads them when the tab first opens)
             }
             DrawReport(l, label_width, default_focus);
             end_tab_item();
@@ -2392,8 +2400,9 @@ void Overlay::DrawReport(const LauncherSnapshot& l, float label_width, const std
         if (page.rfind("https://", 0) == 0) page.erase(0, 8);
         Note(("On a phone or another computer: open " + page + " and enter the code there. Sign in with your GitHub "
               "account (a free one is enough) and allow msr2ds bug reports: it may open issues on msr2ds and make a gist "
-              "for your log, nothing else. The report goes out under your GitHub name, so you see the replies. This "
-              "launcher keeps the sign-in until it closes.").c_str());
+              "for your log, nothing else. The report goes out under your GitHub name, so you see the replies. " +
+              std::string(l.active ? "This launcher keeps the sign-in until it closes." : "The game keeps the sign-in until it closes."))
+                 .c_str());
         return;
     }
     if (l.report == Report::Sending) {
@@ -2456,12 +2465,19 @@ void Overlay::DrawReport(const LauncherSnapshot& l, float label_width, const std
             ImGui::EndCombo();
         }
         default_focus();
+        if (report_logs_pending) {   // (they came a frame after the tab opened: the list, not the button below it)
+            report_logs_pending = false;
+            ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+            ImGui::SetNavCursorVisible(true);
+        }
         ImGui::SetCursorPosX(label_width);
         if (chosen->ended_badly) wrapped(bad, chosen->detail);
         else wrapped(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), chosen->detail);
     }
-    Note("Each start of the game writes its own log, named by when it started (the newest 10 are kept). Choose the one "
-         "from the session where the problem happened, not a later start.");
+    Note(l.active ? "Each start of the game writes its own log, named by when it started (the newest 10 are kept). Choose "
+                    "the one from the session where the problem happened, not a later start."
+                  : "Each start of the game writes its own log. This session's is first: it goes up as it is now. For a "
+                    "problem in an earlier session, choose that one.");
 #ifndef __ANDROID__
     if (ImGui::Button("Open the logs folder", {-FLT_MIN, 0.f})) {
         Act(OverlayAction::Kind::LauncherReportLogsFolder);

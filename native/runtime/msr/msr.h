@@ -45,6 +45,11 @@ void msr_discord_tick(void);                  /* main.c, every 2 s on the main t
 void msr_discord_stop(void);                  /* the end: the presence cleared */
 /* The area a map folder is in, as the game's pause map names it ("s050_area5": "Area 4"), NULL for other folders */
 const char *msr_scenario_area(const char *scenario);
+/* Bug reports from the game's menu (launcher.cpp, the REPORT tab): its user folder at the start, each frame's news
+   for the menu (overlay_host.cpp), and a report under way stopped when the game closes */
+void msr_report_game_start(const char *user_dir);
+void msr_report_tick(void);
+void msr_report_stop(void);
 
 /* ---- game mods (mods.cpp, layered_fs.cpp; the launcher's Mods and Textures tabs) ---- */
 /* The user folder (ending in '/'), settings.ini and msr-native's folder; then, before the dump is read, the enabled
