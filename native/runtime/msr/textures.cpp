@@ -2,7 +2,7 @@
 // emulator-based build reads (Azahar's custom textures: tex1_<w>x<h>_<hash>_<format>.png, optionally a pack.json).
 // A texture is replaced when its hash names a file: by default the "legacy" hash, CityHash64 of the texture decoded
 // exactly as Azahar's rasterizer cache decodes it (texture_codec.h, MortonCopy without conversion: tiles into a
-// bottom-up linear buffer, the colour formats as their own bytes, the others as RGBA8); with a pack.json that sets
+// bottom-up linear buffer, the color formats as their own bytes, the others as RGBA8); with a pack.json that sets
 // use_new_hash, CityHash64 of the guest bytes. Like Azahar, the first pack's options hold for all, the first pack to
 // name a hash wins, PNGs load on worker threads (the game's own texture shows until then) and are flipped as
 // flip_png_files says (default on), and mipmaps are generated (pica_vk.c). Without libpng (MSR_HAVE_PNG) this is
@@ -122,7 +122,7 @@ void DecodeTexel(int fmt, const u8* tile, u32 x, u32 y, u8* out) {
     case 7: out[0] = out[1] = out[2] = p[0]; out[3] = 255; return;                    // I8
     case 8: out[0] = out[1] = out[2] = 0; out[3] = p[0]; return;                      // A8
     case 9: out[0] = out[1] = out[2] = Convert4To8(p[0] >> 4); out[3] = Convert4To8(p[0] & 0xF); return;   // IA4
-    default: std::memcpy(out, p, FormatBits[fmt] / 8); return;                        // the colour formats as stored
+    default: std::memcpy(out, p, FormatBits[fmt] / 8); return;                        // the color formats as stored
     }
 }
 
@@ -147,7 +147,7 @@ u64 LegacyHash(const u8* data, u32 w, u32 h, int fmt) {
 
 // ---- dumping (#64): the game's textures as PNGs a pack can be made from ----
 // The texture as RGBA8, its rows as the game stores them (top-down: the order the pack loader flips them from, by default,
-// so a dump read back as a pack gives the same texels): the colour formats converted as Azahar's texture_codec.h decodes
+// so a dump read back as a pack gives the same texels): the color formats converted as Azahar's texture_codec.h decodes
 // them for its dumps (RGBA8, RGB8, RGB5A1, RGB565, RGBA4), the others as LegacyHash has them.
 u8 Convert6To8(u8 v) { return static_cast<u8>((v << 2) | (v >> 4)); }
 std::vector<u8> DecodeRgba(const u8* data, u32 w, u32 h, int fmt) {
@@ -368,8 +368,8 @@ void OriginalSize(const fs::path& path, u32& w, u32& h) {
     if (std::sscanf(Utf8(path.filename()).c_str(), "tex1_%ux%u_", &a, &b) == 2 && a && b) { w = a; h = b; }
 }
 
-// Halves a replacement up to `times` times, never below the game's own size: each pixel the average of four, its colour
-// weighted by their alpha (transparent texels' colour, often black, then stays out of the edges)
+// Halves a replacement up to `times` times, never below the game's own size: each pixel the average of four, its color
+// weighted by their alpha (transparent texels' color, often black, then stays out of the edges)
 bool Shrink(Image& image, u32 min_w, u32 min_h, unsigned times) {
     bool any = false;
     for (; times && image.w % 2 == 0 && image.h % 2 == 0 && image.w / 2 >= min_w && image.h / 2 >= min_h; --times) {

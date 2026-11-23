@@ -1,7 +1,7 @@
 /* Push descriptors (VK_KHR_push_descriptor), or descriptor sets standing in for them where the device has none (some
  * phones' GPUs, the Android emulator): vk_push.c. The renderer (pica_vk.c) and the presenter (video.c) push their
  * descriptors through vk_push; a set layout pushed to is made with vk_push_layout_flags() and named with
- * vk_push_layout; an arena holds the stand-in sets of one submission and is reset once its fence has signalled. */
+ * vk_push_layout; an arena holds the stand-in sets of one submission and is reset once its fence has signaled. */
 #pragma once
 #include <vulkan/vulkan.h>
 

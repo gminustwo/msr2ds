@@ -6,16 +6,16 @@
  *     is the program. PWR_GL_CPU_VS=1 shades on the CPU (pica_sw.c's worker pool, pica_vk.c's PWR_VK_CPU_VS=1) with
  *     shaders/pica.vert.
  *   - shaders/pica.frag is the Vulkan renderer's, compiled as GLSL 3.30 (its Vulkan-only lines are under #ifdef VULKAN):
- *     specialised for each draw's configuration (pica_vk.c's specialisation constants, as GLSL constants) or generic
+ *     specialized for each draw's configuration (pica_vk.c's specialization constants, as GLSL constants) or generic
  *     (SC_ON 0, reading it from the uniforms: PWR_VK_NOSPEC=1 keeps to that one). Programs are compiled and linked on a
  *     thread of their own (programs, below) and kept with their binaries for the next start (pwr_gl_programs.bin).
  *   - Draws run as they come: OpenGL has no render passes, so there is nothing to gain from Vulkan's deferred replay
  *     grouped by target, and uploads simply come before the draws that follow them. A draw's data goes up in one piece
  *     (dbuf); textures, samplers and framebuffers are bound only when they change.
  *   - Render targets are textures at the internal resolution, uploaded from guest memory when its bytes changed (64-bit
- *     hash) or cleared for a MemoryFill over them. Every colour target drawn in a command list is read back at its end
+ *     hash) or cleared for a MemoryFill over them. Every color target drawn in a command list is read back at its end
  *     (filtered to 1x) into a pixel buffer of its own, without waiting; its bytes reach guest memory when something
- *     reads them (a GX command, a texture over them, the VBlank once its fence has signalled, a save state), as
+ *     reads them (a GX command, a texture over them, the VBlank once its fence has signaled, a save state), as
  *     pica_vk.c's downloads do. Landing one is a fence wait and a buffer map: any thread with a context sharing this
  *     one's can do it (the main thread has the presenter's: the VBlank and save states call from there, with the GX
  *     worker idle).
@@ -72,7 +72,7 @@ static int q_res = 1, q_aniso = 1, cur_scale = 1;
 static float max_aniso = 1;
 static volatile int reset_pending;   /* a save state was loaded (another thread): done at the next call on the GX worker */
 static int gpu_vs;       /* vertex shaders on the GPU */
-static int spec_on;      /* specialised fragment shaders */
+static int spec_on;      /* specialized fragment shaders */
 static int preload_on = 1;   /* pwr_gl_programs.bin read at the start and written (--preload-shaders=off: neither) */
 static const char *clip_z;   /* CLIP_Z(z, w)'s body in the vertex shaders: Vulkan's depth range or OpenGL's */
 static GLuint vs_cpu_sh, vs_int_sh, fs_gen_sh[2];   /* pica.vert, pica_vs.vert, generic pica.frag (and without its depth write) */
@@ -142,7 +142,7 @@ static void bind_vao(GLuint v) { if (bound_vao != v) { glBindVertexArray(v); bou
    stays bound to GL_COPY_WRITE_BUFFER, both vertex arrays take their indices (and the CPU-shaded vertices) from it, and
    the attributes' texture buffers are views of it. With OpenGL 4.4 (or ARB_buffer_storage) it is mapped for good and
    written in place, as a ring of DSEG segments: a fence when the draws leave one, waited for before they come back to it
-   (a draw's data never spans two). Otherwise each draw's part is mapped without the driver's synchronisation (the part
+   (a draw's data never spans two). Otherwise each draw's part is mapped without the driver's synchronization (the part
    is new to the GPU), and the storage replaced once full (orphaned: draws still reading the old one keep it). Either
    way the driver neither copies the data nor checks the GPU's use of the buffer per draw. */
 static GLuint dbuf; static GLsizeiptr dsize = 64 << 20, dused; static unsigned dgen;
@@ -185,7 +185,7 @@ static GLuint tex_new(uint32_t w, uint32_t h, int depth, int levels) {
     return t;
 }
 
-/* framebuffers by (colour, depth) texture pair, kept: render targets' pairs, and one colour texture each for copies and
+/* framebuffers by (color, depth) texture pair, kept: render targets' pairs, and one color texture each for copies and
    read-backs (attaching textures each time costs a validation) */
 typedef struct { GLuint fbo, c, d; uint32_t used; } Fbo;
 #define MAX_FBO 96
@@ -233,7 +233,7 @@ typedef struct {
 } DrawSetup;
 static DrawSetup last;
 static int scissor_on;
-/* copies: no scissor, every colour channel written */
+/* copies: no scissor, every color channel written */
 static void copy_state(void) {
     if (scissor_on) { glDisable(GL_SCISSOR_TEST); scissor_on = 0; }
     if (!st_valid || last.cmask != 15) { glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); last.cmask = 15; }
@@ -311,7 +311,7 @@ static Surf *surf_get(uint32_t addr, uint32_t w, uint32_t h, int fmt, int depth)
     return s;
 }
 
-/* one guest pixel -> RGBA8 (colour) or float (depth): pica_vk.c decode_px */
+/* one guest pixel -> RGBA8 (color) or float (depth): pica_vk.c decode_px */
 static void decode_px(const Surf *s, const uint8_t *p, uint8_t *o) {
     uint32_t v;
     if (s->depth) {
@@ -354,7 +354,7 @@ static void surf_upload(Surf *s) {
     s->hash = hash_mem(s->addr, surf_size(s)); s->synced = 1; g_vk_uploads++;
 }
 
-/* a colour target's pixels at 1x (rows from the bottom, RGBA8) -> the guest's tiled layout at dst (pica_vk.c surf_detile) */
+/* a color target's pixels at 1x (rows from the bottom, RGBA8) -> the guest's tiled layout at dst (pica_vk.c surf_detile) */
 static void detile_color(const Surf *s, const uint8_t *src, uint8_t *dst) {
     const uint32_t w = s->w, h = s->h, bpp = surf_bpp(s);
     if (!(w & 7) && !(h & 7) && (s->fmt == 0 || s->fmt == 1)) {   /* the eye and display targets: tiles in memory order */
@@ -383,7 +383,7 @@ static void detile_color(const Surf *s, const uint8_t *src, uint8_t *dst) {
     }
 }
 
-/* a colour target's read-back, at the end of a command list: filtered to 1x (linear), read into its pixel buffer, a
+/* a color target's read-back, at the end of a command list: filtered to 1x (linear), read into its pixel buffer, a
    fence after it; nothing waits (the caller flushes) */
 static void wb_issue(Surf *s) {
     const uint32_t w = s->w, h = s->h, S = (uint32_t)cur_scale;
@@ -453,7 +453,7 @@ void pica_gl_discard_range(uint32_t start, uint32_t end) {
 }
 
 /* the target's texture -> guest bytes, waiting for the GPU: filtered to 1x first (nearest), read, tiled as the guest
-   stores it (pica_vk.c surf_detile). Depth targets (colour ones go through wb_issue). */
+   stores it (pica_vk.c surf_detile). Depth targets (color ones go through wb_issue). */
 static void surf_writeback(Surf *s) {
     const uint32_t w = s->w, h = s->h, bpp = surf_bpp(s), S = (uint32_t)cur_scale;
     GLuint from = s->tex;
@@ -614,7 +614,7 @@ static void gpu_time_end(void) {
 }
 static void gpu_time_drop(void) { if (q_open) { glEndQuery(GL_TIME_ELAPSED); q_open = 0; } }
 
-/* (colour, depth) from the framebuffer registers: the draw's targets, in sync with guest memory; 0 on success */
+/* (color, depth) from the framebuffer registers: the draw's targets, in sync with guest memory; 0 on success */
 static int ensure_pass(void) {
     const uint32_t w = R(0x11E) & 0x7ff, h = ((R(0x11E) >> 12) & 0x3ff) + 1;
     const uint32_t caddr = pa_to_va((R(0x11D) & 0x0fffffff) << 3), daddr = pa_to_va((R(0x11C) & 0x0fffffff) << 3);
@@ -732,7 +732,7 @@ static GLuint tex_get(int unit, int *flush) {
     return t->tex;
 }
 
-/* sampler objects by the unit's filtering, wrapping and levels (pica_vk.c sampler_for); the border colour is the
+/* sampler objects by the unit's filtering, wrapping and levels (pica_vk.c sampler_for); the border color is the
    nearest of three, the shader returns the exact one outside [0, 1] */
 static GLuint samplers[1 << 16];
 static void (APIENTRY *sampler_parameterfv)(GLuint, GLenum, const GLfloat *);
@@ -796,7 +796,7 @@ static char cache_stamp[256];
 #define CACHE_FILE "pwr_gl_programs.bin"
 #define CACHE_MAGIC "MSRGLP01"
 
-/* the shaders' first lines (shaders/pica.*): GLSL 3.30; the fragment shader's specialisation constants (all 0: generic) */
+/* the shaders' first lines (shaders/pica.*): GLSL 3.30; the fragment shader's specialization constants (all 0: generic) */
 static void vs_header(char *h, size_t n) { snprintf(h, n, "#version 330 core\n#define UNROLL\n#define CLIP_Z(z, w) %s", clip_z); }
 static void fs_header(char *h, size_t n, int nd, const uint32_t *sc) {
     static const char *const names[NSC] = { "SC_ON", "SC_SRC0", "SC_SRC1", "SC_SRC2", "SC_SRC3", "SC_SRC4", "SC_SRC5",
@@ -815,7 +815,7 @@ static void setup_program(GLuint p) {
     static const char *const units[7] = { "tex0", "tex1", "tex2", "lut", "prog_buf", "attr_buf", "raw_buf" };
     for (int i = 0; i < 7; i++) { GLint loc = glGetUniformLocation(p, units[i]); if (loc >= 0) glUniform1i(loc, i); }
 }
-/* the configuration pica.frag is specialised for (pica_vk.c draw_pkey's sc) */
+/* the configuration pica.frag is specialized for (pica_vk.c draw_pkey's sc) */
 static void draw_sc(uint32_t *sc) {
     static const int tb[6] = { 0x0C0, 0x0C8, 0x0D0, 0x0D8, 0x0F0, 0x0F8 };
     sc[0] = 1;
@@ -888,7 +888,7 @@ static GLuint prog_ready(uint32_t vs, uint64_t fs, int nd, const uint32_t *sc) {
     Prog *p = &progs[i];
     atomic_store_explicit(&p->used, ++use_clock, memory_order_relaxed);
     int st = atomic_load(&p->state);
-    if (st == 1) {   /* made: usable here once its fence has signalled */
+    if (st == 1) {   /* made: usable here once its fence has signaled */
         const GLenum r = glClientWaitSync(p->done, 0, 0);
         if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED) return 0;
         glDeleteSync(p->done); p->done = NULL; atomic_store(&p->state, 2); st = 2;
@@ -1056,7 +1056,7 @@ void *pica_gl_compiler(void *arg) {
                 if (k < nfsc) fs = fsc[k].sh;
                 else {
                     char header[2048]; fs_header(header, sizeof header, p->nd, p->sc);
-                    fs = msr_gl_shader("pica (specialised)", GL_FRAGMENT_SHADER, header, pica_frag);
+                    fs = msr_gl_shader("pica (specialized)", GL_FRAGMENT_SHADER, header, pica_frag);
                     if (fs && nfsc < (int)(sizeof fsc / sizeof *fsc)) { fsc[nfsc].key = p->fs; fsc[nfsc].sh = fs; nfsc++; }
                 }
             }
@@ -1088,7 +1088,7 @@ void *pica_gl_compiler(void *arg) {
             if (!from_bin) atomic_store(&cache_dirty, 1);
             atomic_store(&p->state, 1);
         } else atomic_store(&p->state, -1);
-        if (trace) fprintf(stderr, "pica_gl: program %d (vertex %u, %s fragment) %s in %.1f ms\n", i, p->vs, p->spec ? "specialised" : "generic",
+        if (trace) fprintf(stderr, "pica_gl: program %d (vertex %u, %s fragment) %s in %.1f ms\n", i, p->vs, p->spec ? "specialized" : "generic",
                            !prog ? "failed" : from_bin ? "loaded" : "made", prof_now() - t0);
     }
     return NULL;
@@ -1249,7 +1249,7 @@ int pica_gl_init(void) {
     state = 1;
     fprintf(stderr, "pica_gl: hardware renderer on (OpenGL %d.%d, %s depth range, vertex shaders on the %s, %s fragment shaders, program binaries %s, draw data %s)\n",
             msr_gl_version() / 10, msr_gl_version() % 10, clip_control ? "Vulkan's" : "OpenGL's", gpu_vs ? "GPU" : "CPU",
-            spec_on ? "specialised" : "generic", get_program_binary && program_binary && program_parameteri ? "kept" : "unavailable",
+            spec_on ? "specialized" : "generic", get_program_binary && program_binary && program_parameteri ? "kept" : "unavailable",
             dmap ? "mapped for good" : "mapped per draw");
     if (preload_on && !getenv("PWR_NO_PRELOAD")) cache_load();
     return 0;
@@ -1679,7 +1679,7 @@ static void pica_gl_draw_(const Vtx *vcache, const uint32_t *vlist_index, const 
         if (!nidx) return;
         for (uint32_t i = 0; i < nvlist; i++) remap[vlist_slot[i]] = i;
         /* the program: the vertex shader (the translation once it is ready, else the interpreter; or pica.vert) with the
-           fragment shader specialised for this draw, else the generic one */
+           fragment shader specialized for this draw, else the generic one */
         const int nd = (R(0x06D) & 1) && (R(0x04D) & 0xffffff) == 0xBF0000 && (R(0x04E) & 0x7fffff) == 0;   /* the usual depth mapping: no gl_FragDepth */
         uint32_t sc[NSC]; uint64_t fspec = 0;
         if (spec_on) { draw_sc(sc); fspec = spec_key(sc, nd); }

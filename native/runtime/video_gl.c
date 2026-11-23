@@ -104,7 +104,7 @@ static void push(const void *data, GLsizeiptr size) {
 }
 
 /* a texture into a rectangle of the current target (W x H), as video.c's gpu_quad_view (rot 1: a framebuffer-oriented image;
-   grade: the player's colours, extra = brightness, contrast, saturation) */
+   grade: the player's colors, extra = brightness, contrast, saturation) */
 static void quad_rot(GLuint prog, const Tex *t, VidRect r, float W, float H, int mode, int alpha, const float extra[4], int rot, int grade) {
     if (!r.on || r.w < 1 || r.h < 1 || !prog || !t->id) return;
     Push p = { { r.x / W * 2 - 1, r.y / H * 2 - 1, (r.x + r.w) / W * 2 - 1, (r.y + r.h) / H * 2 - 1 },
@@ -128,7 +128,7 @@ static const Tex *hi_screen(int i, uint32_t addr, int screen_w) {
     tex_size(&hi_scr[i], (int)lh, (int)lw);
     draw_into(&hi_scr[i]);
     const Tex src = { t, (int)lw, (int)lh };
-    /* FXAA (#51) and the player's colours (#25) here, at the internal resolution, before any upscaling (video.c hi_screen) */
+    /* FXAA (#51) and the player's colors (#25) here, at the internal resolution, before any upscaling (video.c hi_screen) */
     float g[4]; const int grade = msr_grade(g);
     quad_rot(prog_present, &src, (VidRect){ 0, 0, (float)lh, (float)lw, 1 }, (float)lh, (float)lw, msr_fxaa() ? 4 : 0, 0, grade ? g : NULL, 1, grade);
     return &hi_scr[i];
@@ -282,7 +282,7 @@ void vgl_frame(const VglFrame *f) {
     const Tex *satlas[MSR_ATLAS_COUNT];   /* the game's atlases (its sprites and fonts) */
     for (int a = 0; a < MSR_ATLAS_COUNT; a++) satlas[a] = f->mf && f->mf->count ? hud_atlas_tex(a) : NULL;
     VidRect rt = f->rt, rb = f->rb;
-    /* the screens' passes: alpha comes from the source (the screens write 1), colour blends by it, as video.c's pipelines */
+    /* the screens' passes: alpha comes from the source (the screens write 1), color blends by it, as video.c's pipelines */
     glDisable(GL_BLEND);
     const int fsr = f->filter == 3 && prog_easu && prog_rcas;
     if (fsr) { fsr_upscale(0, st, &rt); fsr_upscale(1, sb, &rb); }
@@ -297,7 +297,7 @@ void vgl_frame(const VglFrame *f) {
         quad(prog_rcas, &fsr_tmp[1], rb, W, H, 0, 0, eb);
     } else {
         const int m = f->filter == 0 ? 0 : f->filter == 2 || f->filter == 3 ? 2 : f->filter == 4 ? 4 : 1;
-        /* a screen decoded on the CPU (no internal-resolution copy: hi_screen) gets FXAA and the colours here */
+        /* a screen decoded on the CPU (no internal-resolution copy: hi_screen) gets FXAA and the colors here */
         float g[4]; const int grade = msr_grade(g), fx = msr_fxaa();
         quad_rot(prog_present, st, rt, W, H, st == &tex_top && fx ? 4 : m, 0, g, 0, grade && st == &tex_top);
         quad_rot(prog_present, sb, rb, W, H, sb == &tex_bot && fx ? 4 : m, 0, g, 0, grade && sb == &tex_bot);
@@ -312,7 +312,7 @@ void vgl_frame(const VglFrame *f) {
             msr_quad(&f->mf->quads[i], source == 1 ? sbeams : source == 2 ? smenu : source == 3 ? atlas : sb, W, H);
         }
     }
-    if (f->toast_show && tex_toast.id)   /* the layout label, top centre (pixel for pixel) */
+    if (f->toast_show && tex_toast.id)   /* the layout label, top center (pixel for pixel) */
         quad(prog_present, &tex_toast, (VidRect){ floorf((W - (float)tex_toast.w) / 2), 12, (float)tex_toast.w, (float)tex_toast.h, 1 }, W, H, 0, 1, NULL);
     /* into the window, turned over; then the settings, the FPS counter and the hints, on the window */
     glDisable(GL_BLEND);

@@ -86,7 +86,7 @@ match: exit address, registers, flags, VFP state, memory changes and faults.
 | every function, seed 11 | 22,696 | 67,880 | 5.57 M | 67,858 (99.97%) |
 | every function, final generator (register locals, cycle costs), seed 12 | 22,697 | 67,878 | 4.74 M | 67,854 (99.96%) |
 
-Every difference traces to the verifier or to undefined behaviour, not to the translation:
+Every difference traces to the verifier or to undefined behavior, not to the translation:
 - In lock loops (`ldrex`/`strex`), the test memory's exclusive monitor behaves differently
   from Unicorn's. The real backend uses Azahar's exclusive store.
 - A Thumb switch helper reads its case table at LR. The reference maps the page of the fake

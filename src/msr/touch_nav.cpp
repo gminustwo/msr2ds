@@ -210,7 +210,7 @@ void TouchNavigator::Step(int dx, int dy) {
         Publish();
         return;
     }
-    // Nearest button in the pressed direction, favouring ones in line with the current one.
+    // Nearest button in the pressed direction, favoring ones in line with the current one.
     const Target& from = (*targets)[focus];
     const float fx = CenterX(from), fy = CenterY(from);
     int best = -1;

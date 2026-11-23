@@ -940,7 +940,7 @@ bool RunTool(const std::vector<std::string>& argv, const std::function<void(cons
     return code == 0;
 }
 
-bool Cancelled() {
+bool Canceled() {
     std::scoped_lock lock{S.lock};
     return S.cancel;
 }
@@ -1004,7 +1004,7 @@ std::string Build(const std::string& game, bool android) {
                 Status(std::string("Downloading ") + d.what, d.size ? 0.f : -1.f);
                 if (!RunTool({curl, "-sSfL", "--retry", "2", "--connect-timeout", "30", "-o", Utf8(file), d.url}, {},
                              file, d.size, d.what)) {
-                    if (Cancelled()) return "Canceled.";
+                    if (Canceled()) return "Canceled.";
                     return Fail(std::string("The ") + d.what + " download failed. Check the internet connection.");
                 }
                 const std::string actual = Sha256(file);
@@ -1013,7 +1013,7 @@ std::string Build(const std::string& game, bool android) {
                     return Fail(std::string("The ") + d.what + " download is not the expected file (SHA-256 " + actual.substr(0, 16) + "...).");
                 }
             }
-            if (Cancelled()) return "Canceled.";
+            if (Canceled()) return "Canceled.";
             if (is_python) {
                 const fs::path target = KitFolder() / "python";
                 fs::remove_all(target, e);
@@ -1032,7 +1032,7 @@ std::string Build(const std::string& game, bool android) {
                 // reads its arguments in the system's code page: a folder name outside it reaches it mangled). Expand-Archive
                 // takes them as they are. Its output and tar's are in recomp-build.log.
                 const std::string ps = SystemTool("WindowsPowerShell\\v1.0\\powershell");
-                if (!unpacked && !ps.empty() && !Cancelled()) {
+                if (!unpacked && !ps.empty() && !Canceled()) {
                     auto quoted = [](std::string s) {   // a PowerShell single-quoted string
                         for (std::size_t i = 0; (i = s.find('\'', i)) != std::string::npos; i += 2) s.insert(i, 1, '\'');
                         return "'" + s + "'";
@@ -1058,7 +1058,7 @@ std::string Build(const std::string& game, bool android) {
         WriteText(KitFolder() / "kit.json", "{\n \"kit\": " + std::to_string(KitVersion) + ",\n \"python\": \"" + JsonEscape(python) + "\"\n}\n");
         fs::remove_all(downloads, e);
     }
-    if (Cancelled()) return "Canceled.";
+    if (Canceled()) return "Canceled.";
     Status("Starting the recompiler");
     std::string dump = game;   // a compressed game file: the start of its image, decompressed (WriteImageStart)
     const fs::path image_start = S.user / "msr" / "recomp-image-start.cci";
@@ -1105,7 +1105,7 @@ std::string Build(const std::string& game, bool android) {
             error = line.substr(7);
         }
     });
-    if (Cancelled()) return "Canceled.";
+    if (Canceled()) return "Canceled.";
     if (!ok) return Fail(error.empty() ? "The recompiler stopped with an error: see user/msr/recomp-build.log." : error);
     Log("\n=== done\n");
     return {};
@@ -1198,7 +1198,7 @@ std::string Browse(const std::string& current) {
     of.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     return GetOpenFileNameW(&of) ? Narrow(file) : std::string{};
 #elif defined(__APPLE__)
-    // the system's open panel, through AppleScript (osascript comes with macOS); empty when cancelled
+    // the system's open panel, through AppleScript (osascript comes with macOS); empty when canceled
     const auto quote = [](const std::string& text) {   // an AppleScript string literal
         std::string q = "\"";
         for (char c : text) q += c == '"' || c == '\\' ? std::string("\\") + c : std::string(1, c);
@@ -1233,7 +1233,7 @@ std::string Browse(const std::string& current) {
 #endif
 }
 
-// A folder, chosen with the system's dialog ("" when cancelled). Windows: the shell's folder picker (COM, on this
+// A folder, chosen with the system's dialog ("" when canceled). Windows: the shell's folder picker (COM, on this
 // thread: SDL's window thread, already a single-threaded apartment); macOS: AppleScript's choose folder; Linux: zenity
 // or kdialog, as Browse.
 std::string BrowseFolder(const char* title) {
@@ -1262,7 +1262,7 @@ std::string BrowseFolder(const char* title) {
     if (SUCCEEDED(com)) CoUninitialize();
     return out;
 #elif defined(__APPLE__)
-    // the system's folder panel, through AppleScript, as Browse; empty when cancelled
+    // the system's folder panel, through AppleScript, as Browse; empty when canceled
     std::string script = "POSIX path of (choose folder with prompt \"";
     for (const char* c = title; *c; ++c) script += *c == '"' || *c == '\\' ? std::string("\\") + *c : std::string(1, *c);
     script += "\")";

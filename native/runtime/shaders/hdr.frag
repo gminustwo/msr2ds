@@ -12,7 +12,7 @@ layout(push_constant) uniform P {
                    // the expanded light moves toward white
 } p;
 layout(set = 0, binding = 0) uniform sampler2D game;   // the presentation's target (SDR, gamma-encoded)
-layout(set = 0, binding = 1) uniform sampler2D ui;     // the interface layer: colour premultiplied by coverage, gamma-encoded
+layout(set = 0, binding = 1) uniform sampler2D ui;     // the interface layer: color premultiplied by coverage, gamma-encoded
 layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 o;
 

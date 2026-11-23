@@ -26,7 +26,7 @@ struct VulkanContext {
     std::uint32_t image_count;
     PFN_vkGetInstanceProcAddr get_instance_proc_addr;
     std::mutex* queue_mutex; ///< Held while the overlay submits its own uploads
-    /// Without a render pass (msr-native): the colour format of the dynamic rendering it draws in
+    /// Without a render pass (msr-native): the color format of the dynamic rendering it draws in
     VkFormat color_format = VK_FORMAT_UNDEFINED;
 };
 

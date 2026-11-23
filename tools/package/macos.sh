@@ -13,7 +13,7 @@
 #   SHADERC_LICENSE  shaderc's LICENSE (its source folder's)
 # MSR_JOBS: parallel compiles (default: the number of cores). The app holds the program, the two libraries,
 # Resources/recomp/ (the recompiler: the launcher builds the native code from the player's dump with it), README.txt and
-# the licences. No game code or data. Ad-hoc signed, not notarized.
+# the licenses. No game code or data. Ad-hoc signed, not notarized.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 build="${1:-$root/build-macos-release}"

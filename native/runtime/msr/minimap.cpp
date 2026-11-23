@@ -1,4 +1,4 @@
-// Samus's marker on the HUD's map, as the game itself draws it (msr-native), for the compositor's minimap to centre on.
+// Samus's marker on the HUD's map, as the game itself draws it (msr-native), for the compositor's minimap to center on.
 // The picture alone said where it was by its red (bottom_classifier.h FindMapMarker), and a red icon near the map's
 // middle could take its place: during a quick scroll a Missile Reload Station's icon was taken for her, and from then on
 // either both were seen (not sure, nothing taken) or only the icon while her marker faded, so the minimap stayed on the
@@ -60,7 +60,7 @@ extern "C" int msr_map_marker(float* x, float* y) {
         supported = rd32(0x1A4D30) == 0xE2800B05u && rd32(0x1A4D34) == 0xE2800FFFu &&   // add r0, r0, #0x17FC
                     rd32(0x1AE62C) == 0xE5900550u &&                                    // ldr r0, [r0, #0x550]
                     rd32(0x507E24) == 0xE5940280u;                                      // ldr r0, [r4, #0x280]
-        if (!supported) std::fprintf(stderr, "msr: minimap: not this game's version, the minimap follows the marker's colour\n");
+        if (!supported) std::fprintf(stderr, "msr: minimap: not this game's version, the minimap follows the marker's color\n");
     }
     if (!supported) return 0;
     const u32 minimap = Held(Held(rd32(GamePointer), HudHandle), MinimapHandle);

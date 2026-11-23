@@ -408,7 +408,7 @@ uint32_t pica_texel(uint32_t addr, int fmt, int w, int x, int y) {
 }
 
 /* One ETC1 block (8 bytes, or 16 with ETC1A4's alpha first), all 16 texels as etc_texel gives them, c[x * 4 + y]: what
-   depends on the block alone (its words, base colours, tables) once instead of per texel */
+   depends on the block alone (its words, base colors, tables) once instead of per texel */
 static void etc_block(const uint8_t *blk, int alpha, uint32_t c[16]) {
     uint32_t w0, w1; memcpy(&w0, blk + (alpha ? 8 : 0), 4); memcpy(&w1, blk + (alpha ? 12 : 4), 4);
     uint32_t hi = w1, lo = w0;
@@ -424,7 +424,7 @@ static void etc_block(const uint8_t *blk, int alpha, uint32_t c[16]) {
         }
         base[sub][0] = r; base[sub][1] = g; base[sub][2] = b; tbl[sub] = (int)(sub ? hi >> 2 & 7 : hi >> 5 & 7);
     }
-    uint32_t pal[2][4];   /* each half's four colours (modifier and clamp done), alpha 255 */
+    uint32_t pal[2][4];   /* each half's four colors (modifier and clamp done), alpha 255 */
     for (int sub = 0; sub < 2; sub++) for (int idx = 0; idx < 4; idx++) {
         const int *m = etc_mod[tbl[sub]];
         int d = idx == 0 ? m[0] : idx == 1 ? m[1] : idx == 2 ? -m[0] : -m[1];
@@ -586,7 +586,7 @@ static int sampler_ok(int cfg, int smp) {
 }
 static const float lut_scales[8] = { 1, 2, 4, 8, 0, 0, 0.25f, 0.5f };
 
-/* fills the fragment primary (diffuse) and secondary (specular) colours */
+/* fills the fragment primary (diffuse) and secondary (specular) colors */
 static void fragment_light(const float quat_in[4], const float view_in[3], const C4 tex[3], C4 *prim, C4 *sec) {
     uint32_t c0 = R(0x1C3), c1 = R(0x1C4), absr = R(0x1D0), inr = R(0x1D1), scr = R(0x1D2);
     int cfg = (int)((c0 >> 4) & 15), bump = (int)((c0 >> 28) & 3), bsel = (int)((c0 >> 22) & 3);
@@ -700,10 +700,10 @@ static float comb(int op, float a, float b, float c) {
 }
 
 static C4 run_tev(C4 prim, C4 tex[3], const C4 *lp, const C4 *ls) {
-    /* the combiner buffer lags a stage (as Citra models the hardware): stage 0 reads 0, stage 1 the buffer colour 0x0FD,
+    /* the combiner buffer lags a stage (as Citra models the hardware): stage 0 reads 0, stage 1 the buffer color 0x0FD,
        stage n the buffer from before stage n-1's update. Stage 0's Previous (source 15) is that stage's third source
        instead, and the previous output before stage 0 is 0 (Azahar's generator, glsl_fs_shader_gen.cpp force_source3,
-       from the hardware's behaviour; here it had been the primary colour). Same in shaders/pica.frag. */
+       from the hardware's behavior; here it had been the primary color). Same in shaders/pica.frag. */
     C4 prev = { 0, 0, 0, 0 }, buf = { 0, 0, 0, 0 }, next_buf = unpack(R(0x0FD));
     uint32_t bufcfg = R(0x0E0);
     for (int i = 0; i < 6; i++) {
@@ -805,7 +805,7 @@ static void stencil_op(uint32_t x, uint32_t y, int op, uint8_t old, uint8_t ref,
     }
     if (wmask) wr8(dbuf + fb_off(x, y, 4) + 3, (uint8_t)((v & wmask) | (old & ~wmask)));
 }
-/* fog (0x0E0 mode 5): factor from the fog LUT at depth * 128 (bit 16: 1 - depth), colour = factor * colour + (1 - factor) * 0x0E1 */
+/* fog (0x0E0 mode 5): factor from the fog LUT at depth * 128 (bit 16: 1 - depth), color = factor * color + (1 - factor) * 0x0E1 */
 static float fog_factor(float depth) {
     float idx = (R(0x0E0) >> 16 & 1) ? (1 - depth) * 128 : depth * 128, i = floorf(idx);
     if (i < 0) i = 0; if (i > 127) i = 127;
@@ -1043,7 +1043,7 @@ static void job_raster(int id, int n) {
     for (size_t i = 0; i < ntris; i++) raster(&tris[3 * i], &tris[3 * i + 1], &tris[3 * i + 2], id, n);
 }
 
-/* PWR_DRAWDBG=<hex colour-buffer address>[,<hex vertex shader entry or ffffffff>[,<after seconds>[,<count>]]]: print the
+/* PWR_DRAWDBG=<hex color-buffer address>[,<hex vertex shader entry or ffffffff>[,<after seconds>[,<count>]]]: print the
    state of the first <count> (default 400) matching draws into that target (0 = any), and their first shaded vertices when they are
    shaded on the CPU (shaded != 0). PWR_DRAWDBG_BOX=1: one `box:` line per draw (needs PWR_VK_CPU_VS=1). PWR_DRAWDBG_TEX=<hex va>[-<hex va>]: only draws sampling a texture at that address (range) on unit 0, 1 or 2 */
 static int force_dd;   /* PWR_SKIP_DUMP: print the draws PWR_SKIP selects (once, in one frame) instead of dropping them */

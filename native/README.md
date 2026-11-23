@@ -27,7 +27,7 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
 - The single 16:9 screen (`--layout=single`, F9 cycles to it): `compositor.cpp` ports the emulator build's compositor
   (renderer_vulkan.cpp DrawMsrScreens): the bottom screen is classified each frame (`bottom_classifier.h`) and its HUD
   pieces (energy, beam slots, the minimap following Samus's marker where the game's own minimap draws it: its icon's
-  place on the screen, read from the game's interface (`minimap.cpp`, 2026-11-12; found by its colour, a Missile
+  place on the screen, read from the game's interface (`minimap.cpp`, 2026-11-12; found by its color, a Missile
   Reload Station's red icon once took its place). On another version of the game it is still found by its deep red,
   so a red map pin is not taken for it, with the map's thin orange lines, the elevator shafts, left out (#40, #44), and
   taken far from its last place only once it holds there 0.75 s; the counters), menus (a panel, the title menus without
@@ -38,12 +38,12 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   game's own time; `minimap.cpp msr_map_focus`, 2026-11-14): the whole bottom screen then shows over the view as an
   elevator's map does, at most 15 s at a time (`PWR_TEST_DNA_SCAN=<s>` sets the minimap going so, that long into play;
   its time is not counted down then). The mouse touches the panel while it shows. The map's brightness setting (1-2)
-  brightens the minimap's colours in `msr.frag`, scaled as a whole where one would pass 1 (for HDR, where it showed at
+  brightens the minimap's colors in `msr.frag`, scaled as a whole where one would pass 1 (for HDR, where it showed at
   paper white beside the expanded highlights). While R is held (missiles, Power Bombs) the HUD
   keeps the beams in its beam slots (2026-11-03): the game draws the missiles in them then (the touch screen's choice
   of missile), so `video.c` draws the slots from its copy of the bottom screen's slot column, made each frame R is not
   held, from a press while the HUD shows until 350 ms after R comes up (the beams flash back in), and their
-  classification waits; the missile counter lights as the game lights it. In Morph Ball the game greys the beam row,
+  classification waits; the missile counter lights as the game lights it. In Morph Ball the game grays the beam row,
   but the beam can still be changed: the lit slot is then the one with by far the most of its pixels over 120
   (`bottom_classifier.h` ReadBeamSlots; before, the HUD kept its highlight on the old slot, over a dimmed icon, and
   RT tapped the same slot again). Since 2026-11-16 that copy and that reading are only the fallback: the beam slots'
@@ -82,7 +82,7 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   aspect (`P::view_aspect`, `presentation.h` ViewScale: 15/16 at 16:9, 15/32 at 32:9), and the camera's field of view
   widens to match (`camera_fov.cpp`: a gain of about 2.1 at 32:9, 3.05 with the smallest zoom), so the game shows and
   culls for the whole width. The HUD keeps to the view's corners, or to its middle 16:9's (the HUD tab's "HUD within
-  16:9", `hud_within_16_9`); menus stay centred. The title menus, the gallery and the prologue stay 16:9, as the game
+  16:9", `hud_within_16_9`); menus stay centered. The title menus, the gallery and the prologue stay 16:9, as the game
   draws their scenes for its own view and their art (the title's logo) as camera-facing quads without depth test,
   which would stretch; the view eases between the two (~0.4 s). The picture is rendered 400 x 240 times the internal
   resolution and stretched across, so a wide view is softer across than up: a higher internal resolution, or the FSR
@@ -149,9 +149,9 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   0-100%, default 75%: `pica_vk.c bloom_scale` scales the combiner constant of the pass that adds the blurred,
   downscaled scene), HDR (below), and since 2.0.6 Anti-aliasing (FXAA, #51), Smooth texture packs (#51: a pack's
   replacement sampled linearly where the game's registers ask for nearest, `tex_packed` in both renderers' `sampler_for`)
-  and brightness, contrast and saturation (#25, 50-150%). FXAA and the colours run in the pass that turns each screen
+  and brightness, contrast and saturation (#25, 50-150%). FXAA and the colors run in the pass that turns each screen
   upright at the internal resolution (`hi_screen`, `present.frag` mode 4 and `mode.w`), before FSR or the stretch to
-  the window, so the HUD (drawn from the bottom screen) gets the same colours; a screen decoded on the CPU gets them in
+  the window, so the HUD (drawn from the bottom screen) gets the same colors; a screen decoded on the CPU gets them in
   its final quad instead. The Controls tab rebinds a key and a pad button per 3DS button (`input.c`, `settings.ini`
   `[native_controls]`); Select's binding opens the menu, ZL and ZR are the triggers' taps.
 - The title menus from the game's interface (2026-11-17, `gui_tree.cpp`): the title's prompt ("Press A to Start",
@@ -319,7 +319,7 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
   memory, objects, threads, services, GSP, PICA, DSP and open files are put back, a wait is issued again, threads the
   state lacks end and missing ones start. Render targets are made again from guest memory.
 - HDR (`video.c`, `shaders/hdr.frag`, `win/hdr_win.c`): with the player's HDR on and the display in HDR mode (DXGI's
-  colour space; its peak and Windows' SDR white from DXGI and the display configuration), an HDR10 (or scRGB)
+  color space; its peak and Windows' SDR white from DXGI and the display configuration), an HDR10 (or scRGB)
   swapchain. The game is drawn as before; hdr.frag expands its highlights towards the peak (default at most 1000 nits)
   and lays the interface (HUD pieces, menus, the settings: their own layer) over it at paper white. Under the
   interface's cards and dims (from a quarter of coverage) the picture is not expanded, so they darken it as in SDR
@@ -364,7 +364,7 @@ tests). Tested on Windows with an RTX 5090 at 1x-10x internal resolution (4K = 9
 - Texture packs: `textures.cpp` reads the packs the launcher passes (`--texture-pack <folder>`, the Textures tab's
   enabled ones, highest priority first) in Azahar's format and matches textures as the emulator build does: by default
   the legacy hash, CityHash64 (`src/common/cityhash.cpp`) of the texture decoded exactly as Azahar's rasterizer cache
-  decodes it (bottom-up rows, colour formats as stored, the others as RGBA8, Azahar's ETC1); `use_new_hash` in a
+  decodes it (bottom-up rows, color formats as stored, the others as RGBA8, Azahar's ETC1); `use_new_hash` in a
   pack.json hashes the guest bytes. PNGs (libpng; without it packs are left out) load on worker threads, flipped as
   `flip_png_files` says, and `pica_vk.c` gives each replacement mipmaps down past the game's own levels by its scale.
   The workers also work out the legacy hash (from a copy of the texture; the game's texture shows meanwhile) and
@@ -450,7 +450,7 @@ where the device has not even 1.1).
   glClipControl, else `CLIP_Z`). Draws run as they come.
   - Programs: a vertex shader (pica_vsgen.c's translation of the game's, which it also writes as GLSL 3.30,
     `pica_vsgen_glsl`: the raw vertex bytes through `RAW()`, a texture buffer from word `d.perm.w` on; or pica.vert for
-    CPU-shaded vertices) with pica.frag specialised for the draw (pica_vk.c's 30 specialisation constants, written as
+    CPU-shaded vertices) with pica.frag specialized for the draw (pica_vk.c's 30 specialization constants, written as
     GLSL constants; `PWR_VK_NOSPEC=1` keeps to the generic one, which reads them from the uniforms). They are compiled
     and linked on a thread of their own with a third shared context, a fence saying when one is ready; until then a draw
     takes its translation with the generic fragment shader, else the interpreter's or pica.vert's program (made at the
@@ -466,7 +466,7 @@ where the device has not even 1.1).
     shaders again. 11 MB after a few minutes of play on NVIDIA.
   - A draw's data (its uniforms, attributes or CPU-shaded vertices, indices) goes into one buffer: mapped for good with
     OpenGL 4.4 (ARB_buffer_storage), a ring of four 16 MB parts with a fence each, else mapped per draw without the
-    driver's synchronisation and replaced when full (`PWR_GL_NO_PERSISTENT=1` takes that way). Textures, samplers,
+    driver's synchronization and replaced when full (`PWR_GL_NO_PERSISTENT=1` takes that way). Textures, samplers,
     vertex arrays and framebuffers (kept per texture pair, for copies and read-backs too) are bound only when they
     change.
   - Each command list's GPU time is a timer query, for main.c's load line ("GPU drawing"). OpenGL's elapsed time
@@ -475,19 +475,19 @@ where the device has not even 1.1).
     screen at the internal resolution, which the presenter shows after a fence (and the renderer's next copy waits for
     the presenter's fence after its use, all under `scan_lock`); the bottom screen is also read back at 1x for the
     compositor.
-  - Write-backs without waiting: each colour target drawn in a list, and each alias, is read back at 1x into a pixel
+  - Write-backs without waiting: each color target drawn in a list, and each alias, is read back at 1x into a pixel
     buffer of its own with a fence after it, and lands in guest memory only when something reads its bytes. Landing is a
     fence wait and a buffer map, so the main thread does it too, in the presenter's context, where the VBlank and the
     save states ask (the GX worker idle then); a loaded state drops every read-back pending.
   On an RTX 5090 in play at 3x, the machine otherwise idle (2026-11-08): 59-60 of 60 FPS, GX commands 4.1-4.5 ms a
-  frame (Vulkan's 4.1, OpenGL's 5 before the programs were specialised and the draw data put in one buffer), at 1x 57-60;
+  frame (Vulkan's 4.1, OpenGL's 5 before the programs were specialized and the draw data put in one buffer), at 1x 57-60;
   quick save and load work; the pictures match Vulkan's. With another program keeping the GPU busy OpenGL falls behind
   where Vulkan stays at 60: 40-50 FPS with it at 60%, 18-20 at 85%. There each read-back's glReadPixels into its pixel
   buffer waits (0.2 ms a call idle, 1-2 ms shared), whatever the read format (BGRA too), the timer queries or the way
   the draw data goes up; the version before, built again for comparison under the same load, made 30 FPS where this
   one made 45-50. The first version (CPU vertex shading, waiting write-backs, CPU copies) made 23 FPS, the screens at 1x.
   Every translation of a session (62 structured, and 32 in the dispatcher form with `PWR_VSGEN_FLAT=1`), the
-  specialised fragment shader and every other shader check as GLSL 3.30 core with glslangValidator. `PWR_GL_CPU_VS=1`
+  specialized fragment shader and every other shader check as GLSL 3.30 core with glslangValidator. `PWR_GL_CPU_VS=1`
   shades on the CPU, `PWR_VK_NO_GPUCOPY=1` copies on the CPU (25 and 54 FPS with the version before). Not yet: a Linux
   build, older hardware.
   Comparing screenshots with Vulkan's: with HDR on (the test profile's `hdr=true`) a capture of Vulkan's HDR10 window
@@ -552,7 +552,7 @@ presenter run on Vulkan 1.1 (`g_vk_rp`, `vk_rp.h`). On a PC `--renderer=auto` st
   stages and what the game's frame thread does (kernel.c k_frame_where: its svc and service, a wait for the run token
   with the thread that runs meanwhile, or a wait outside the kernel), and the line gives each one's time. At 9x/144 while firing: 144.0 FPS, longest
   frame 7.1 ms; from an empty cache no frame over 20 ms. `PWR_LOG_UNBUFFERED=1`, `PWR_VSGEN_SYNC=1`,
-  `PWR_VSGEN_OPT=<0-2>` go back to the old behaviour for comparison.
+  `PWR_VSGEN_OPT=<0-2>` go back to the old behavior for comparison.
 - 90, 120 and 144 FPS hold steady (2026-11-02): the GX worker no longer waits for the GPU in a frame. The bottom
   screen's pixels for the compositor come from a read-back of its scan-out copy (no CPU copy waiting for the target),
   twelve batch sets, and VBlank follows the display's own vblanks (DWM) when the frame rate is its refresh. At 9x
@@ -644,7 +644,7 @@ thread (GX commands)".
 **Tiled GPUs (phones, msr2ds issue 37, 2026-11-08).** An Adreno 830 (Snapdragon 8 Elite) at 4x with the HD textures:
 about 40 of 60 FPS, "short of the graphics", 21 ms of GPU a frame (an RTX 5090: 0.8 ms at 3x; the phone's GPU has very
 roughly 1/25 of its throughput, so the size of the work, not one mistake, is most of it). Every pass loaded and stored
-its colour and depth attachments, and four in five of a frame's passes (the full-screen effects after the scene, on the
+its color and depth attachments, and four in five of a frame's passes (the full-screen effects after the scene, on the
 eye targets) have the scene's depth buffer set without testing or writing it: a tiled GPU read and wrote that whole
 depth/stencil image for nothing each time (about 15 MB a pass at 4x). Now such a pass leaves it alone (pica_vk.c
 begin_rendering: VK_ATTACHMENT_LOAD_OP_NONE and STORE_OP_NONE, where the device has VK_KHR/EXT_load_store_op_none; the
@@ -684,7 +684,7 @@ chain's transfers on the CPU). Both paths note them now (`bloom_out_note`, the 1
 can move between areas; pica_gl.c the same). OpenGL's picture is unchanged (the same mean brightness before and after).
 
 **The lighting setup per material, not with Qualcomm's Adreno driver (#37, #58, 2026-11-17).** 2.0.9 built each material's lighting setup
-into its fragment shader (pica_int.h `pica_sc_light`: specialisation constants 30-37), which took the scene's GPU time
+into its fragment shader (pica_int.h `pica_sc_light`: specialization constants 30-37), which took the scene's GPU time
 on a Ryzen's integrated Radeon at 4x from 23.1 to 17.9 ms. On Adreno 830s (driver 512.800.64 and .72) the shader
 compiler crashed building it: a `pica_vk: pipeline creation failed`, then SIGSEGV in `libllvm-qgl.so` inside
 `vkCreateGraphicsPipelines` at the title's first lit draw (and at the start, preloading such pipelines from
@@ -752,7 +752,7 @@ the scene's depth (MoltenVK makes `LOAD_OP_NONE`/`STORE_OP_NONE` Metal's load an
 **Macs: effects seen for the first time (2026-11-18).** After those fixes the user still saw dips (100-117 of 120 FPS,
 frames of 40-130 ms) in their first session of the new build: its `pwr_shaders.bin` was an older generator's, so ~680
 pipelines and ~170 vertex shaders were made again in play, 100 or more in each interval with a dip. A draw whose
-pipeline is still compiling uses its generic one, and Apple's GPUs ran that about 17 times as long as a specialised
+pipeline is still compiling uses its generic one, and Apple's GPUs ran that about 17 times as long as a specialized
 pipeline: with every draw on it (`PWR_VK_NOSPEC=1`) 69 ms of GPU a frame at 7x on an M3 Max, against about 4. Metal
 compiles what it has not cached in 30 ms or more, a fifth of them 200-480 ms; with Metal's cache warm the same run had no
 stalls, even without the saved pipelines. Measured from empty caches (a copy of the app under another bundle identifier
@@ -761,7 +761,7 @@ gets an empty Metal cache, and no `pwr_*.bin`), through start-up and a quick loa
 - The generic pipeline does less (pica.frag `GENERIC_SELECTS`, CMake's `MSR_FRAG_DEFS`): the combiner's selections as
   selects, no array indexed at run time, the light loop's LUT mask worked out once, stages that pass Previous through
   left out. 52.8 ms where it was 69 (its six combiner stages had been 54 of them, one stage 7.6, lighting about 15).
-  Paused pictures at 6x, old and new, specialised and generic: 0.0005-0.001 of 255 apart on average, as two runs of the
+  Paused pictures at 6x, old and new, specialized and generic: 0.0005-0.001 of 255 apart on average, as two runs of the
   same build. Built without the define (every other platform) its SPIR-V is the same, byte for byte, and the OpenGL
   text checks as GLSL 3.30 both ways: untried elsewhere, and Adreno's compiler has crashed on light-loop changes (#37).
 - More pipeline compile threads (pica_vk.c `pipe_threads`): the performance cores less two, 3 to 8 (`PWR_VK_PIPE_THREADS`
@@ -770,7 +770,7 @@ gets an empty Metal cache, and no `pwr_*.bin`), through start-up and a quick loa
 Together 1.19 s where it was 1.97, frames over 50 ms 8 where 17-19. Tried and left: Metal's concurrent compilation
 (`MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION`, no change), a `switch` for the sources (Metal flattens it: no
 better), the texture pack's mipmaps (no cost). The rest is the generic pipeline itself: it chooses at run time what a
-specialised one has built in, about 13 times the work; a cheaper stand-in would take another design.
+specialized one has built in, about 13 times the work; a cheaper stand-in would take another design.
 
 **Crashes and memory on Windows (#70, 2026-11-18).** An i3-1215U (Intel UHD, 3.7 GB of RAM) slowed down after a while,
 then crashed with `exception c0000005 at ucrtbase.dll+0x511eb`, and the log could say nothing more: which thread, what it
@@ -840,9 +840,9 @@ flashes show up there.
 - `interp.c` runs the single instruction the module hands back (patched words: the frame limit, the interface's
   time steps): data processing, B/BL, VMOV.F32. `--fps=60` writes the same patches as the main build.
 
-## Licence
+## License
 
-The files in this folder that come from Woohoo! Flight School keep its licence, GPL-3.0-or-later (`LICENSE`); the
+The files in this folder that come from Woohoo! Flight School keep its license, GPL-3.0-or-later (`LICENSE`); the
 rest of `native/` is offered under the same terms. The files under `src/` and `tools/` come from the Azahar-based
 Samus Returns port and stay GPL-2.0-or-later (`../license.txt`); Dear ImGui (`externals/msr-imgui`) is MIT. Third-party parts: AMD FidelityFX FSR 1 (MIT, `runtime/shaders/fsr/`), the overlay font from DejaVu
-Sans Mono (Bitstream Vera licence, `runtime/font_ui.h`). No game code or data is in this folder.
+Sans Mono (Bitstream Vera license, `runtime/font_ui.h`). No game code or data is in this folder.

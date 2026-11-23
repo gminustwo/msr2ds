@@ -74,7 +74,7 @@ typedef struct {
                          2: the menu as last seen (video.c's copy of the bottom screen while it read as one, msr_menu_live);
                          3: one of the game's atlases, atlas (msr_gui_atlas; src in it, 0..1) */
     int atlas;        /* source 3: MSR_ATLAS_* */
-    float color[4];   /* fill colour */
+    float color[4];   /* fill color */
 } MsrQuad;
 
 typedef struct {

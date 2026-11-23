@@ -247,9 +247,9 @@ void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
     if (font < 0 || !msr_gui_font(font, &size, &ascent)) return;
     const float sx = F(o + 0x24) > 0.f ? F(o + 0x24) : 1.f, sy = F(o + 0x28) > 0.f ? F(o + 0x28) : 1.f;
     const u32 align = rd32(o + at.align);
-    MsrGuiItem labelled = base;   // (a text in no narrower group keeps to the side it is aligned to)
-    if (labelled.anchor == MSR_ANCHOR_STRETCH)
-        labelled.anchor = align == 1 ? MSR_ANCHOR_MIDDLE : align == 2 ? MSR_ANCHOR_RIGHT : MSR_ANCHOR_LEFT;
+    MsrGuiItem labeled = base;   // (a text in no narrower group keeps to the side it is aligned to)
+    if (labeled.anchor == MSR_ANCHOR_STRETCH)
+        labeled.anchor = align == 1 ? MSR_ANCHOR_MIDDLE : align == 2 ? MSR_ANCHOR_RIGHT : MSR_ANCHOR_LEFT;
 
     // the text's pieces: glyphs, embedded sprites, spaces and line breaks
     enum Kind { Glyph, Sprite, Space, Break };
@@ -369,7 +369,7 @@ void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
                 pen += p.advance * sx;
                 continue;
             }
-            MsrGuiItem it = labelled;
+            MsrGuiItem it = labeled;
             if (p.kind == Sprite) {
                 it.atlas = p.atlas;
                 it.sprite = p.icon;

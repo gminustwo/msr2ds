@@ -298,7 +298,7 @@ static void dsp_tick(void) {
     if (dsp_dbg < 0) dsp_dbg = getenv("PWR_DSP_TRACE") != NULL;
     /* The DSP runs in real time whatever the guest does: sources keep playing and the mix keeps coming. Only the frame interrupt is paced:
      * the guest's audio threads run slower than the 200 Hz clock at times (single run token, heavy scenes), and a message queue between
-     * them overflows when frames are signalled faster than they are picked up, so an interrupt is raised only when the previous one
+     * them overflows when frames are signaled faster than they are picked up, so an interrupt is raised only when the previous one
      * has been taken (PWR_DSP_NOPACE=1: always). The "buffer finished" flag stays set until an interrupt has carried it. */
     static int nopace = -1; if (nopace < 0) nopace = getenv("PWR_DSP_NOPACE") != NULL;
     int notify = nopace || !pipe_irq[2] || !pipe_irq[2]->signaled;

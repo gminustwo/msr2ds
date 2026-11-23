@@ -104,7 +104,7 @@ static void push_irq_now(int id) {
             if (count >= 0x34) nw = old | 0x10000u;                /* missed */
             else { wr8(q + 0xC + (first + count) % 0x34, (uint32_t)id); nw = (old & ~0xff00u) | (count + 1) << 8; }
         } while (!__atomic_compare_exchange_n(hdr(q), &old, nw, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST));
-        /* signalled even when the queue is full: if the game's handler ever missed a wake-up, the queue fills (VBlanks
+        /* signaled even when the queue is full: if the game's handler ever missed a wake-up, the queue fills (VBlanks
            alone do it in under half a second) and without a signal it would never run again */
         if (events[t]) k_signal(events[t]);
     }
@@ -411,7 +411,7 @@ void gsp_gx_enqueue_hook(CPU *c) {   /* r0 -> pointer to the queue header, r1 = 
     }
 }
 
-/* Samus Returns (USA): its GX enqueue, recognised by its first instructions (push {r4-r10, lr}; ldr r3, [r0]; cmp r3, #0;
+/* Samus Returns (USA): its GX enqueue, recognized by its first instructions (push {r4-r10, lr}; ldr r3, [r0]; cmp r3, #0;
    ...; ldrb r2, [r3, #1]; cmp r2, #15), gets the copy hook; anything else there (another version) is left alone */
 void gsp_hook_enqueue(void) {
     static const uint32_t pc = 0x1AE170u;

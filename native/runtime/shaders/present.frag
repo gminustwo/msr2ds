@@ -22,7 +22,7 @@ uniform sampler2D tex;   // linear sampler, clamp to edge
 VARYING(0) in vec2 uv;
 layout(location = 0) out vec4 o;
 
-// FXAA: luma edges from the four diagonal neighbours give a blur direction; two taps along it (inner) or four (outer),
+// FXAA: luma edges from the four diagonal neighbors give a blur direction; two taps along it (inner) or four (outer),
 // keeping the outer result unless it leaves the local luma range. Runs in source-texel space, so it smooths the
 // game's own aliased edges before the upscale.
 vec3 fxaa(vec2 q, vec2 rcp) {
@@ -52,7 +52,7 @@ void main() {
         q = (base + 0.5 + f) / size;
     } else q = uv;                                                               // linear
     o = p.mode.x == 4 ? vec4(fxaa(uv, 1.0 / size), 1.0) : texture(tex, q);
-    if (p.mode.w == 1) {   // the player's colours (#25): extra = brightness, contrast, saturation (1 = as drawn)
+    if (p.mode.w == 1) {   // the player's colors (#25): extra = brightness, contrast, saturation (1 = as drawn)
         vec3 c = o.rgb * p.extra.x;
         c = (c - 0.5) * p.extra.y + 0.5;
         c = mix(vec3(dot(c, vec3(0.299, 0.587, 0.114))), c, p.extra.z);

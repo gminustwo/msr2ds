@@ -17,7 +17,7 @@ typedef struct {
     float sharpness;                  /* FSR's RCAS, in stops (0 = most) */
     const MsrFrame *mf;               /* the single screen's HUD pieces, menus and prompts over the view (count 0: none) */
     const uint8_t *toast;             /* the layout label's pixels when they changed (toast_w x toast_h RGBA), else NULL */
-    int toast_w, toast_h, toast_show; /* its size, and whether it shows (top centre, pixel for pixel) */
+    int toast_w, toast_h, toast_show; /* its size, and whether it shows (top center, pixel for pixel) */
     uint32_t scan_top, scan_bottom;   /* the screens' framebuffer addresses (RGB8; 0: none): the renderer's internal-
                                          resolution copies of them stand in for top and bottom (pica_gl.c) */
 } VglFrame;

@@ -4,7 +4,7 @@
 #define UNROLL [[unroll]]
 #endif
 // PICA200 fragment pipeline: texture units 0-2, fragment lighting, 6 TEV stages + combiner buffer, alpha test, fog,
-// depth from the PICA depth map. Blending, depth test and colour mask are fixed-function state.
+// depth from the PICA depth map. Blending, depth test and color mask are fixed-function state.
 // Mirrors pica_sw.c (the reference); u.r holds PICA registers 0x040-0x1DF of this draw.
 // Also OpenGL's (pica_gl.c, GLSL 3.30): its first lines define VARYING and UNROLL empty and the SC_ constants below, the
 // uniforms are a uniform buffer and the LUTs a texture buffer there.
@@ -45,7 +45,7 @@ uniform sampler2D tex2;
 
 uint R(uint i) { i -= 0x40u; return u.r[i >> 2][i & 3u]; }
 
-// Specialisation constants (pica_vk.c puts them in the pipeline key): the register words that decide control flow, masked to
+// Specialization constants (pica_vk.c puts them in the pipeline key): the register words that decide control flow, masked to
 // the bits used, so each pipeline is compiled with its TEV / combiner-buffer / alpha-test / texture / lighting / fog / depth
 // configuration folded in instead of branching on uniform reads per fragment. SC_ON = 0 (PWR_VK_NOSPEC=1) reads the registers.
 #ifdef VULKAN
@@ -70,12 +70,12 @@ layout(constant_id = 32) const uint SC_LNUM = 0u; layout(constant_id = 33) const
 layout(constant_id = 34) const uint SC_LABS = 0u; layout(constant_id = 35) const uint SC_LIN = 0u;
 layout(constant_id = 36) const uint SC_LSCL = 0u; layout(constant_id = 37) const uint SC_LCFG = 0u;
 #endif
-// per-stage selectors (constant arrays of specialisation constants are not allowed); the TEV loop is unrolled, so i is a constant
+// per-stage selectors (constant arrays of specialization constants are not allowed); the TEV loop is unrolled, so i is a constant
 uint sc6(uint i, uint a, uint b, uint c, uint d, uint e, uint f) { return i == 0u ? a : i == 1u ? b : i == 2u ? c : i == 3u ? d : i == 4u ? e : f; }
 vec4 rgba8(uint v) { return vec4(float(v & 255u), float((v >> 8) & 255u), float((v >> 16) & 255u), float(v >> 24)) / 255.0; }
 
 vec4 sample_unit(int unit, vec2 uv) {
-    // clamp to border (wrap mode 1) on s and t: specialised, SC_TEXEN bits 16 + 2 * unit (s) and 17 + 2 * unit (t), so
+    // clamp to border (wrap mode 1) on s and t: specialized, SC_TEXEN bits 16 + 2 * unit (s) and 17 + 2 * unit (t), so
     // that a unit without it is a bare sample (as Azahar folds it per configuration); else from the unit's parameters
     bool bs, bt;
     if (SC_ON != 0u) { uint b = SC_TEXEN >> (16u + 2u * uint(unit)); bs = (b & 1u) != 0u; bt = (b & 2u) != 0u; }
@@ -99,8 +99,8 @@ bool sampler_ok(uint cfg, uint smp) {
 #ifdef GENERIC_SELECTS
 // Built so on Macs (CMake: MoltenVK): the generic pipeline (SC_ON = 0: each draw whose own pipeline is still compiling)
 // with no array indexed at run time, its selections as selects and its pass-through stages left out. Apple's GPUs ran it
-// about 17 times as long as the specialised pipelines (2026-11-18: an M3 Max at 7x, PWR_VK_NOSPEC=1, 69 ms of GPU a frame
-// against about 4; 52.8 with this, the pictures the same, specialised and generic). The combiner's selections were most of
+// about 17 times as long as the specialized pipelines (2026-11-18: an M3 Max at 7x, PWR_VK_NOSPEC=1, 69 ms of GPU a frame
+// against about 4; 52.8 with this, the pictures the same, specialized and generic). The combiner's selections were most of
 // it (its six stages without lighting 54 ms, one stage 7.6), the light loop about 15 ms. Elsewhere the shader is as it
 // was (its SPIR-V byte for byte): untried there, and Adreno's compiler has crashed on changes to the light loop (#37, #58).
 uint sampler_bits(uint cfg) {   // sampler_ok's table as a bit per LUT
@@ -307,9 +307,9 @@ void main() {
     if (SC_ON != 0u ? SC_LIGHT != 0u : (R(0x08Fu) & 1u) != 0u && (R(0x1C6u) & 1u) == 0u) fragment_light(tex, lp, ls);
 
     const uint tev_base[6] = uint[6](0x0C0u, 0x0C8u, 0x0D0u, 0x0D8u, 0x0F0u, 0x0F8u);
-    // the combiner buffer lags a stage (as Citra models the hardware): stage 0 reads 0, stage 1 the buffer colour
+    // the combiner buffer lags a stage (as Citra models the hardware): stage 0 reads 0, stage 1 the buffer color
     // stage 0's Previous (source 15) is that stage's third source, and the output before stage 0 is 0 (as Azahar's
-    // generator, from the hardware's behaviour; pica_sw.c run_tev the same)
+    // generator, from the hardware's behavior; pica_sw.c run_tev the same)
     vec4 prev = vec4(0.0), buf = vec4(0.0), next_buf = rgba8(R(0x0FDu));
     uint bufcfg = SC_ON != 0u ? SC_BUFCFG : R(0x0E0u);
     UNROLL for (uint i = 0u; i < 6u; i++) {

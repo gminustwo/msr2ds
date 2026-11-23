@@ -9,7 +9,7 @@ typedef struct { V4 pos; V4 col; float uv[3][2]; float tw; V4 quat; float view[3
 
 extern uint32_t pica_regs[0x300];
 /* the fragment shader's SC_TEXEN (pica_vk.c, pica_gl.c): 0x080's texture units and unit 2's coordinates, and for each
-   unit on, whether it clamps to its border colour on s (bit 16 + 2 * unit) and t (17 + 2 * unit) (wrap mode 1): a unit
+   unit on, whether it clamps to its border color on s (bit 16 + 2 * unit) and t (17 + 2 * unit) (wrap mode 1): a unit
    without that samples with no range check or parameter read (shaders/pica.frag sample_unit) */
 static inline uint32_t pica_sc_texen(void) {
     static const uint16_t par[3] = { 0x083, 0x093, 0x09B };

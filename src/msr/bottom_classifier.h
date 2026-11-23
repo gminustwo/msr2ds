@@ -194,8 +194,8 @@ inline Presentation::Page TitleMenuPage(const Image& image) {
 /// icon stands out from the slot's middle (brightest minus the darkest fifth: 59-103), an empty
 /// slot does not (5-26; the empty Grapple slot is a plain striped fill); a lit icon can fill the
 /// middle entirely, but a lit slot is never empty. One slot is always lit, reaching 255. In Morph
-/// Ball the game greys the whole row out: the lit slot dims (brightest 156-216), sometimes below
-/// the lit test, and the unlit icons fade into their slots (30-34, read as empty). `greyed`
+/// Ball the game grays the whole row out: the lit slot dims (brightest 156-216), sometimes below
+/// the lit test, and the unlit icons fade into their slots (30-34, read as empty). `grayed`
 /// says so: no slot is lit at full brightness. The beam can still be changed then, so the lit
 /// slot is the one with by far the most samples brighter than 120 (265-420 of 1024, 279-366 at
 /// 9x with the HD texture pack; unlit ones 0-89, the Grapple slot's stripes the most), and -1
@@ -209,7 +209,7 @@ inline constexpr std::array<std::array<int, 4>, 3> BeamSlotRects = {{
 struct BeamSlots {
     int lit = -1;
     int present = 0;
-    bool greyed = false;
+    bool grayed = false;
 };
 inline BeamSlots ReadBeamSlots(const Image& image) {
     BeamSlots beams;
@@ -245,8 +245,8 @@ inline BeamSlots ReadBeamSlots(const Image& image) {
             beams.present |= 1 << i;
         }
     }
-    beams.greyed = lit_peak < 240;
-    if (beams.greyed) {
+    beams.grayed = lit_peak < 240;
+    if (beams.grayed) {
         int best = 0;
         for (int i = 1; i < static_cast<int>(soft.size()); ++i) {
             if (soft[i] > soft[best]) best = i;
@@ -278,7 +278,7 @@ inline constexpr std::array<int, 4> MapRect = {0, 58, 252, 213};
 /// a pin placed the minimap stayed on the pin, found while the marker faded). The map's orange
 /// lines (the elevator shafts between rooms and off the area's edges, 2 px wide) are as orange as
 /// the helmet once the map scrolls them into its lower half. They are taken out before the search:
-/// a run of the marker's colours at most 3 px across and 9 px or more along (a map tile is 10 px)
+/// a run of the marker's colors at most 3 px across and 9 px or more along (a map tile is 10 px)
 /// is a line, which the marker, 8 px across, never has. Left in, a shaft a tile long was a square
 /// of its own each time the marker faded, and made the lit marker "something else as red", until
 /// the minimap stayed on the shaft (#40, #44: "mostly after elevator rides"); a shaft beside a red
@@ -294,7 +294,7 @@ inline Marker FindMapMarker(const Image& image) {
     constexpr int cell = 4;
     constexpr int columns = (width + cell - 1) / cell;
     constexpr int rows = (height + cell - 1) / cell;
-    // The map's pixels in the marker's colours, then each one's run of them across and down
+    // The map's pixels in the marker's colors, then each one's run of them across and down
     // (capped at 255), and the lines out.
     std::vector<std::uint8_t> marked(width * height), across(width * height), down(width * height);
     for (int y = 0; y < height; ++y) {
@@ -390,7 +390,7 @@ inline Marker FindMapMarker(const Image& image) {
     return found;
 }
 
-/// The map's backdrop in a strip along one of its edges: the mean colour of the pixels no
+/// The map's backdrop in a strip along one of its edges: the mean color of the pixels no
 /// brighter than the median and a little (its scanline stripes), which leaves out rooms and
 /// icons when they cover less than half of it. Channels 0..255, red first.
 inline std::array<int, 3> Backdrop(const Image& image, int x0, int y0, int x1, int y1) {

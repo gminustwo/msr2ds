@@ -8,7 +8,7 @@ extern "C" {
 /* After the settings are loaded: the display and sound settings msr-native started with (resolution 0..10, volume %,
    anisotropic filtering 1..16, FSR or linear upscaling, power-saving waits) */
 void msr_overlay_start(int fullscreen, int resolution, int vsync, int volume, int aniso, int fsr, int power_saving);
-/* Once the presenter exists (video.c holds its queue lock): Vulkan and the colour format it draws into */
+/* Once the presenter exists (video.c holds its queue lock): Vulkan and the color format it draws into */
 void msr_overlay_vk_init(VkInstance instance, VkPhysicalDevice physical, VkDevice device, uint32_t family, VkQueue queue,
                          VkFormat format, uint32_t images, VkRenderPass render_pass);   /* render_pass: the Vulkan 1.1 mode's (vk_rp.h), else VK_NULL_HANDLE */
 /* Or OpenGL's presenter (video_gl.c), its context current: the same menu through Dear ImGui's OpenGL 3 backend, drawn

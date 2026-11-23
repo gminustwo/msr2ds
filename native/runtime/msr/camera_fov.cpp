@@ -16,7 +16,7 @@
 // and framing are worked out with the render camera's last field of view: on the manager's entry the render camera gets
 // the game's own values back (the next set-up widens them again), so the camera stays where it is at zoom 1 (with the
 // wider values it moved off that place near the room's edges, and rose in a fight: the user saw the focus drift).
-// A field of view whose tangent is G times wider brings every projected point G times closer to the screen's centre,
+// A field of view whose tangent is G times wider brings every projected point G times closer to the screen's center,
 // so clip x and y times G give the same picture (msr_fov_gain, measured per draw from its projection).
 #include <array>
 #include <atomic>

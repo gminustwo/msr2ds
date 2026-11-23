@@ -8,11 +8,11 @@
 extern int g_vk_rp;   /* video.c: 1 = the Vulkan 1.1 mode */
 
 void vk_rp_init(VkDevice dev);
-/* a render pass with one colour attachment, kept in `layout` (the layout it is in before and after), and, when `depth`
+/* a render pass with one color attachment, kept in `layout` (the layout it is in before and after), and, when `depth`
    is not VK_FORMAT_UNDEFINED, a depth (and stencil) attachment kept in GENERAL */
 VkRenderPass vk_rp_get(VkFormat color, VkImageLayout layout, VkAttachmentLoadOp cload, VkFormat depth, int stencil,
                        VkAttachmentLoadOp dload, VkAttachmentStoreOp dstore);
-/* begins rp on these views (d: VK_NULL_HANDLE without depth), its framebuffer made the first time; clear: the colour
+/* begins rp on these views (d: VK_NULL_HANDLE without depth), its framebuffer made the first time; clear: the color
    attachment's clear value (a CLEAR load op), or NULL */
 void vk_rp_begin(VkCommandBuffer cb, VkRenderPass rp, VkImageView c, VkImageView d, VkExtent2D size, const VkClearValue *clear);
 /* before a view is destroyed (its last use finished): the framebuffers made with it go too */
