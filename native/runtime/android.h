@@ -9,6 +9,15 @@ extern "C" {
 /* The folder holding user/: the app's folder on the shared storage (Android/data/<app>/files), which a PC reaches over
    USB, so the game file and the native code built on the PC can be copied in; the app's private folder without it. */
 const char *msr_android_root(void);
+/* The user folder's place (#39): the phone's storage (the app's folder there) or the SD card (the app's folder there).
+   msr_android_root is the chosen one, read when the process starts; msr_android_phone_root the phone's; the SD card's
+   from msr_android_sd_root (1, its path in out; 0 when there is no SD card). msr_android_root_missing: the folder chosen
+   before when it is not there now (the card taken out: the phone's storage is in use), else "". msr_android_set_root
+   records the place for the next start ("" or the phone's: the phone's storage); 0 when done. */
+const char *msr_android_phone_root(void);
+int msr_android_sd_root(char *out, size_t n);
+const char *msr_android_root_missing(void);
+int msr_android_set_root(const char *path);
 /* The native code, copied from where the player put it (user/msr/recomp-android/libmsr_aot.so) to the app's private
    folder: Android loads code only from there. The copy's path, or the original's when the copy failed. */
 const char *msr_android_module(const char *path);

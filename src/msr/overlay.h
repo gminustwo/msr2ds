@@ -289,6 +289,15 @@ struct LauncherSnapshot {
     std::string gpu_driver;      ///< The chosen one's folder name; empty: the system's
     std::string gpu_driver_note; ///< An install's or removal's result, or why the game went back to the system's
     bool gpu_driver_bad = false; ///< The note is a failure
+    /// msr-native's Android app: the user folder on the phone's storage or the SD card, and a move between them (#39)
+    enum class Place { Idle, Confirm, Moving, Failed };
+    bool place_option = false;  ///< The row is shown (the Android app)
+    bool place_on_sd = false;   ///< The user folder is on the SD card
+    bool place_sd = false;      ///< There is an SD card to move it to
+    Place place = Place::Idle;
+    std::string place_note;     ///< Confirm: the question; Moving: the progress; Failed: why; Idle: a missing card
+    bool place_bad = false;     ///< The note is a failure
+    float place_progress = -1.f; ///< Moving: 0..1
 };
 
 struct OverlayAction {
@@ -335,6 +344,9 @@ struct OverlayAction {
         LauncherGpuDriver,        ///< msr-native (Android): the game's GPU driver, `text` its folder name ("": the system's)
         LauncherGpuDriverInstall, ///< msr-native (Android): install a GPU driver package (the system's file picker)
         LauncherGpuDriverRemove,  ///< msr-native (Android): remove the GPU driver `text`
+        LauncherPlaceMove,        ///< msr-native (Android): move the user folder to the other place (asks first)
+        LauncherPlaceConfirm,     ///< msr-native (Android): the move confirmed
+        LauncherPlaceCancel,      ///< msr-native (Android): the move not wanted
     };
     Kind kind;
     EmulatorSettings emulator{};

@@ -2181,6 +2181,46 @@ void Overlay::DrawLauncher(const LauncherSnapshot& l, float label_width,
         ImGui::Spacing();
     }
 
+    // msr-native's Android app: the user folder on the phone's storage or the SD card, and a move between them (#39).
+    // The confirmation's buttons take the IDs of the one they replace, so a pad's focus stays on the first.
+    if (l.place_option) {
+        using Place = LauncherSnapshot::Place;
+        Label("User folder", label_width);
+        ImGui::BeginGroup();
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextUnformatted(l.place_on_sd ? "On the SD card" : "On the phone's storage");
+        const float half = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) / 2.f;
+        if (l.place == Place::Confirm) {
+            ImGui::TextColored(accent, "%s", l.place_note.c_str());
+            if (ImGui::Button("Move###place_a", {half, 0.f})) {
+                Act(OverlayAction::Kind::LauncherPlaceConfirm);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel###place_b", {half, 0.f})) {
+                Act(OverlayAction::Kind::LauncherPlaceCancel);
+            }
+        } else if (l.place == Place::Moving) {
+            ImGui::ProgressBar(l.place_progress >= 0.f ? l.place_progress : 0.f, {-FLT_MIN, 0.f});
+            Note(l.place_note.c_str());
+        } else {
+            ImGui::BeginDisabled(!l.place_on_sd && !l.place_sd);
+            if (ImGui::Button(l.place_on_sd ? "Move to the phone's storage###place_a" : "Move to the SD card###place_a",
+                              {-FLT_MIN, 0.f})) {
+                Act(OverlayAction::Kind::LauncherPlaceMove);
+            }
+            ImGui::EndDisabled();
+            if (!l.place_note.empty()) {
+                ImGui::TextColored(l.place_bad ? bad : good, "%s", l.place_note.c_str());
+            } else if (!l.place_on_sd && !l.place_sd) {
+                Note("No SD card was found.");
+            }
+        }
+        Note("Uninstalling the app deletes the user folder, on the SD card too: keep a copy of your saves.");
+        ImGui::PopTextWrapPos();
+        ImGui::EndGroup();
+        ImGui::Spacing();
+    }
+
     // Saves from a 3DS (a Checkpoint or JKSM backup) or another emulator, in place of the ones here. The
     // confirmation's buttons take the IDs of the two they replace, so a pad's focus stays on the first.
     using Saves = LauncherSnapshot::Saves;

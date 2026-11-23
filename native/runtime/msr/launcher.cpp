@@ -65,6 +65,7 @@
 #ifdef __ANDROID__
 #include <jni.h>
 #include "android.h"
+#include "user_move.h"
 #endif
 #include "dump.h"
 #include "ini.h"
@@ -590,6 +591,14 @@ struct State {
     bool installed = false;               // MsrActivity finished an install (or the picker was closed): installed_id, _note
     std::string installed_id, installed_note;
     bool game_ended_opening = false;      // the last start was the game's and ended while opening the graphics (Setup)
+    // the user folder's place (the user folder's place section below)
+    std::string place_sd;                 // the SD card's folder for the app, empty when there is none
+    Snapshot::Place place = Snapshot::Place::Idle;
+    std::string place_note;
+    bool place_bad = false;
+    float place_progress = -1.f;
+    std::thread place_worker;             // the move
+    bool place_restart = false;           // moved: the launcher starts again, in the new place
 #endif
 } S;
 
@@ -886,6 +895,118 @@ void RemoveGpuDriver(const std::string& id) {
     if (chosen) SetGpuDriver("");
     ScanGpuDrivers();
     GpuDriverNote(e ? "Could not remove " + name + ": " + e.message() + "." : "Removed " + name + ".", static_cast<bool>(e));
+}
+#endif
+
+#ifdef __ANDROID__
+// ---- the user folder's place (#39, 2026-11-20: "a custom user folder to have the rom and the textures in the SD card
+// instead of the internal storage") ----
+// The Android app keeps user/ in its own folder on the phone's storage, or on the SD card once the player moves it
+// there (android.c msr_android_root: the place chosen, read when the process starts). A move copies everything over
+// with a progress bar, checks it, records the new place, removes the old copy, and starts the launcher again there
+// (user_move.cpp); one that fails leaves everything where it was.
+namespace UserMove = MSR::UserMove;
+
+bool OnSd() {
+    std::error_code e;
+    const fs::path phone = FromUtf8(msr_android_phone_root());
+    const bool same = fs::equivalent(S.root, phone, e);
+    return e ? S.root.lexically_normal() != phone.lexically_normal() : !same;
+}
+
+std::string SizeText(std::uint64_t bytes) {
+    char text[32];
+    if (bytes >= (1ull << 30)) std::snprintf(text, sizeof text, "%.1f GB", bytes / 1073741824.0);
+    else std::snprintf(text, sizeof text, "%.0f MB", bytes / 1048576.0 + 0.5);
+    return text;
+}
+
+// at the launcher's start (its thread: the SD card's folder comes from Java)
+void ReadPlace() {
+    char sd[4096];
+    msr_android_sd_root(sd, sizeof sd);
+    const std::string missing = msr_android_root_missing();
+    std::fprintf(stderr, "launcher: the user folder is on %s; SD card: %s%s%s\n", OnSd() ? "the SD card" : "the phone's storage",
+                 sd[0] ? sd : "none", missing.empty() ? "" : "; the place chosen before is not there: ", missing.c_str());
+    std::scoped_lock lock{S.lock};
+    S.place_sd = sd;
+    if (!missing.empty()) {
+        S.place_note = "The SD card that held your user folder (" + missing + ") is not there, so the phone's storage is in "
+                       "use. Put the card back and start the app again.";
+        S.place_bad = true;
+    }
+    S.dirty = true;
+}
+
+// Move...: how much it is, then the player's confirmation
+void AskPlace() {
+    const bool sd = OnSd();
+    {
+        std::scoped_lock lock{S.lock};
+        if (S.playing || S.place == Snapshot::Place::Moving || (!sd && S.place_sd.empty())) return;
+    }
+    const UserMove::Size size = UserMove::Measure(S.root);
+    std::scoped_lock lock{S.lock};
+    S.place = Snapshot::Place::Confirm;
+    S.place_bad = false;
+    S.place_note = "Move the user folder (" + SizeText(size.bytes) + ") to " + (sd ? "the phone's storage" : "the SD card") +
+                   "? Your game file, native code, saves, settings and texture packs go with it. The launcher starts again "
+                   "when it is done.";
+    S.dirty = true;
+}
+
+void CancelPlace() {
+    std::scoped_lock lock{S.lock};
+    if (S.place != Snapshot::Place::Confirm) return;
+    S.place = Snapshot::Place::Idle;
+    S.place_note.clear();
+    S.dirty = true;
+}
+
+void MovePlace() {
+    const fs::path from = S.root;
+    fs::path to;
+    {
+        std::scoped_lock lock{S.lock};
+        if (S.playing || S.place != Snapshot::Place::Confirm) return;
+        to = OnSd() ? FromUtf8(msr_android_phone_root()) : FromUtf8(S.place_sd);
+        S.place = Snapshot::Place::Moving;
+        S.place_progress = 0.f;
+        S.place_note = "Copying...";
+        S.dirty = true;
+    }
+    msr_settings_save();   // as they are now: they go with it, and nothing is written to the old place after
+    std::fprintf(stderr, "launcher: moving the user folder from %s to %s\n", Utf8(from).c_str(), Utf8(to).c_str());
+    if (S.place_worker.joinable()) S.place_worker.join();
+    S.place_worker = std::thread([from, to] {
+        fs::path aside;
+        std::string error = UserMove::Move(from, to, [](std::uint64_t done, std::uint64_t total) {
+            std::scoped_lock lock{S.lock};
+            S.place_progress = total ? static_cast<float>(static_cast<double>(done) / static_cast<double>(total)) : 0.f;
+            S.place_note = "Copying: " + SizeText(done) + " of " + SizeText(total) + ".";
+            S.dirty = true;
+        }, &aside);
+        if (error.empty() && msr_android_set_root(Utf8(to).c_str()) != 0) {
+            UserMove::Undo(to, aside);
+            error = "The new place could not be recorded, so the user folder stays where it was.";
+        }
+        std::string left;
+        if (error.empty()) left = UserMove::Remove(from);
+        std::fprintf(stderr, "launcher: the move %s%s%s%s\n", error.empty() ? "is done" : "failed: ", error.c_str(),
+                     aside.empty() ? "" : ("; a user folder already there was set aside as " + Utf8(aside)).c_str(),
+                     left.empty() ? "" : ("; " + left).c_str());
+        std::scoped_lock lock{S.lock};
+        S.dirty = true;
+        S.place_progress = -1.f;
+        if (!error.empty()) {
+            S.place = Snapshot::Place::Failed;
+            S.place_note = error;
+            S.place_bad = true;
+            return;
+        }
+        S.place_restart = true;   // the window closes and the launcher starts again, in the new place
+        S.quit = true;
+    });
 }
 #endif
 
@@ -2317,6 +2438,14 @@ void Publish() {
         s.gpu_driver = S.gpu_driver;
         s.gpu_driver_note = S.gpu_driver_note;
         s.gpu_driver_bad = S.gpu_driver_bad;
+        s.place_option = true;
+        s.place_on_sd = OnSd();
+        s.place_sd = !S.place_sd.empty();
+        s.place = S.place;
+        s.place_note = S.place_note;
+        s.place_bad = S.place_bad;
+        s.place_progress = S.place_progress;
+        if (S.place == Snapshot::Place::Moving) s.can_play = false;
 #else
         s.android_build = true;
         s.android_note = S.android_note;
@@ -2345,6 +2474,9 @@ extern "C" void msr_launcher_action(int kind, const char* text) {
             std::scoped_lock lock{S.lock};
             ready = !S.game.empty() && S.game_note.empty() && S.code == Code::Ready && !S.building && !S.playing &&
                     S.update != Snapshot::Update::Working;
+#ifdef __ANDROID__
+            ready = ready && S.place != Snapshot::Place::Moving;
+#endif
         }
         if (ready) {
             msr_settings_save();
@@ -2383,6 +2515,9 @@ extern "C" void msr_launcher_action(int kind, const char* text) {
     }
     case Kind::LauncherGpuDriverInstall: msr_android_pick_gpu_driver(); break;
     case Kind::LauncherGpuDriverRemove: RemoveGpuDriver(text ? text : ""); break;
+    case Kind::LauncherPlaceMove: AskPlace(); break;
+    case Kind::LauncherPlaceConfirm: MovePlace(); break;
+    case Kind::LauncherPlaceCancel: CancelPlace(); break;
 #endif
     case Kind::LauncherUpdatePage: {
         std::string page;
@@ -2511,6 +2646,7 @@ int Launcher() {
     CheckCode();
 #ifdef __ANDROID__
     ReadGpuDriver();
+    ReadPlace();
 #endif
     video_option("layout", "single");
     video_option("renderer", file.String("native", "renderer", "auto").c_str());   // the launcher's window too
@@ -2578,8 +2714,19 @@ int Launcher() {
     }
     if (S.update_checker.joinable()) S.update_checker.join();
     if (S.update_worker.joinable()) S.update_worker.join();
+#ifdef __ANDROID__
+    if (S.place_worker.joinable()) S.place_worker.join();   // a move: finished first
+    if (!S.place_restart) msr_settings_save();   // (moved: saved before it, and the old place is gone)
+#else
     msr_settings_save();
+#endif
     video_shutdown();
+#ifdef __ANDROID__
+    if (S.place_restart) {   // moved: the launcher again, in its new place
+        std::fprintf(stderr, "launcher: starting again in the new place\n");
+        msr_android_relaunch(0, nullptr);
+    }
+#endif
     if (!S.restart_into.empty()) {   // an update: its program, in this one's place
         std::fprintf(stderr, "launcher: starting %s\n", Utf8(S.restart_into).c_str());
 #ifdef _WIN32

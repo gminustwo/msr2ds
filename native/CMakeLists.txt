@@ -185,7 +185,7 @@ set(MSR_NATIVE_SOURCES
   runtime/msr/settings.cpp runtime/msr/patches.cpp runtime/msr/compositor.cpp runtime/msr/cheats.cpp runtime/msr/gui_assets.cpp runtime/msr/gui_tree.cpp runtime/msr/camera_fov.cpp runtime/msr/draw_lists.cpp runtime/msr/minimap.cpp runtime/msr/glyphs.cpp
   runtime/msr/textures.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/common/cityhash.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/msr/touch_nav.cpp
-  runtime/msr/ini.cpp runtime/msr/mods.cpp runtime/msr/patch.cpp runtime/msr/layered_fs.cpp runtime/msr/overlay_host.cpp
+  runtime/msr/ini.cpp runtime/msr/user_move.cpp runtime/msr/mods.cpp runtime/msr/patch.cpp runtime/msr/layered_fs.cpp runtime/msr/overlay_host.cpp
   runtime/msr/launcher.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/msr/overlay.cpp
   ${SHO}/pica.vert.inc ${SHO}/pica_vs.vert.inc ${SHO}/pica.frag.inc
