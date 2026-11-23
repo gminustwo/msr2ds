@@ -90,8 +90,8 @@ struct State {
     s64 marker_far_us = -1;
     std::array<Vec3, 4> map_backdrop{};
     std::array<s64, 3> beam_seen_us{-1, -1, -1}, beam_empty_us{-1, -1, -1};
-    bool beams_greyed = false;
-    float beam_grey = 0;
+    bool beams_grayed = false;
+    float beam_gray = 0;
     bool beams_held = false;   // R held: the beam slots as they were (msr_compose)
     s64 beams_up_us = -1;      // R came up then (-1: still held)
     s64 r_down_us = -1;        // R went down then (-1: up)
@@ -108,7 +108,7 @@ struct State {
     const std::vector<MsrGuiItem>* touch_items = nullptr;
     Rect touch_panel;
     float touch_extra = 0.f;
-    bool panel_moved = false;  // the panel was last drawn elsewhere than its centred place (msr_single_layout)...
+    bool panel_moved = false;  // the panel was last drawn elsewhere than its centered place (msr_single_layout)...
     Rect panel_drawn;          // ...there, in a window of composed_w x composed_h
     float composed_w = 0, composed_h = 0;
     bool menu_live = false;    // this frame's bottom screen reads as a menu (Consume; msr_menu_live)
@@ -877,7 +877,7 @@ void Consume(const BC::Image& image, s64 now) {
                     if (held(st.beam_seen_us[i]) >= 100'000) owned |= bit;
                 } else {
                     st.beam_seen_us[i] = -1;
-                    if (result.beams.greyed) st.beam_empty_us[i] = -1;
+                    if (result.beams.grayed) st.beam_empty_us[i] = -1;
                     else if (held(st.beam_empty_us[i]) >= 1'000'000) owned &= ~bit;
                 }
             }
@@ -904,13 +904,13 @@ void Consume(const BC::Image& image, s64 now) {
             static int traced_beam = -2, traced_morph = -2;
             if (trace && (beam != traced_beam || morph != traced_morph)) {
                 std::fprintf(stderr, "msr: HUD: beam %d, Morph Ball %d (the picture: lit %d, grayed %d)\n", beam, morph,
-                             result.beams.lit, result.beams.greyed ? 1 : 0);
+                             result.beams.lit, result.beams.grayed ? 1 : 0);
                 traced_beam = beam;
                 traced_morph = morph;
             }
             if (beam >= 0) P::beam_slot.store(beam, std::memory_order_relaxed);
             else if (beam == -1 && result.beams.lit >= 0) P::beam_slot.store(result.beams.lit, std::memory_order_relaxed);
-            st.beams_greyed = morph >= 0 ? morph == 1 : result.beams.greyed;
+            st.beams_grayed = morph >= 0 ? morph == 1 : result.beams.grayed;
         }
         // R held long enough for the game to draw the missiles in the slots (Missile, Super Missile, Power Bomb): the one
         // lit, for msr_trigger's missile choice. Standing, Missile or Super Missile is lit and the Power Bomb's slot dim;
@@ -1057,8 +1057,8 @@ float ViewAspectWanted(float ww, float wh) {
     return std::clamp(ww / wh, lo, hi);
 }
 
-// emu_window.cpp MsrSingleScreenLayout: the view (its aspect in effect, P::view_aspect) centred in the window, the panel
-// (the bottom screen's 4:3) centred in it at panel_scale of its height.
+// emu_window.cpp MsrSingleScreenLayout: the view (its aspect in effect, P::view_aspect) centered in the window, the panel
+// (the bottom screen's 4:3) centered in it at panel_scale of its height.
 void SingleLayout(float ww, float wh, Rect& top, Rect& panel) {
     const float aspect = P::view_aspect.load(std::memory_order_relaxed);   // width over height
     float w = ww, h = std::floor(ww / aspect);
@@ -1082,7 +1082,7 @@ s64 NowUs(double now_s) {
 extern "C" void msr_single_layout(float ww, float wh, float top[4], float panel[4]) {
     Rect t, p;
     SingleLayout(ww, wh, t, p);
-    // Touches (video.c, in window coordinates) go where msr_compose last drew the panel when that is not its centred
+    // Touches (video.c, in window coordinates) go where msr_compose last drew the panel when that is not its centered
     // place: the gallery's, beside the view.
     if (st.panel_moved && st.composed_w > 0.f && st.composed_h > 0.f) {
         const float kx = ww / st.composed_w, ky = wh / st.composed_h;
@@ -1427,12 +1427,12 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
         piece(0, 0, 250, energy_height, left + margin, top_y + margin, energy_scale);
 
         if (P::show_abilities) {
-            st.beam_grey = Approach(st.beam_grey, st.beams_greyed ? 1.f : 0.f, 6.f * seconds);
-            const auto keyed = [&](float low, float high, float grey_low, float grey_high) {
+            st.beam_gray = Approach(st.beam_gray, st.beams_grayed ? 1.f : 0.f, 6.f * seconds);
+            const auto keyed = [&](float low, float high, float gray_low, float gray_high) {
                 Style s;
                 s.opacity = alpha; s.keyed = true;
-                s.key_low = low + (grey_low - low) * st.beam_grey;
-                s.key_high = high + (grey_high - high) * st.beam_grey;
+                s.key_low = low + (gray_low - low) * st.beam_gray;
+                s.key_high = high + (gray_high - high) * st.beam_gray;
                 s.circle = 38;
                 return s;
             };
@@ -1452,7 +1452,7 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
             float x = left + margin;
             for (int i = 0; i < static_cast<int>(BC::BeamSlotRects.size()); ++i) {
                 if (i > 0 && (present & (1 << i)) == 0) continue;
-                if (i == lit) Fill(x, y, size, size, .35f, .75f, .95f, .4f * alpha * (1.f - .6f * st.beam_grey), 45);
+                if (i == lit) Fill(x, y, size, size, .35f, .75f, .95f, .4f * alpha * (1.f - .6f * st.beam_gray), 45);
                 float uv[4];
                 int atlas = 0;
                 if (msr_gui_sprite(i == 0 ? usual : i == 1 ? MSR_SPRITE_ICE : MSR_SPRITE_GRAPPLE, &atlas, uv)) {
@@ -1464,8 +1464,8 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
                     q.src[0] = uv[0]; q.src[1] = uv[1]; q.src[2] = uv[2]; q.src[3] = uv[3];
                     const bool on = i == lit;
                     q.style[0] = alpha;
-                    q.style[1] = (on ? 1.15f : .9f) * (1.f - .45f * st.beam_grey);   // gain
-                    q.style[2] = .8f * st.beam_grey;                                    // gray
+                    q.style[1] = (on ? 1.15f : .9f) * (1.f - .45f * st.beam_gray);   // gain
+                    q.style[2] = .8f * st.beam_gray;                                    // gray
                     q.style[3] = 4.f;
                     q.color[0] = on ? .72f : .6f; q.color[1] = on ? 1.f : .78f; q.color[2] = 1.f; q.color[3] = 1.f;
                     q.source = 3;
@@ -1491,7 +1491,7 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
             const float opacity = alpha * std::clamp(P::minimap_opacity.load(), 0.f, 1.f);
             Style map;
             map.opacity = opacity;
-            // brighter than the bottom screen's own colours (2026-11-14, the user: on an HDR monitor the map "doesn't
+            // brighter than the bottom screen's own colors (2026-11-14, the user: on an HDR monitor the map "doesn't
             // appear that bright", its blues at paper white beside the game's highlights expanded to the peak)
             map.gain = std::clamp(P::minimap_brightness.load(), 1.f, 2.f);
             const Vec2 gap{st.map_marker.x - st.map_center.x, st.map_marker.y - st.map_center.y};

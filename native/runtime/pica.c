@@ -43,10 +43,10 @@ static void write_reg(uint32_t id, uint32_t value, uint32_t mask) {
         {   /* first real use of fog / gas / stencil (none seen in the title, menus, trial flight or the first mission): say where */
             static int seen[3]; int fm = regs[0x0E0] & 7, k = fm == 5 ? 0 : fm == 7 ? 1 : (regs[0x105] & 1) && (regs[0x116] & 3) == 3 ? 2 : -1;
             if (k >= 0 && !seen[k]) { seen[k] = 1; static const char *nm[3] = { "fog", "gas (not implemented)", "stencil" };
-                fprintf(stderr, "pica: first draw with %s, list %u, colour buffer %08x, 0x0E0=%08x 0x105=%08x 0x106=%08x\n", nm[k], n_lists, regs[0x11D] << 3, regs[0x0E0], regs[0x105], regs[0x106]); }
+                fprintf(stderr, "pica: first draw with %s, list %u, color buffer %08x, 0x0E0=%08x 0x105=%08x 0x106=%08x\n", nm[k], n_lists, regs[0x11D] << 3, regs[0x0E0], regs[0x105], regs[0x106]); }
             static int seen_pt;   /* texture unit 3 = procedural texture (not implemented; the game never looks up its uniforms) */
             if ((regs[0x080] & 0x400) && !seen_pt) { seen_pt = 1;
-                fprintf(stderr, "pica: first draw with a procedural texture (not implemented), list %u, colour buffer %08x, 0x080=%08x 0x0A8=%08x\n", n_lists, regs[0x11D] << 3, regs[0x080], regs[0x0A8]); }
+                fprintf(stderr, "pica: first draw with a procedural texture (not implemented), list %u, color buffer %08x, 0x080=%08x 0x0A8=%08x\n", n_lists, regs[0x11D] << 3, regs[0x080], regs[0x0A8]); }
         }
         /* renderer checks without a scene that uses these: PWR_TEST_FOG=1 forces fog on 3D draws (red, full at the far plane), PWR_TEST_STENCIL=1
            lets only the first fragment drawn at each pixel through (stencil == 0, increment on pass) on D24S8 targets */
@@ -76,7 +76,7 @@ void pica_run_buf(const uint8_t *buf, uint32_t va, uint32_t size) {
         if (at < 0) { const char *e = getenv("PWR_PICA_DUMP_AT"); at = e ? atof(e) : 0; t0 = now; }
         if (at > 0 && now - t0 >= at) { at = 0; dump_f = fopen("pica_dump.txt", "w"); fprintf(stderr, "pica: dumping list %u\n", n_lists); }
     }
-    {   /* PWR_PICA_DUMP_FB=<lo va>-<hi va>: dump every list that sets a colour buffer in that range (at most 16) */
+    {   /* PWR_PICA_DUMP_FB=<lo va>-<hi va>: dump every list that sets a color buffer in that range (at most 16) */
         static long lo = -2, hi; static int nd;
         if (lo == -2) { const char *e = getenv("PWR_PICA_DUMP_FB"); lo = -1; if (e) { lo = strtol(e, NULL, 16); const char *d = strchr(e, '-'); hi = d ? strtol(d + 1, NULL, 16) : lo + 1; } }
         for (uint32_t q = va; lo >= 0 && !dump_f && nd < 16 && q + 8 <= va + size; ) {
@@ -86,7 +86,7 @@ void pica_run_buf(const uint8_t *buf, uint32_t va, uint32_t size) {
                 long cb = r == 0x11D ? (long)pa_to_va((v & 0x0fffffff) << 3) : -1;
                 if (cb >= lo && cb < hi) { char fn[64]; snprintf(fn, sizeof fn, "pica_dump_fb_%u.txt", n_lists); dump_f = fopen(fn, "w"); nd++;
                     fprintf(dump_f, "# at start: 2ba %08x 11e %08x 11d %08x 1c5..: lists before %u\n", regs[0x2BA], regs[0x11E], regs[0x11D], n_lists);
-                    fprintf(stderr, "pica: dumping list %u (colour buffer %08lx)\n", n_lists, (unsigned long)cb); break; }
+                    fprintf(stderr, "pica: dumping list %u (color buffer %08lx)\n", n_lists, (unsigned long)cb); break; }
             }
             q += 8 + 4 * x + ((x & 1) ? 4 : 0);
         }

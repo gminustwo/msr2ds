@@ -8,7 +8,7 @@
 # emulator-based build's externals/zstd). LINUXDEPLOY: the linuxdeploy AppImage (it collects libpng and
 # the others the program links; the system keeps glibc, the Vulkan loader, X11, Wayland and the sound servers).
 # MSR_JOBS: parallel compiles (default 8). The AppImage holds the program, recomp/ (the recompiler: the launcher
-# builds the native code from the player's dump with it) and the licences. No game code or data.
+# builds the native code from the player's dump with it) and the licenses. No game code or data.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 build="${1:-$HOME/msr-native-build}"

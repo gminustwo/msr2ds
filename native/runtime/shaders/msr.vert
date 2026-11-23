@@ -13,7 +13,7 @@ layout(std140) uniform P {
     vec4 src;      // the bottom screen's u0, v0, u1, v1 (screen-oriented)
     vec4 style;    // opacity, key low (mode 3: gain), key high, mode
     ivec4 flags;   // x = feather | hard edges << 8, y = circle radius (percent)
-    vec4 color;    // fill colour (mode 2)
+    vec4 color;    // fill color (mode 2)
 } p;
 VARYING(0) out vec2 uv;
 VARYING(1) out vec2 local;

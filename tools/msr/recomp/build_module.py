@@ -546,7 +546,7 @@ def main():
         emit('error', str(error).replace('\n', ' | '))
         sys.exit(1)
     except KeyboardInterrupt:
-        emit('error', 'Cancelled')
+        emit('error', 'Canceled')
         sys.exit(1)
     except ImportError as error:
         emit('error', 'The build tools are incomplete (%s): download them again.' % error)

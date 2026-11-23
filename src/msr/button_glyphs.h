@@ -219,7 +219,7 @@ inline void Write(const Sheet& sheet, const Image& image, const Icons& icons, u3
 
 /// A PlayStation symbol (or a key's `letter`) in an icon's cell (`cw` x `ch`: a face's disc, or the
 /// L and R icons' tab): the icon's own shape with its letter filled in and the symbol cut into it as
-/// the game cuts its letters (`ink`: the letter's colour, transparent in the font sheet, dark in
+/// the game cuts its letters (`ink`: the letter's color, transparent in the font sheet, dark in
 /// the interface atlas). Any scale; RGBA. The cell is written whole, or not at all.
 inline void DrawMark(u8* cell, u32 cw, u32 ch, std::size_t row_bytes, const u8* icon, u32 symbol, char letter) {
     const std::vector<float>& strokes = LetterStrokes(letter);
@@ -230,7 +230,7 @@ inline void DrawMark(u8* cell, u32 cw, u32 ch, std::size_t row_bytes, const u8* 
     const auto at = [&](const u8* base, std::size_t stride, u32 x, u32 y) { return base + y * stride + x * 4; };
     const std::size_t icon_row = std::size_t{cw} * 4;
     const auto value = [&](const u8* p) { return std::min(p[0], p[3]); };
-    // the disc's colour (brightest) and the letter's (darkest inside the disc)
+    // the disc's color (brightest) and the letter's (darkest inside the disc)
     u8 disc[4] = {255, 255, 255, 255}, ink[4] = {0, 0, 0, 0};
     int best = -1, worst = 256;
     for (u32 y = ch / 4; y < ch - ch / 4; ++y) {
@@ -275,7 +275,7 @@ inline void DrawMark(u8* cell, u32 cw, u32 ch, std::size_t row_bytes, const u8* 
             return std::min({segment(px, py, cx - k, cy - k, cx + k, cy - k), segment(px, py, cx + k, cy - k, cx + k, cy + k),
                              segment(px, py, cx + k, cy + k, cx - k, cy + k), segment(px, py, cx - k, cy + k, cx - k, cy - k)});
         }
-        default: {   // Triangle, point up (rows run down the cell), its centre a little low
+        default: {   // Triangle, point up (rows run down the cell), its center a little low
             const float r = s * .27f, ty = cy + s * .03f;
             const float ax = cx, ay = ty - r, bx = cx + r * .866f, by = ty + r * .5f, dx = cx - r * .866f, dy = ty + r * .5f;
             return std::min({segment(px, py, ax, ay, bx, by), segment(px, py, bx, by, dx, dy), segment(px, py, dx, dy, ax, ay)});

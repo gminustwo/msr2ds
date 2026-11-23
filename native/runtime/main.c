@@ -208,7 +208,7 @@ static int exists(const char *p) { struct stat st; return stat(p, &st) == 0; }
    them through interp.c. Returns the rate in effect.
    Power-saving waits (main_set_power_saving): above 30 FPS the limit is a millisecond shorter (15 ms at 60), so the
    limiter, waking on the timer alone, still has the time to the VBlank to spare; the VBlank wait sets the pace as before.
-   At 30 FPS the limit itself sets the pace (the VBlank after it was signalled during the frame, so the wait returns at
+   At 30 FPS the limit itself sets the pace (the VBlank after it was signaled during the frame, so the wait returns at
    once: 33 ms gives 30.3 FPS, 32 ms gave 31.2, measured 2026-11-05), and a late wake-up only lengthens that one frame. */
 static int power_saving;
 static int set_frame_rate(int fps) {

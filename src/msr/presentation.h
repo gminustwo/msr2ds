@@ -28,7 +28,7 @@ inline constexpr float WideScale = NativeAspect / WideAspect; // 15/16
 
 /// Ultrawide: with widescreen, the view fills a window wider than 16:9, up to 32:9, the squeeze
 /// following it; off, it stays 16:9 there, with bars at the sides. Everything stays on the one
-/// screen: the HUD at the view's corners, the menus centred.
+/// screen: the HUD at the view's corners, the menus centered.
 inline std::atomic<bool> ultrawide{true};
 inline constexpr float UltraAspect = 32.f / 9.f;
 /// Fill 16:10 (msr-native, #38): with widescreen, in play, the view fills a window taller than 16:9,
@@ -73,7 +73,7 @@ inline std::atomic<bool> wide_culling{true};
 inline std::atomic<float> hud_scale{.6f};
 inline std::atomic<float> hud_opacity{1.f};
 inline std::atomic<float> minimap_opacity{0.85f};
-inline std::atomic<float> minimap_brightness{1.f};   ///< 1-2: the map's colours brightened (msr-native)
+inline std::atomic<float> minimap_brightness{1.f};   ///< 1-2: the map's colors brightened (msr-native)
 inline std::atomic<float> minimap_size{1.15f};
 inline std::atomic<bool> show_minimap{true};
 inline std::atomic<bool> show_counters{true};
@@ -133,7 +133,7 @@ inline std::atomic<int> page{static_cast<int>(Page::Other)};
 /// The gameplay HUD's beam slots (bottom screen, right): 0 the Aeion ability, i.e. the usual
 /// beam; 1 the Ice Beam; 2 the Grapple Beam. One is lit at a time; tapping another lights it.
 /// The lit one (-1: not known) and the ones holding an item (bits), as the HUD last showed
-/// them with the row lit: in Morph Ball the game greys it out and they are kept.
+/// them with the row lit: in Morph Ball the game grays it out and they are kept.
 inline std::atomic<int> beam_slot{-1};
 inline std::atomic<int> beam_slots{0};
 

@@ -138,7 +138,7 @@ endfunction()
 # invocation) and for the Vulkan 1.1 mode (SPIR-V 1.3, *.11.inc; runtime/vk_rp.h). The presenter's are the same for both
 # (SPIR-V 1.3: they use nothing newer).
 # On Macs pica.frag's generic pipeline makes its selections with selects (pica.frag GENERIC_SELECTS: Apple's GPUs ran it
-# about 13 times as long as a specialised pipeline); elsewhere its SPIR-V is as before.
+# about 13 times as long as a specialized pipeline); elsewhere its SPIR-V is as before.
 if (APPLE)
   set(MSR_FRAG_DEFS -DGENERIC_SELECTS)
 else()

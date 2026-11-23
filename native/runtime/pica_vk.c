@@ -6,13 +6,13 @@
  *
  * Guest memory stays authoritative, because the game reads render targets back (DisplayTransfer to the LCD
  * framebuffers, TextureCopy, sampling a target as a texture):
- *   - draws are recorded as DrawRec and replayed grouped by colour target ("seal"), because the game interleaves
+ *   - draws are recorded as DrawRec and replayed grouped by color target ("seal"), because the game interleaves
  *     draws to its two eye targets and a render pass per switch cost ~27 ms of GPU time per frame. Order per target
- *     is kept; a segment is sealed early when a draw samples a target drawn in it, or when two colour targets would
+ *     is kept; a segment is sealed early when a draw samples a target drawn in it, or when two color targets would
  *     share a depth buffer (their interleaving matters then);
  *   - a batch is one submission holding any number of render passes; it ends at the end of a command list, or
- *     early when a draw samples a texture overlapping a colour target drawn in this batch. Ending it: record the
- *     download of every colour target drawn in it and submit, without waiting (three batch sets in turn, each with its
+ *     early when a draw samples a texture overlapping a color target drawn in this batch. Ending it: record the
+ *     download of every color target drawn in it and submit, without waiting (three batch sets in turn, each with its
  *     own command buffers, rings and fence). A target's newest download is converted back into the tiled guest
  *     framebuffer only when something reads its guest bytes (wb_complete: a GX command over them, a texture or another
  *     target there, the VBlank tick, a save state) or its set comes round again (2026-11-02: waiting for the GPU after
@@ -358,7 +358,7 @@ static Surf *surf_get(uint32_t addr, uint32_t w, uint32_t h, int fmt, int depth)
     return s;
 }
 
-/* one guest pixel -> RGBA8 (colour) or float (depth) */
+/* one guest pixel -> RGBA8 (color) or float (depth) */
 static void decode_px(const Surf *s, const uint8_t *p, uint8_t *o) {
     uint32_t v;
     if (s->depth) {
@@ -1065,9 +1065,9 @@ static VkSampler sampler_for(int unit) {
     static int nomip = -1; if (nomip < 0) nomip = getenv("PWR_VK_NOMIP") != NULL;
     int maxl = nomip ? 0 : (int)(R(lodr[unit]) >> 16 & 15);   /* tex_get clamps the image's level count; maxLod beyond it is harmless */
     maxl += tex_lod_extra[unit]; if (maxl > 15) maxl = 15;   /* a pack's larger texture: its extra levels */
-    /* border mode: filtering near the edge mixes in the sampler's border colour, so it must be the game's (0x081/0x091/0x099;
+    /* border mode: filtering near the edge mixes in the sampler's border color, so it must be the game's (0x081/0x091/0x099;
        the shadow projected onto the water uses white, and transparent black drew dotted dark lines along the projection's edges).
-       Core Vulkan has three fixed border colours: the closest one here; the shader returns the exact colour outside [0,1] */
+       Core Vulkan has three fixed border colors: the closest one here; the shader returns the exact color outside [0,1] */
     uint32_t bcol = R(unit == 0 ? 0x081 : unit == 1 ? 0x091 : 0x099);
     int bord = (bcol >> 24) < 128 ? 0 : ((bcol & 255) + (bcol >> 8 & 255) + (bcol >> 16 & 255)) >= 384 ? 2 : 1;
     if (ws != 1 && wt != 1) bord = 0;
@@ -1089,7 +1089,7 @@ static VkSampler sampler_for(int unit) {
     return samplers[key];
 }
 
-/* vs: VkShaderModule. nd: the fragment shader without its depth write. sc: the fragment shader's specialisation constants
+/* vs: VkShaderModule. nd: the fragment shader without its depth write. sc: the fragment shader's specialization constants
    (pica.frag SC_*: [0] on, then the 6 TEV stages' sources, operands, combiners, scales, 0x0E0, 0x104, 0x080, lighting, Z-buffer,
    then 30-37 the lighting setup: pica_int.h pica_sc_light, 0 when lighting is off).
    Built with memset so the padding compares equal. ds: the Vulkan 1.1 mode's depth, stencil and culling state (ds_pack),
@@ -1109,7 +1109,7 @@ static uint32_t ds_pack(const DsState *s) {
     if (s->ste) d |= (uint32_t)s->sfn << 8 | (uint32_t)s->sop[0] << 11 | (uint32_t)s->sop[1] << 14 | (uint32_t)s->sop[2] << 17;
     return d;
 }
-/* Pipelines: specialised ones are compiled on a worker thread; until one is ready its draws use the generic pipeline for the same
+/* Pipelines: specialized ones are compiled on a worker thread; until one is ready its draws use the generic pipeline for the same
    fixed-function state (sc all 0: the shader reads its configuration from the uniforms), queued ahead of the others when missing;
    while neither is ready the draw is skipped (an object missing for a few frames instead of the game stopping). Skipping is only
    for screen-sized targets (eyes, screens: redrawn every frame) and ones drawn in each of the last 8 frames (shadows, bloom);
@@ -1404,7 +1404,7 @@ static void seed_load(void) {
 }
 
 /* The threads that compile pipelines in play: three; on a Mac the performance cores less two, 3 to 8. A draw whose pipeline
-   is still compiling uses its generic one, which Apple's GPUs run about 13 times as long as a specialised pipeline
+   is still compiling uses its generic one, which Apple's GPUs run about 13 times as long as a specialized pipeline
    (pica.frag GENERIC_SELECTS), and a compile that Metal has not cached takes 30 ms or more, a fifth of them 200-480 ms. On
    an M3 Max at 7x from empty caches (Metal's too, 2026-11-18), the frames' time over 8.3 ms through start-up and a quick
    load: 1.59 s with three, 1.23 s with six, 1.14 s with eight; frames over 50 ms 9-12, then 4-8. The game's threads stay
@@ -1740,7 +1740,7 @@ static void end_rendering(void) {
     if (pass_q >= 0) vkCmdWriteTimestamp(cb_draw, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, sets[cur_set].qp, 3 + 2 * (uint32_t)pass_q);
     pass_q = -1;
 }
-/* whether any draw of the pass starting at recs[j] (colour c, depth d: the draws of c from j on, until one with another
+/* whether any draw of the pass starting at recs[j] (color c, depth d: the draws of c from j on, until one with another
    depth) tests or writes depth or stencil */
 static int run_uses_depth(const uint8_t *done, uint32_t j, const Surf *c, const Surf *d) {
     if (!d) return 0;
@@ -1751,7 +1751,7 @@ static int run_uses_depth(const uint8_t *done, uint32_t j, const Surf *c, const 
     }
     return 0;
 }
-/* emit the open segment's draws grouped by colour target (first-use order), one pass per (colour, depth) run */
+/* emit the open segment's draws grouped by color target (first-use order), one pass per (color, depth) run */
 static void seal(void) {
     static uint8_t *done; static uint32_t cap_done;
     if (!nrec) return;
@@ -1787,11 +1787,11 @@ static void end_uploads(void) {
    next part starts with a full barrier, so it runs after this one (uploads included). The batch's fence and
    write-backs stay at its end (pica_vk_flush). PWR_VK_KICK=<draws> per part (default 200, 0 = one part per batch).
    The part goes at a pass boundary: once `every` draws are recorded (kick_due), at the next point where the open
-   segment is sealed anyway (a draw sampling a target drawn in it, two colour targets sharing a depth buffer:
+   segment is sealed anyway (a draw sampling a target drawn in it, two color targets sharing a depth buffer:
    kick_at_boundary, pica_vk_draw_); only after 4x `every` without one, where it is. Sealed in the middle of a target's
-   draws, its pass ended there and the next part's draws began another: on a phone's tiled GPU the whole target (colour
+   draws, its pass ended there and the next part's draws began another: on a phone's tiled GPU the whole target (color
    and depth) stored and loaded once more (#37; 2 more passes a frame in gameplay, 13 for 11). Not where the draws move
-   to another colour target either: a segment interleaves the scene's two targets, each one pass when sealed. Azahar
+   to another color target either: a segment interleaves the scene's two targets, each one pass when sealed. Azahar
    submits after a pass ends (vk_render_manager.cpp). */
 static uint32_t kick_draws; static int kick_due;
 static void kick_submit(void);
@@ -1914,7 +1914,7 @@ static void pica_vk_flush_(void) {
 }
 
 /* internal resolution changed (between batches): drop every target; each is re-created at the new size and re-uploaded
-   from guest memory on its next use (colour targets are written back after every batch, depth/stencil start over) */
+   from guest memory on its next use (color targets are written back after every batch, depth/stencil start over) */
 static void scanouts_drop(void);
 static void rescale(void) {
     sets_idle();
@@ -1966,7 +1966,7 @@ void pica_vk_state_reset(void) {
    waited for the GPU to finish the bottom screen (up to 2.7 ms: a frame missed at 144 FPS) */
 static Img rb_img; static Ring rb_buf[NSCAN_CB]; static uint32_t rb_addr[NSCAN_CB]; static int rb_pending[NSCAN_CB];
 static uint8_t rb_last[2][240 * 320 * 4]; static uint32_t rb_last_addr[2]; static unsigned rb_last_seq[2], rb_seq;
-static void rb_harvest(int sc) {   /* a slot's read-back finished (its fence signalled): kept by framebuffer address (two) */
+static void rb_harvest(int sc) {   /* a slot's read-back finished (its fence signaled): kept by framebuffer address (two) */
     if (!rb_pending[sc]) return;
     rb_pending[sc] = 0;
     int k = rb_last_addr[0] == rb_addr[sc] ? 0 : rb_last_addr[1] == rb_addr[sc] ? 1 : rb_last_seq[0] <= rb_last_seq[1] ? 0 : 1;
@@ -2167,7 +2167,7 @@ static Surf *depth_window(uint32_t daddr, uint32_t w, uint32_t h, int dfmt) {
     return W;
 }
 
-/* make (colour, depth) from the framebuffer registers the active pass; 0 on success */
+/* make (color, depth) from the framebuffer registers the active pass; 0 on success */
 static int ensure_pass(void) {
     uint32_t w = R(0x11E) & 0x7ff, h = ((R(0x11E) >> 12) & 0x3ff) + 1;
     uint32_t caddr = pa_to_va((R(0x11D) & 0x0fffffff) << 3), daddr = pa_to_va((R(0x11C) & 0x0fffffff) << 3);
@@ -2212,7 +2212,7 @@ static void bloom_scale(uint8_t *fsu) {
             uint32_t src = R(tb[st]), s0 = src & 15, s1 = src >> 4 & 15, cmb = R(tb[st] + 2) & 15, next = R(tb[st + 1] + 2) & 15;
             /* texture u modulated by the constant, then added (add, multiply-add, add-multiply) */
             if (cmb != 1 || !((s0 == 3u + (uint32_t)u && s1 == 0xe) || (s0 == 0xe && s1 == 3u + (uint32_t)u)) || (next != 2 && next != 8 && next != 9)) continue;
-            uint8_t *c = fsu + (size_t)(tb[st] + 3 - 0x040) * 4;   /* the stage's constant colour: R, G, B, A bytes */
+            uint8_t *c = fsu + (size_t)(tb[st] + 3 - 0x040) * 4;   /* the stage's constant color: R, G, B, A bytes */
             for (int ch = 0; ch < 3; ch++) c[ch] = (uint8_t)((float)c[ch] * k + .5f);
             static int told; if (!told) { told = 1; fprintf(stderr, "pica_vk: bloom at %d%% (glow pass: texture %08x, combiner stage %d)\n", (int)(k * 100.f + .5f), a, st); }
         }
@@ -2478,7 +2478,7 @@ static void pica_vk_draw_(const Vtx *vcache, const uint32_t *vlist_index, const 
         VkPipeline p = pipeline_for(k, cur_c->frames < 8 && cur_c->w * cur_c->h < 240 * 320);
         if (!p) return;
         if (seal_before_draw) { seal(); seal_before_draw = 0; kick_at_boundary(); }
-        if (cur_d) {   /* two colour targets sharing a depth buffer in one segment: keep their interleaving */
+        if (cur_d) {   /* two color targets sharing a depth buffer in one segment: keep their interleaving */
             if (cur_d->seg_id == seg && cur_d->seg_color != cur_c) { seal(); kick_at_boundary(); }
             cur_d->seg_id = seg; cur_d->seg_color = cur_c;
         }

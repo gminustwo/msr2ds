@@ -4,7 +4,7 @@
 
 The zip holds msr-native.exe, msr-native-direct.exe (the game without the launcher), the MSYS2 libraries it needs
 (SDL2, libpng, zlib, the GCC runtime, shaderc: the vertex shader compiler), recomp/ (the recompiler that builds the native code from the player's dump:
-tools/msr/recomp/bundle_files.txt, same layout), README.txt and the licences. No game code or data: the player's dump, the code made from it, saves and settings all
+tools/msr/recomp/bundle_files.txt, same layout), README.txt and the licenses. No game code or data: the player's dump, the code made from it, saves and settings all
 go in the user folder the program makes beside itself.
 """
 import os
@@ -69,13 +69,13 @@ def main():
         d.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / f, d)
 
-    # the player's notes and the licences
+    # the player's notes and the licenses
     shutil.copy2(ROOT / 'tools/package/README.txt', out / 'README.txt')
     shutil.copy2(ROOT / 'native/LICENSE', out / 'LICENSE-GPL-3.0.txt')
     shutil.copy2(ROOT / 'license.txt', out / 'LICENSE-GPL-2.0.txt')
     shutil.copy2(ROOT / 'externals/msr-imgui/LICENSE.txt', out / 'LICENSE-Dear-ImGui.txt')
     shutil.copy2(ROOT / 'native/runtime/shaders/fsr/LICENSE-AMD-FidelityFX.txt', out / 'LICENSE-AMD-FidelityFX.txt')
-    if 'libzstd.dll' in dlls:   # zstd (compressed game files), BSD: MSYS2 keeps its licence beside the package's files
+    if 'libzstd.dll' in dlls:   # zstd (compressed game files), BSD: MSYS2 keeps its license beside the package's files
         shutil.copy2(MSYS / 'ucrt64/share/licenses/zstd/LICENSE', out / 'LICENSE-zstd.txt')
     shutil.copy2(MSYS / 'ucrt64/share/licenses/shaderc/LICENSE', out / 'LICENSE-shaderc.txt')   # Apache 2.0
 

@@ -373,12 +373,12 @@ static VkShaderModule shader(const uint32_t *code, size_t size) {
     VkShaderModule m = VK_NULL_HANDLE; vkCreateShaderModule(dev, &ci, NULL, &m); return m;
 }
 
-/* the Vulkan 1.1 mode's render pass into one colour image of this format (vk_rp.h): the presenter's passes keep their
+/* the Vulkan 1.1 mode's render pass into one color image of this format (vk_rp.h): the presenter's passes keep their
    attachment in COLOR_ATTACHMENT_OPTIMAL (barrier_img moves it there before and away after, as with dynamic rendering) */
 static VkRenderPass pass_for(VkFormat fmt, VkAttachmentLoadOp load) {
     return vk_rp_get(fmt, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, load, VK_FORMAT_UNDEFINED, 0, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE);
 }
-/* a pass into a colour view (W x H), its viewport and scissor the whole of it; end_pass ends it */
+/* a pass into a color view (W x H), its viewport and scissor the whole of it; end_pass ends it */
 static void begin_pass_view(VkImageView view, VkFormat fmt, VkExtent2D ex, VkAttachmentLoadOp load, float clear_alpha) {
     VkClearValue cv = { .color = { .float32 = { 0, 0, 0, clear_alpha } } };
     if (g_vk_rp) vk_rp_begin(cmdbuf, pass_for(fmt, load), view, VK_NULL_HANDLE, ex, load == VK_ATTACHMENT_LOAD_OP_CLEAR ? &cv : NULL);
@@ -394,7 +394,7 @@ static void begin_pass_view(VkImageView view, VkFormat fmt, VkExtent2D ex, VkAtt
 static void end_pass(void) { if (g_vk_rp) vkCmdEndRenderPass(cmdbuf); else vkCmdEndRendering(cmdbuf); }
 
 /* one pipeline per fragment shader: present.vert quad (or vs), alpha blending (the screens write alpha 1), dynamic viewport/scissor.
-   blend 0: the colour target's alpha is replaced; 1: coverage accumulates in alpha (the HDR interface layer); 2: none */
+   blend 0: the color target's alpha is replaced; 1: coverage accumulates in alpha (the HDR interface layer); 2: none */
 static VkPipeline make_pipe_ex(const uint32_t *vs, size_t vs_size, const uint32_t *fs, size_t fs_size, VkFormat fmt, VkPipelineLayout layout, int blend);
 static VkPipeline make_pipe_with(const uint32_t *vs, size_t vs_size, const uint32_t *fs, size_t fs_size, VkFormat fmt, VkPipelineLayout layout) {
     return make_pipe_ex(vs, vs_size, fs, fs_size, fmt, layout, 0);
@@ -535,7 +535,7 @@ void video_set_fps(int fps) {
     if (swap && before != (int)present_mode()) recreate_swapchain();
 }
 
-/* the surface's formats: SDR (B8G8R8A8_UNORM in the sRGB colour space, else R8G8B8A8_UNORM, else the first: Azahar
+/* the surface's formats: SDR (B8G8R8A8_UNORM in the sRGB color space, else R8G8B8A8_UNORM, else the first: Azahar
    takes only those two, a phone may list another first), and the HDR ones (0 when absent) */
 static void surface_formats(VkFormat *sdr, VkColorSpaceKHR *sdr_cs, VkFormat *hdr10, VkFormat *scrgb) {
     uint32_t nf = 0; vkGetPhysicalDeviceSurfaceFormatsKHR(phys, surf, &nf, NULL);
@@ -606,7 +606,7 @@ static int create_swapchain(void) {
     if (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     { int w, h; SDL_Vulkan_GetDrawableSize(win, &w, &h); if (w > 0 && h > 0) { sc_extent.width = (uint32_t)w; sc_extent.height = (uint32_t)h; } }
 #endif
-    if (!sc_extent.width || !sc_extent.height) return 0;   /* minimised: try again next frame */
+    if (!sc_extent.width || !sc_extent.height) return 0;   /* minimized: try again next frame */
     /* opaque, or what the surface has (Android's often only inherit) */
     VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & alpha))
@@ -624,7 +624,7 @@ static int create_swapchain(void) {
     if (sr == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR && !old) {
         /* #53 (Adreno 640, Android 10): the first swapchain refused, the window's surface said to have one already.
            What was asked, for the log; then once more on a surface made again */
-        fprintf(stderr, "video: vkCreateSwapchainKHR: the window is in use (images %u of %u-%u, %ux%u, format %d, colour space %d, "
+        fprintf(stderr, "video: vkCreateSwapchainKHR: the window is in use (images %u of %u-%u, %ux%u, format %d, color space %d, "
                 "usage %#x of %#x, transform %#x of %#x, alpha %#x, present mode %d): its surface again\n", n, caps.minImageCount,
                 caps.maxImageCount, sc_extent.width, sc_extent.height, (int)sc_format, (int)cs, (unsigned)ci.imageUsage,
                 (unsigned)caps.supportedUsageFlags, (unsigned)transform, (unsigned)caps.supportedTransforms, (unsigned)alpha, (int)ci.presentMode);
@@ -778,7 +778,7 @@ void video_explain(const char *log) {
 /* Android, safe levels: a start that ended while opening the graphics (a crash in the driver, or the system's kill) left
    user/msr/graphics-opening.txt behind (written at safe_begin, removed at the first frame shown or a failure that the
    program reports itself), and the next start opens them more simply, one level further each time: 1 without optional
-   extensions (attachments neither loaded nor stored, push descriptors, HDR metadata and colour spaces), 2 also in the Vulkan 1.1
+   extensions (attachments neither loaded nor stored, push descriptors, HDR metadata and color spaces), 2 also in the Vulkan 1.1
    mode (vk_rp.h). The level stays in user/msr/graphics-safe.txt with the version that set it: another version (which
    may have the cause fixed) or deleting the file opens them in full again. The log of the
    start that ended so is kept as <log>-crashed.log (video_keep_crashed_log), since the next start writes its own over it.
@@ -896,7 +896,7 @@ static int vk_open(int win_w, int win_h, int probe) {
     unsigned ne = 0; SDL_Vulkan_GetInstanceExtensions(win, &ne, NULL);
     const char *exts[20]; if (ne > 16) ne = 16; SDL_Vulkan_GetInstanceExtensions(win, &ne, exts);
     int has_portability_enum = 0;
-    {   /* HDR swapchain colour spaces */
+    {   /* HDR swapchain color spaces */
         uint32_t n = 0; vkEnumerateInstanceExtensionProperties(NULL, &n, NULL);
         VkExtensionProperties *ep = calloc(n ? n : 1, sizeof *ep); vkEnumerateInstanceExtensionProperties(NULL, &n, ep);
         for (uint32_t i = 0; i < n; i++) if (!strcmp(ep[i].extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) has_colorspace_ext = 1;
@@ -905,7 +905,7 @@ static int vk_open(int win_w, int win_h, int probe) {
         for (uint32_t i = 0; i < n; i++) if (!strcmp(ep[i].extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) has_portability_enum = 1;
 #endif
         free(ep);
-        if (safe_level >= 1) has_colorspace_ext = 0;   /* safe levels: no HDR colour spaces (as Azahar never asks for them) */
+        if (safe_level >= 1) has_colorspace_ext = 0;   /* safe levels: no HDR color spaces (as Azahar never asks for them) */
         if (has_colorspace_ext) exts[ne++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
         if (has_portability_enum) exts[ne++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
     }
@@ -1270,7 +1270,7 @@ int video_init(int scale) {
 static void decode_screen(const ScreenSource *s, int w, uint8_t *out) {
     static const int bpp_of[8] = { 4, 3, 2, 2, 2, 0, 0, 0 };
     int bpp = bpp_of[s->format & 7];
-    if (!s->valid || !s->addr || !bpp) {   /* no scan-out source yet: dark grey, so screenshots show the screen area */
+    if (!s->valid || !s->addr || !bpp) {   /* no scan-out source yet: dark gray, so screenshots show the screen area */
         for (int i = 0; i < w * SCR_H; i++) { out[4 * i] = out[4 * i + 1] = out[4 * i + 2] = 40; out[4 * i + 3] = 255; }
         return;
     }
@@ -1578,7 +1578,7 @@ static void cpu_blit(const uint8_t *src, int sw, Rect r) {
 }
 
 /* GPU path: draw a texture into a rectangle of the current attachment (W x H) with a pipeline */
-/* grade: the player's colours, extra = brightness, contrast, saturation (present.frag) */
+/* grade: the player's colors, extra = brightness, contrast, saturation (present.frag) */
 static void gpu_quad_view(VkPipeline pl, VkImageView view, uint32_t tw, uint32_t th, VkImageLayout lay, int rot, Rect r, float W, float H, int mode, int alpha, const float extra[4], int grade) {
     if (!r.on || r.w < 1 || r.h < 1) return;
     Push p = { { r.x / W * 2 - 1, r.y / H * 2 - 1, (r.x + r.w) / W * 2 - 1, (r.y + r.h) / H * 2 - 1 },
@@ -1639,7 +1639,7 @@ static const Img *hi_screen(int i, const ScreenSource *s, int screen_w) {
         if (img_make(t, lh, lw, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) return NULL;
     }
     begin_pass(t, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
-    /* FXAA (#51) and the player's colours (#25) here, on the screen at the internal resolution, before any upscaling */
+    /* FXAA (#51) and the player's colors (#25) here, on the screen at the internal resolution, before any upscaling */
     float g[4]; const int grade = msr_grade(g);
     gpu_quad_view(pipe_rgba, v, lw, lh, VK_IMAGE_LAYOUT_GENERAL, 1, (Rect){ 0, 0, (float)lh, (float)lw, 1 }, (float)lh, (float)lw, msr_fxaa() ? 4 : 0, 0, grade ? g : NULL, grade);
     end_pass();
@@ -2071,7 +2071,7 @@ int video_frame(void) {
         n++;
     }
     static int test = -1; if (test < 0) test = getenv("PWR_TESTPATTERN") != NULL;
-    if (test) for (int y = 0; y < SCR_H; y++) for (int x = 0; x < 50; x++) {   /* colour bars down the left edge of both screens */
+    if (test) for (int y = 0; y < SCR_H; y++) for (int x = 0; x < 50; x++) {   /* color bars down the left edge of both screens */
         int band = y * 6 / SCR_H; uint8_t *d = top_px + ((size_t)y * TOP_W + (size_t)x) * 4, *d2 = bot_px + ((size_t)y * BOT_W + (size_t)x) * 4;
         d[0] = d2[0] = (band & 1) ? 255 : 0; d[1] = d2[1] = (band & 2) ? 255 : 0; d[2] = d2[2] = (band & 4) ? 255 : 0;
     }
@@ -2112,7 +2112,7 @@ int video_frame(void) {
             }
         }
     }
-    /* minimised, the swapchain waits at size 0 (create_swapchain). SDL keeps the window's size through a minimise, so
+    /* minimized, the swapchain waits at size 0 (create_swapchain). SDL keeps the window's size through a minimize, so
        the size check above never sees the restore: try again once the window is back, or the picture froze for good */
     if (swap && (!sc_extent.width || !sc_extent.height) && !(SDL_GetWindowFlags(win) & SDL_WINDOW_MINIMIZED)) { if (recreate_swapchain()) return 0; }
     if (surface_reset) { surface_reset = 0; if (recreate_surface()) return 0; }
@@ -2151,7 +2151,7 @@ int video_frame(void) {
     if (r == VK_ERROR_SURFACE_LOST_KHR) { surface_reset = 1; return 1; }
     /* any other failure (a timeout, Mali's interrupted wait, the device lost): no image, so nothing to draw into, and
        sem_acquire will never signal; submitting a wait on it stalled the queue for good. Again next frame (as Azahar,
-       vk_swapchain.cpp, which never submits after a failed acquire). The fence stays signalled. */
+       vk_swapchain.cpp, which never submits after a failed acquire). The fence stays signaled. */
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return 1;
     vkResetFences(dev, 1, &fence);
     layout_rects((int)eye_w(), (int)sc_extent.height, &rt, &rb);   /* drawable pixels (differs from window size on HiDPI); stereo: one eye's window */
@@ -2213,7 +2213,7 @@ int video_frame(void) {
                 if (rb.on) gpu_quad(pipe_rcas, &fsr_tmp[1], rb, W, H, 0, 0, eb);
             } else {
                 int f = opt_filter == F_NEAREST ? 0 : opt_filter == F_SHARP ? 2 : opt_filter == F_FXAA ? 4 : 1;
-                /* a screen decoded on the CPU (no copy at the internal resolution: hi_screen) gets FXAA and the colours here */
+                /* a screen decoded on the CPU (no copy at the internal resolution: hi_screen) gets FXAA and the colors here */
                 float g[4]; const int grade = msr_grade(g), fx = msr_fxaa();
                 const int ft = s_top == &tex_top && fx ? 4 : f, fb = sb == &tex_bot && fx ? 4 : f;
                 gpu_quad_view(pipe, s_top->view, s_top->w, s_top->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, r_top, W, H, ft, 0, g, grade && s_top == &tex_top);
@@ -2236,7 +2236,7 @@ int video_frame(void) {
                 msr_quad(&mf.quads[i], source == 1 ? sbeams : source == 2 ? smenu : source == 3 ? atlas : sb, W, H);
             }
         }
-        if (!msr_overlay_visible() && now_s() < toast_until && tex_toast.img)   /* layout label, top centre (pixel for pixel) */
+        if (!msr_overlay_visible() && now_s() < toast_until && tex_toast.img)   /* layout label, top center (pixel for pixel) */
             gpu_quad(layered ? pipe_ui : pipe, &tex_toast, (Rect){ floorf((W - (float)tex_toast.w) / 2), 12, (float)tex_toast.w, (float)tex_toast.h, 1 }, W, H, 0, 1, NULL);
         vk_mark(cmdbuf, VKM_MENU, frame_mark);
         msr_overlay_draw(cmdbuf, eye_w(), sc_extent.height);   /* the settings, the FPS counter, the hints: last */

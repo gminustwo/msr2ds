@@ -107,7 +107,7 @@ enum HintSet { PauseMap, PauseSamus, MapPins, FileList, FileOpen, Touch, MapPins
 /// other m, star wars rogue squadron 2, castlevania rondo of blood"): Other M's visor HUD (otherm-recomp hud_theme.cpp)
 /// in Samus Returns' cyan, orange marking what is chosen: a dark glass panel with cut corners, a glowing cyan edge,
 /// orange brackets on its two whole corners and faint scan lines, Bahnschrift, and switches for the on/off rows.
-/// Every colour here is multiplied by `alpha`: the menu fades in (DrawMenu).
+/// Every color here is multiplied by `alpha`: the menu fades in (DrawMenu).
 namespace Theme {
 constexpr ImU32 Cyan = IM_COL32(80, 220, 255, 255);
 constexpr ImU32 Orange = IM_COL32(255, 150, 40, 255);
@@ -197,7 +197,7 @@ void Rule(ImDrawList* draw, float x0, float x1, float y, ImU32 col) {
 }
 } // namespace Theme
 
-/// The menu's ImGui colours, in Theme's scheme: dark glass, cyan lines, orange for what is chosen or focused.
+/// The menu's ImGui colors, in Theme's scheme: dark glass, cyan lines, orange for what is chosen or focused.
 void ApplyStyle() {
     ImGui::StyleColorsDark();
     auto& style = ImGui::GetStyle();
@@ -1739,7 +1739,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                          "cross-eyed viewing or a display that takes the eyes the other way round.");
                 }
             }
-            if (e.bloom_option) {   // msr-native's picture: anti-aliasing, texture packs' filtering, colour (#51, #25)
+            if (e.bloom_option) {   // msr-native's picture: anti-aliasing, texture packs' filtering, color (#51, #25)
                 row("Anti-aliasing (FXAA)");
                 player_changed |= OnOff("##fxaa", &p.fxaa);
                 Note("Smooths the game's jagged edges, before the picture is scaled to the window. A higher internal "
