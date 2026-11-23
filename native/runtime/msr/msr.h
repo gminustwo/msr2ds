@@ -37,6 +37,15 @@ const char *msr_settings_file(void);    /* settings.ini */
 /* msr-native's exit code asking the launcher to start it again (the overlay's Restart) */
 #define MSR_EXIT_RESTART 75
 
+/* ---- Discord Rich Presence (discord.cpp; the Game tab's setting). Not in the Android app. ---- */
+void msr_discord_start(int launcher);         /* the connection to the Discord app: the launcher's ("In the launcher") or the game's */
+void msr_discord_hold(int held);              /* the launcher while the game runs: its presence cleared, its connection closed */
+void msr_discord_scenario(const char *path);  /* layered_fs.cpp: a package read whole (packs/maps/<scenario>/<scenario>.pkg: the area) */
+void msr_discord_tick(void);                  /* main.c, every 2 s on the main thread: the Metroids left */
+void msr_discord_stop(void);                  /* the end: the presence cleared */
+/* The area a map folder is in, as the game's pause map names it ("s050_area5": "Area 4"), NULL for other folders */
+const char *msr_scenario_area(const char *scenario);
+
 /* ---- game mods (mods.cpp, layered_fs.cpp; the launcher's Mods and Textures tabs) ---- */
 /* The user folder (ending in '/'), settings.ini and msr-native's folder; then, before the dump is read, the enabled
    mods and texture packs (the packs only when none were given with --texture-pack) */

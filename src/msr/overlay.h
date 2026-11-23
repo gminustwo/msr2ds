@@ -72,6 +72,7 @@ struct PlayerSettings {
     bool infinite_missiles = false; ///< Super Missiles and Power Bombs too
     bool infinite_aeion = false;
     int language = 1; ///< The game's text: a 3DS system language, one of Languages (msr-native)
+    bool discord_presence = true; ///< msr-native: Discord Rich Presence (runtime/msr/discord.cpp)
     // The video settings the player last set by hand, which no preset makes (the Display tab's Custom): kept when a
     // preset replaces them, so Custom brings them back
     bool custom_video = false; ///< The values below are the player's (none yet: Custom is not offered)
@@ -289,6 +290,24 @@ struct LauncherSnapshot {
     std::string gpu_driver;      ///< The chosen one's folder name; empty: the system's
     std::string gpu_driver_note; ///< An install's or removal's result, or why the game went back to the system's
     bool gpu_driver_bad = false; ///< The note is a failure
+    /// Bug reports (launcher.cpp, the bug reports section; the REPORT tab): sent to the repository's GitHub Issues with
+    /// the log of the play session the player chooses, after they sign in to GitHub with a code
+    struct SessionLog {
+        std::string name;    ///< "msr-native_2026-11-22_13-08-20.log"
+        std::string when;    ///< "Today, 13:08:20"
+        std::string detail;  ///< "played 0:01:33, last in Area 4", or how it ended without its last line
+        bool ended_badly = false; ///< No "exit:" line: a crash, a freeze, or the game was ended
+    };
+    enum class Report { Idle, SigningIn, Sending, Sent, Failed };
+    bool report_option = false;          ///< Reports can be sent from here (an app to sign in with; a way to reach GitHub)
+    std::vector<SessionLog> report_logs; ///< The play sessions' logs, newest first
+    Report report = Report::Idle;
+    std::string report_code;      ///< SigningIn: the code to enter on GitHub's page
+    std::string report_code_page; ///< SigningIn: that page
+    std::string report_note;      ///< The step under way, what failed, or the issue sent
+    std::string report_issue;     ///< Sent: the issue's page
+    bool report_signed_in = false; ///< Signed in during this launcher session (kept in memory until it closes)
+    std::string discord;          ///< The project's Discord invite, empty when there is none
 };
 
 struct OverlayAction {
@@ -335,6 +354,16 @@ struct OverlayAction {
         LauncherGpuDriver,        ///< msr-native (Android): the game's GPU driver, `text` its folder name ("": the system's)
         LauncherGpuDriverInstall, ///< msr-native (Android): install a GPU driver package (the system's file picker)
         LauncherGpuDriverRemove,  ///< msr-native (Android): remove the GPU driver `text`
+        LauncherDiscord,          ///< Open the project's Discord invite
+        LauncherReportLogs,       ///< Look at the play sessions' logs again (the REPORT tab shown)
+        LauncherReportSend,       ///< Sign in if needed, then send the report: `text` its fields, '\x1f' between them
+        LauncherReportCancel,     ///< Stop signing in
+        LauncherReportCodePage,   ///< Open GitHub's page for the sign-in code
+        LauncherReportCopyCode,   ///< The sign-in code to the clipboard
+        LauncherReportOpenIssue,  ///< Open the issue just sent
+        LauncherReportNew,        ///< Back to an empty report
+        LauncherReportLogsFolder, ///< Open the logs folder
+        LauncherReportWebForm,    ///< Open the bug report form on GitHub (where reports can't be sent from here)
     };
     Kind kind;
     EmulatorSettings emulator{};
@@ -372,6 +401,8 @@ public:
     void MousePosition(float x, float y);
     void MouseButton(int button, bool down);
     void MouseWheel(float delta);
+    /// Typed text (UTF-8), for the text fields (the launcher's game file, its REPORT tab).
+    void Text(const char* utf8);
     std::vector<OverlayAction> TakeActions();
 
     // Renderer (OverlayHook::Interface)
@@ -388,7 +419,7 @@ public:
 
 private:
     struct Event {
-        enum class Type { Key, Analog, Position, Button, Wheel } type;
+        enum class Type { Key, Analog, Position, Button, Wheel, Text } type;   ///< Text: `code` a character
         int code;
         bool down;
         float x, y;
@@ -399,6 +430,9 @@ private:
     /// The launcher's part of the Game tab: Play, the game file, the native code.
     void DrawLauncher(const LauncherSnapshot& launcher, float label_width,
                       const std::function<void()>& default_focus);
+    /// The launcher's REPORT tab: a bug report, sent to GitHub with a play session's log.
+    void DrawReport(const LauncherSnapshot& launcher, float label_width,
+                    const std::function<void()>& default_focus);
     void DrawControls(float scale, float label_width, const std::function<void()>& default_focus);
     void DrawGameMods(const std::function<void()>& default_focus);
     void DrawTexturePacks(float label_width, const std::function<void()>& default_focus);
@@ -453,6 +487,15 @@ private:
     double fps_started = 0.0;
     std::array<char, 1024> game_input{}; ///< The launcher's game file field
     std::string game_input_from;         ///< The path it was last filled from
+    // The REPORT tab's fields, kept while the launcher is open
+    std::string report_log;               ///< The chosen log's file name ("": the newest)
+    std::array<char, 256> report_title{};
+    std::array<char, 4096> report_what{};
+    std::array<char, 4096> report_where{};
+    std::array<char, 2048> report_setup{};
+    std::array<char, 1024> report_media{};
+    bool report_own_dump = false;
+    bool report_log_checked = false;
 };
 
 /// The overlay registered with the renderer, created by the frontend.

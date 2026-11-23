@@ -85,4 +85,59 @@ public class MsrActivity extends SDLActivity {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(intent);
     }
+
+    /** From the launcher: a page in the system's browser (the Discord invite, GitHub's sign-in page, an issue). */
+    public void openUrl(String url) {
+        try {
+            final Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (ActivityNotFoundException e) {
+            System.err.println("msr: no app opens " + url);
+        }
+    }
+
+    /**
+     * From the launcher's bug reports (launcher.cpp, on its worker thread): an HTTPS request with these headers (one a
+     * line, "Name: value") and the body in the file bodyPath ("": none); the answer's body written to outPath, error
+     * statuses' too. The status, or -1 when there was no answer.
+     */
+    public int httpRequest(String method, String url, String headers, String bodyPath, String outPath) {
+        java.net.HttpURLConnection connection = null;
+        try {
+            connection = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            connection.setRequestMethod(method);
+            connection.setConnectTimeout(20000);
+            connection.setReadTimeout(120000);
+            for (String line : headers.split("\n")) {
+                final int colon = line.indexOf(':');
+                if (colon > 0) connection.setRequestProperty(line.substring(0, colon).trim(), line.substring(colon + 1).trim());
+            }
+            if (!bodyPath.isEmpty()) {
+                final File body = new File(bodyPath);
+                connection.setDoOutput(true);
+                connection.setFixedLengthStreamingMode(body.length());
+                try (java.io.InputStream in = new java.io.FileInputStream(body);
+                     java.io.OutputStream out = connection.getOutputStream()) {
+                    final byte[] buf = new byte[65536];
+                    for (int n; (n = in.read(buf)) > 0;) out.write(buf, 0, n);
+                }
+            }
+            final int status = connection.getResponseCode();
+            final java.io.InputStream answer = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            try (java.io.OutputStream out = new java.io.FileOutputStream(outPath)) {
+                if (answer != null) {
+                    final byte[] buf = new byte[65536];
+                    for (int n; (n = answer.read(buf)) > 0;) out.write(buf, 0, n);
+                    answer.close();
+                }
+            }
+            return status;
+        } catch (java.io.IOException | RuntimeException e) {
+            System.err.println("msr: " + method + " " + url + ": " + e);
+            return -1;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
 }

@@ -741,6 +741,7 @@ extern "C" void msr_romfs_note_read(uint64_t offset, uint64_t length) {
         const double ms = std::chrono::duration<double, std::milli>(now - it->first).count();   // (one read: no time to tell)
         if (ms >= 1) std::fprintf(stderr, "where: %s, %.1f MB, read in %.0f ms\n", it->path.c_str(), static_cast<double>(it->size) / 1048576.0, ms);
         else std::fprintf(stderr, "where: %s, %.1f MB\n", it->path.c_str(), static_cast<double>(it->size) / 1048576.0);
+        msr_discord_scenario(it->path.c_str());   // an area's package: Discord Rich Presence's area (discord.cpp)
     }
 }
 

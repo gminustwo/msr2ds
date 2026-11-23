@@ -112,6 +112,41 @@ void msr_android_pick_gpu_driver(void) {
     (*env)->DeleteLocalRef(env, activity);
 }
 
+void msr_android_open_url(const char *url) {
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID open = (*env)->GetMethodID(env, cls, "openUrl", "(Ljava/lang/String;)V");
+    jstring u = (*env)->NewStringUTF(env, url);
+    if (open && u) (*env)->CallVoidMethod(env, activity, open, u);
+    else fprintf(stderr, "android: MsrActivity.openUrl is missing\n");
+    jni_failed(env);
+    if (u) (*env)->DeleteLocalRef(env, u);
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, activity);
+}
+
+int msr_android_http(const char *method, const char *url, const char *headers, const char *body_path, const char *out_path) {
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();   /* (SDL attaches the calling thread) */
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return -1;
+    int status = -1;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID http = (*env)->GetMethodID(env, cls, "httpRequest",
+                                         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I");
+    jstring m = (*env)->NewStringUTF(env, method), u = (*env)->NewStringUTF(env, url), h = (*env)->NewStringUTF(env, headers),
+            b = (*env)->NewStringUTF(env, body_path), o = (*env)->NewStringUTF(env, out_path);
+    if (http && m && u && h && b && o) status = (*env)->CallIntMethod(env, activity, http, m, u, h, b, o);
+    else fprintf(stderr, "android: MsrActivity.httpRequest is missing\n");
+    if (jni_failed(env)) status = -1;
+    jstring all[] = {m, u, h, b, o};
+    for (int i = 0; i < 5; i++) if (all[i]) (*env)->DeleteLocalRef(env, all[i]);
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, activity);
+    return status;
+}
+
 void msr_android_relaunch(int argc, const char *const *argv) {
     JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
     jobject activity = (jobject)SDL_AndroidGetActivity();

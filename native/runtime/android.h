@@ -22,6 +22,11 @@ const char *msr_android_native_libs(void);
 /* The system's file picker for a GPU driver package (.zip); MsrActivity unpacks the one chosen and tells the launcher
    (msr_gpu_driver_installed, launcher.cpp) */
 void msr_android_pick_gpu_driver(void);
+/* A page in the system's browser (the launcher's Discord button, the bug reports' sign-in page and issue) */
+void msr_android_open_url(const char *url);
+/* An HTTPS request for the launcher's bug reports (MsrActivity.httpRequest, on the calling thread): `headers` one a
+   line, the body read from `body_path` ("" none), the answer's body written to `out_path`. Its status, -1 for none. */
+int msr_android_http(const char *method, const char *url, const char *headers, const char *body_path, const char *out_path);
 
 #ifdef __cplusplus
 }
