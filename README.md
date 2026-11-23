@@ -182,6 +182,16 @@ PC builds it for the app:
 The Back button opens the game's menu. Saves and settings are in the same user
 folder on the device.
 
+**On the SD card.** The launcher's Game tab has a **User folder** row: **Move to
+the SD card** moves the whole user folder (game file, native code, saves,
+settings, texture packs) to the app's folder on the SD card,
+`Android/data/io.github.gminustwo.msrnative/files/user` there, with a progress
+bar, and the launcher starts again. **Move to the phone's storage** moves it
+back. If the card is full or the copy fails, everything stays where it was. If
+the card is taken out, the app uses the phone's storage until it's back.
+Uninstalling the app deletes the user folder on the SD card too, so keep a copy
+of your saves.
+
 **GPU driver (Snapdragon).** On an Adreno GPU, the launcher's Game tab has a
 **GPU driver** row. The game can use a Vulkan driver you install in place of the
 phone's own, such as Mesa's Turnip: a driver package (`.zip`) made for emulators

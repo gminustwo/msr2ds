@@ -137,6 +137,8 @@ static int use_gl;   /* presenting with OpenGL (video_gl.c), not Vulkan */
 unsigned g_vid_acquire_fail, g_vid_present_fail, g_vid_presented; int g_vid_last_err;
 /* the main thread's waits in presenting (main.c's 2 s line): the last frame's fence, the next image, the present */
 double g_vid_wait_fence, g_vid_wait_acquire, g_vid_wait_present;
+/* the shortest and longest time between two pictures since main.c's last 2 s line took them (present_wanted; 0: none) */
+double g_vid_gap_min, g_vid_gap_max;
 static double wait_clock(void) { return (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency(); }
 
 /* why video_init failed, for the message the player sees (video_explain): Vulkan's reason, OpenGL's */
@@ -345,9 +347,11 @@ static Img fsr_tmp[3], hi_scr[3], tex_toast;   /* FSR intermediates (top, bottom
 /* Stereoscopic 3D (#17): the game draws both eyes (gsp.c raises its 3D slider while video_stereo says so) and the
    presenter draws each eye's screens into an image of its own (target: the left eye, target_r: the right), the
    interface once into ui_layer at the same size, and hdr.frag each eye with the interface over it into its half of the
-   swapchain image. Everything is laid out for one eye's window (eye_w x the height): at half width, the whole window,
-   squeezed into its half (3D TVs, Acer SpatialLabs); at full width, half the window at its own shape (VR players, a
-   double-wide window: the game's wider view follows that shape). The mouse is taken in either half (stereo_window_x). */
+   swapchain image. Everything is laid out for one eye's window (eye_w x eye_h): at half width, the whole window,
+   squeezed into its half (3D TVs, Acer SpatialLabs); at full width, half the window: a double-wide window's half at its
+   own shape (the game's wider view follows that shape), a usual window's half (narrower than 4:3: a VR player's Full
+   SBS) the window's picture at half its size, in the middle of the half (eye_band). The mouse is taken in either half
+   (stereo_window_x, stereo_window_y). */
 static int stereo_mode;   /* as the swapchain's images were made: 0 off, 1 half width, 2 full width (msr_stereo) */
 static Img target_r;
 int pica_vk_scanout(uint32_t addr, VkImageView *view, uint32_t *w, uint32_t *h);
@@ -578,14 +582,30 @@ static int hdr_wanted(void) { float pk, pp; return msr_hdr(&pk, &pp) && hdr_opti
    picture is pica_vk's scan-out image) */
 static int stereo_wanted(void) { float d; int s; return gpu_ok && vk_hw ? msr_stereo(&d, &s) : 0; }
 int video_stereo(void) { return stereo_mode; }
-/* one eye's window: its width in swapchain pixels (its height is the swapchain's) */
+/* one eye's window: its width in swapchain pixels */
 static uint32_t eye_w(void) { return stereo_mode == 2 ? (sc_extent.width > 1 ? sc_extent.width / 2 : 1) : sc_extent.width; }
+/* Stereo at full width in a usual window (2026-11-22, #17, a Quest 3 through Virtual Desktop's Full SBS: "the pause menu
+   and equipment screen, map etc. are still displayed in full height ... which means the top and bottom are cut off"):
+   each half of a 2560x1600 desktop was an eye of 1280x1600, and the player showed the middle of it at the desktop's
+   shape; play's view (16:10 at its tallest: 1280x800 there) was all in it, the pause screens over the whole half were
+   not. A half
+   narrower than 4:3 now shows the window's picture at half its size in its middle (1280x800), everything laid out
+   there; a double-wide window's half (4:3 or wider) is a picture of its own shape, its whole height. */
+static int eye_band(void) {
+    return stereo_mode == 2 && sc_extent.height > 1 && (float)eye_w() * 3.f < (float)sc_extent.height * 4.f;
+}
+/* one eye's window: its height in swapchain pixels (the swapchain's, half of it in a band) */
+static uint32_t eye_h(void) { return eye_band() ? sc_extent.height / 2 : sc_extent.height; }
 /* stereo: a window x (the mouse) -> one eye's window, the same in either half */
 static int stereo_window_x(int x, int ww) {
     if (!stereo_mode || ww < 2) return x;
     const int half = ww / 2, xi = x >= half ? x - half : x;
     return stereo_mode == 1 ? xi * 2 : xi;
 }
+/* ...and a window y, from the top of the eye's band (outside it: below 0 or past its height) */
+static int stereo_window_y(int y, int wh) { return eye_band() ? y - wh / 4 : y; }
+/* one eye's window in window coordinates: its height */
+static int stereo_window_h(int wh) { return eye_band() ? wh / 2 : wh; }
 
 static int create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps; vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, surf, &caps);
@@ -659,18 +679,19 @@ static int create_swapchain(void) {
     if (gpu_ok) {   /* the window-sized image the presenter draws into (stereo: one per eye, each eye_w wide) */
         img_free(&target); img_free(&target_r); img_free(&ui_layer);
         stereo_mode = stereo_wanted();
-        const uint32_t ew = eye_w();
-        if (img_make(&target, ew, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return -1;
-        if (stereo_mode && img_make(&target_r, ew, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return -1;
+        const uint32_t ew = eye_w(), eh = eye_h();
+        if (img_make(&target, ew, eh, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return -1;
+        if (stereo_mode && img_make(&target_r, ew, eh, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)) return -1;
         {   /* the log: stereo's layout as made (its depth and eyes: video_frame, as they change) */
             static int told = -1;
-            if (stereo_mode) fprintf(stderr, "video: stereoscopic 3D: side by side at %s width, each eye %ux%u\n", stereo_mode == 2 ? "full" : "half", ew, sc_extent.height);
+            if (stereo_mode) fprintf(stderr, "video: stereoscopic 3D: side by side at %s width, each eye %ux%u%s\n", stereo_mode == 2 ? "full" : "half", ew, eh,
+                                     eye_band() ? " (the window's picture at half size, in the middle of its half)" : "");
             else if (told > 0) fprintf(stderr, "video: stereoscopic 3D off\n");
             else if (told < 0) { float d; int s; if (msr_stereo(&d, &s)) fprintf(stderr, "video: stereoscopic 3D chosen, not shown: it needs the hardware renderer\n"); }
             told = stereo_mode;
         }
         if (hdr_mode || stereo_mode) {   /* HDR, stereo: the interface layer, views of the swapchain images (hdr.frag draws into them), the pipeline for this format */
-            if (img_make(&ui_layer, ew, sc_extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) return -1;   /* (copied: PWR_HDR_DUMP) */
+            if (img_make(&ui_layer, ew, eh, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) return -1;   /* (copied: PWR_HDR_DUMP) */
             for (uint32_t i = 0; i < sc_count; i++) {
                 VkImageViewCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = sc_images[i], .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sc_format,
                     .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
@@ -711,10 +732,12 @@ static int create_swapchain(void) {
     return 0;
 }
 
+static int present_due = 1;   /* a picture wanted whether or not the game made a new one (present_wanted) */
 static int recreate_swapchain(void) {
     const char *was = stage_set(STAGE_MAIN, "remaking the swapchain");
     queue_acquire(); vk_wait_device(dev); queue_release();
     const int r = create_swapchain();
+    present_due = 1;   /* (its images hold nothing yet) */
     stage_set(STAGE_MAIN, was);
     return r;
 }
@@ -728,6 +751,7 @@ static int recreate_surface(void) {
     if (!vk_create_surface(win, inst, &surf)) { fprintf(stderr, "video: surface: %s\n", SDL_GetError()); return -1; }
     VkBool32 pres = 0; vkGetPhysicalDeviceSurfaceSupportKHR(phys, qfam, surf, &pres);
     fprintf(stderr, "video: the window's surface again (presentable %d)\n", (int)pres);
+    present_due = 1;
     return create_swapchain();
 }
 
@@ -1500,6 +1524,12 @@ static void pad_describe(SDL_Joystick *j, int gyro, char *out, size_t n) {
 /* gamepads: only without --input=none. Controllers with an SDL mapping use the controller API; others fall back to raw joystick
    buttons/axes/hat (0..3 = south,east,west,north as most pads number them, 4/5 = L/R, 6/7 = select/start) */
 static void pad_open(int idx) {
+    /* PWR_TEST_PAD: its virtual pad alone. It lets controllers be read in the background (test runs), which let a real
+       pad plugged into this computer press buttons in the test's window too (2026-11-20). */
+    if (getenv("PWR_TEST_PAD")) {
+        const char *name = SDL_JoystickNameForIndex(idx);
+        if (!name || strcmp(name, "PWR_TEST_PAD")) return;
+    }
     if (SDL_IsGameController(idx)) {
         SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(idx);
         if (pad_of(id)) return;
@@ -1596,7 +1626,7 @@ static void msr_quad(const MsrQuad *q, const Img *bottom, float W, float H) {
     if (q->dst[2] <= 0 || q->dst[3] <= 0) return;
     MsrPush p = { { q->dst[0] / W * 2 - 1, q->dst[1] / H * 2 - 1, (q->dst[0] + q->dst[2]) / W * 2 - 1, (q->dst[1] + q->dst[3]) / H * 2 - 1 },
                   { q->src[0], q->src[1], q->src[2], q->src[3] }, { q->style[0], q->style[1], q->style[2], q->style[3] },
-                  { q->feather, q->circle, 0, 0 }, { q->color[0], q->color[1], q->color[2], q->color[3] } };
+                  { q->feather, q->circle, q->turn, 0 }, { q->color[0], q->color[1], q->color[2], q->color[3] } };
     VkDescriptorImageInfo ii = { smp_linear, bottom->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii };
     vk_push(&push_arena, cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, play_msr, 0, 1, &w);
@@ -1851,6 +1881,32 @@ static void dump_write(float paper, float peak, float knee, float desat) {   /* 
     n++;
 }
 
+/* #73: a picture only when there is something new in it: a game frame (a framebuffer swap on either screen, which
+   gsp.c takes at the game's VBlank), the menus or the launcher open, a label shown or gone, a new swapchain, or nothing
+   presented for 100 ms (a load). The main loop ticks at 60 Hz at 30 FPS (main.c: the game's VBlank every other tick),
+   and presenting on every tick showed each game frame twice, 60 presents a second: a frame limiter set to 30 (RivaTuner)
+   then slowed the loop to 30 ticks and the game to 15 FPS, and frame generation (Lossless Scaling) took 60 with every
+   other frame a copy of the one before. The display shows the same: FIFO holds the last image to the next one, as
+   before. Before the game's first swap (the boot logo, from the LCD registers) every tick presents.
+   PWR_PRESENT_EVERY_TICK=1: every tick always (A/B). */
+static int present_wanted(void) {
+    extern unsigned g_gsp_top_swaps, g_gsp_bottom_swaps;
+    static int every_tick = -1; if (every_tick < 0) every_tick = getenv("PWR_PRESENT_EVERY_TICK") != NULL;
+    static unsigned top, bottom; static double last; static int menus_were, toast_was;
+    const unsigned t = __atomic_load_n(&g_gsp_top_swaps, __ATOMIC_ACQUIRE), b = __atomic_load_n(&g_gsp_bottom_swaps, __ATOMIC_ACQUIRE);
+    const double now = now_s();
+    const int menus = msr_overlay_visible() || msr_overlay_launcher_mode(), toast = toast_text && now < toast_until;
+    if (!(every_tick || present_due || menus || menus != menus_were || toast != toast_was || toast_dirty || !t || t != top || b != bottom ||
+          now - last >= 0.1)) return 0;
+    if (last > 0) {
+        const double gap = now - last;
+        if (!g_vid_gap_min || gap < g_vid_gap_min) g_vid_gap_min = gap;
+        if (gap > g_vid_gap_max) g_vid_gap_max = gap;
+    }
+    top = t; bottom = b; last = now; menus_were = menus; toast_was = toast; present_due = 0;
+    return 1;
+}
+
 int video_frame(void) {
     test_pad_frame();
     {   /* PWR_TEST_STALL=<from s>,<every s>,<ms>: the main thread held that long now and then, from that run time on, as a
@@ -1866,7 +1922,8 @@ int video_frame(void) {
     SDL_Event e; int bottom_click = 0;
     int ww, wh; SDL_GetWindowSize(win, &ww, &wh);
     const int eye_ww = stereo_mode == 2 ? ww / 2 : ww;   /* stereo at full width: one eye's window is half of it */
-    Rect rt, rb; layout_rects(eye_ww, wh, &rt, &rb);   /* window coordinates for touch; the drawing below uses drawable pixels */
+    const int eye_wh = stereo_window_h(wh);              /* ...in a band, half its height */
+    Rect rt, rb; layout_rects(eye_ww, eye_wh, &rt, &rb);   /* window coordinates for touch; the drawing below uses drawable pixels */
     int dw0, dh0; drawable_size(&dw0, &dh0);
     float msx = ww > 0 ? (float)dw0 / (float)ww : 1.f, msy = wh > 0 ? (float)dh0 / (float)wh : 1.f;   /* the overlay's mouse: drawable pixels */
     /* (the stages: main.c's long-frame lines) */
@@ -1901,8 +1958,8 @@ int video_frame(void) {
             }
         }
         if (e.type == SDL_CONTROLLERBUTTONDOWN && !g_input_none) pad_used(pad_of(e.cbutton.which));   /* the settings name its buttons too */
-        if (e.type == SDL_MOUSEMOTION) e.motion.x = stereo_window_x(e.motion.x, ww);   /* stereo: in one eye's window */
-        else if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) e.button.x = stereo_window_x(e.button.x, ww);
+        if (e.type == SDL_MOUSEMOTION) { e.motion.x = stereo_window_x(e.motion.x, ww); e.motion.y = stereo_window_y(e.motion.y, wh); }   /* stereo: in one eye's window */
+        else if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) { e.button.x = stereo_window_x(e.button.x, ww); e.button.y = stereo_window_y(e.button.y, wh); }
         if (msr_overlay_event(&e, msx, msy)) continue;
         switch (e.type) {
         case SDL_QUIT: return 0;
@@ -2012,7 +2069,7 @@ int video_frame(void) {
             if (!rb.on || rb.w < 1 || rb.h < 1) { input_touch(0, -1, -1); break; }
             if (e.type == SDL_MOUSEBUTTONDOWN && inside) bottom_click = 1;
             int fx, fy;   /* the pause screen fitted to the window: its pieces where they are drawn (msr/compositor.cpp) */
-            if (effective_layout() == L_SINGLE && msr_panel_touch((float)mx, (float)my, (float)eye_ww, (float)wh, &fx, &fy)) input_touch(down, fx, fy);
+            if (effective_layout() == L_SINGLE && msr_panel_touch((float)mx, (float)my, (float)eye_ww, (float)eye_wh, &fx, &fy)) input_touch(down, fx, fy);
             else input_touch(down, (int)((mx - rb.x) * BOT_W / rb.w), (int)((my - rb.y) * SCR_H / rb.h));
             break; }
         case SDL_MOUSEWHEEL: {   /* the wheel changes beams (down: the next, up: the one before), a notch at a time: each
@@ -2086,6 +2143,7 @@ int video_frame(void) {
         const char *m = msr_state_message();
         if (m) { static char shown[64]; snprintf(shown, sizeof shown, "%s", m); toast_text = shown; toast_until = now_s() + 2.0; toast_dirty = 1; }
     }
+    if (!present_wanted()) return 1;   /* nothing new to show (#73) */
 #ifdef MSR_OPENGL
     if (use_gl) {
         static int told; float d; int s;
@@ -2154,12 +2212,12 @@ int video_frame(void) {
        vk_swapchain.cpp, which never submits after a failed acquire). The fence stays signaled. */
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return 1;
     vkResetFences(dev, 1, &fence);
-    layout_rects((int)eye_w(), (int)sc_extent.height, &rt, &rb);   /* drawable pixels (differs from window size on HiDPI); stereo: one eye's window */
+    layout_rects((int)eye_w(), (int)eye_h(), &rt, &rb);   /* drawable pixels (differs from window size on HiDPI); stereo: one eye's window */
     /* Samus Returns' single screen: the compositor places the view (the gallery moves it aside) and lists the HUD
        pieces, menus and prompts drawn over it; the bottom screen is never drawn as a screen */
     int single = effective_layout() == L_SINGLE; MsrFrame mf = { { 0 }, { 0 }, NULL, 0 };
     msr_set_single(single);
-    msr_compose(bot_px, now_s(), input_buttons(), (float)eye_w(), (float)sc_extent.height, &mf);   /* classifies in every layout (the triggers' taps need it) */
+    msr_compose(bot_px, now_s(), input_buttons(), (float)eye_w(), (float)eye_h(), &mf);   /* classifies in every layout (the triggers' taps need it) */
     if (single) { rt = (Rect){ mf.top[0], mf.top[1], mf.top[2], mf.top[3], 1 }; rb.on = 0; }
     else mf.count = 0;
     msr_overlay_panel(single ? mf.panel : NULL);   /* the control hints go beside the menus' panel */
@@ -2170,7 +2228,7 @@ int video_frame(void) {
     vk_mark(cmdbuf, VKM_FRAME, frame_mark);   /* (vk_diag.h: where the GPU was, if it is lost) */
     if (gpu_ok && vk_hw) pica_vk_scan_lock(1);   /* until submitted: a 3D resolution change must not free a scan-out image in use */
     if (gpu_ok) {
-        float W = (float)eye_w(), H = (float)sc_extent.height;   /* (stereo: one eye's window) */
+        float W = (float)eye_w(), H = (float)eye_h();   /* (stereo: one eye's window) */
         memcpy(up_ptr, top_px, sizeof top_px); memcpy(up_ptr + sizeof top_px, bot_px, sizeof bot_px);
         upload(&tex_top, 0); upload(&tex_bot, sizeof top_px);
         /* the layout label's scale: by window height */
@@ -2239,13 +2297,13 @@ int video_frame(void) {
         if (!msr_overlay_visible() && now_s() < toast_until && tex_toast.img)   /* layout label, top center (pixel for pixel) */
             gpu_quad(layered ? pipe_ui : pipe, &tex_toast, (Rect){ floorf((W - (float)tex_toast.w) / 2), 12, (float)tex_toast.w, (float)tex_toast.h, 1 }, W, H, 0, 1, NULL);
         vk_mark(cmdbuf, VKM_MENU, frame_mark);
-        msr_overlay_draw(cmdbuf, eye_w(), sc_extent.height);   /* the settings, the FPS counter, the hints: last */
+        msr_overlay_draw(cmdbuf, eye_w(), eye_h());   /* the settings, the FPS counter, the hints: last */
         end_pass();
         if (layered) {   /* HDR, stereo: each eye's picture with the interface over it, into the swapchain image (stereo: its half) */
             barrier_img(ui_layer.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
             barrier_img(sc_images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
             vk_mark(cmdbuf, VKM_HDR, frame_mark);
-            begin_pass_view(sc_views[idx], sc_format, sc_extent, VK_ATTACHMENT_LOAD_OP_DONT_CARE, 1);
+            begin_pass_view(sc_views[idx], sc_format, sc_extent, eye_band() ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE, 1);   /* (a band: black around it) */
             float pk, pp; msr_hdr(&pk, &pp); if (pk <= 0) pk = disp_peak; if (pp <= 0) pp = disp_paper;
             /* the knee (the SDR luminance where the highlights' expansion starts) and how far it moves them toward white:
                hdr.frag expand(); PWR_HDR_KNEE, PWR_HDR_DESAT for comparisons */
@@ -2259,7 +2317,8 @@ int video_frame(void) {
             vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe_hdr);
             for (int eye = 0; eye < eyes; eye++) {
                 const float x0 = !stereo_mode ? -1.f : (eye ^ (swap_eyes != 0)) ? 0.f : -1.f, x1 = !stereo_mode ? 1.f : x0 + 1.f;
-                Push hp = { { x0, -1, x1, 1 }, { W, H, 1, 1 }, { hdr_mode, srgb, 0, 0 }, { extra[0], extra[1], extra[2], extra[3] } };
+                const float y1 = (float)eye_h() / (float)sc_extent.height;   /* (a band: the middle half) */
+                Push hp = { { x0, -y1, x1, y1 }, { W, H, 1, 1 }, { hdr_mode, srgb, 0, 0 }, { extra[0], extra[1], extra[2], extra[3] } };
                 VkDescriptorImageInfo ii[2] = { { smp_linear, eye ? target_r.view : target.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }, { smp_linear, ui_layer.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } };
                 VkWriteDescriptorSet wds[2] = { { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[0] },
                                                 { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[1] } };
@@ -2298,6 +2357,11 @@ int video_frame(void) {
     VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem_done[idx], .swapchainCount = 1, .pSwapchains = &swap, .pImageIndices = &idx };
     double w2 = wait_clock();
     stage_set(STAGE_MAIN, "presenting the frame (vkQueuePresentKHR)");
+    {   /* PWR_TEST_LIMITER=<fps>: an outside frame limiter imitated (RivaTuner's cap, #73), each present held until 1/fps
+           after the one before */
+        static double fps = -1, at; if (fps < 0) { const char *e = getenv("PWR_TEST_LIMITER"); fps = e ? atof(e) : 0; }
+        if (fps > 0) { const double due = at + 1.0 / fps, t = wait_clock(); if (t < due) k_sleep_ns((int64_t)((due - t) * 1e9)); at = wait_clock(); }
+    }
     r = vkQueuePresentKHR(queue, &pi);
     if (r == VK_ERROR_DEVICE_LOST) vk_diag_lost("the present");
     {   /* PWR_PRESENT_HOLD_MS=<ms>: the queue held that much longer, as a driver that blocks in the present holds it (#49:

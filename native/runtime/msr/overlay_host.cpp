@@ -746,6 +746,9 @@ extern "C" void msr_overlay_frame(void) {
         case Kind::LauncherReportNew:
         case Kind::LauncherReportLogsFolder:
         case Kind::LauncherReportWebForm:
+        case Kind::LauncherPlaceMove:
+        case Kind::LauncherPlaceConfirm:
+        case Kind::LauncherPlaceCancel:
             msr_launcher_action(static_cast<int>(action.kind), action.text.c_str());
             break;
         case Kind::Quit:

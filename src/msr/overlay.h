@@ -308,6 +308,15 @@ struct LauncherSnapshot {
     std::string report_issue;     ///< Sent: the issue's page
     bool report_signed_in = false; ///< Signed in during this launcher session (kept in memory until it closes)
     std::string discord;          ///< The project's Discord invite, empty when there is none
+    /// msr-native's Android app: the user folder on the phone's storage or the SD card, and a move between them (#39)
+    enum class Place { Idle, Confirm, Moving, Failed };
+    bool place_option = false;  ///< The row is shown (the Android app)
+    bool place_on_sd = false;   ///< The user folder is on the SD card
+    bool place_sd = false;      ///< There is an SD card to move it to
+    Place place = Place::Idle;
+    std::string place_note;     ///< Confirm: the question; Moving: the progress; Failed: why; Idle: a missing card
+    bool place_bad = false;     ///< The note is a failure
+    float place_progress = -1.f; ///< Moving: 0..1
 };
 
 struct OverlayAction {
@@ -364,6 +373,9 @@ struct OverlayAction {
         LauncherReportNew,        ///< Back to an empty report
         LauncherReportLogsFolder, ///< Open the logs folder
         LauncherReportWebForm,    ///< Open the bug report form on GitHub (where reports can't be sent from here)
+        LauncherPlaceMove,        ///< msr-native (Android): move the user folder to the other place (asks first)
+        LauncherPlaceConfirm,     ///< msr-native (Android): the move confirmed
+        LauncherPlaceCancel,      ///< msr-native (Android): the move not wanted
     };
     Kind kind;
     EmulatorSettings emulator{};

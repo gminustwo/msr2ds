@@ -5,6 +5,7 @@
 #include <SDL.h>
 #include <SDL_system.h>
 #include <jni.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,7 +13,22 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-const char *msr_android_root(void) {
+/* The user folder's place (#39, 2026-11-20: "a custom user folder to have the rom and the textures in the SD card"): the
+   phone's storage or the SD card, each the app's own folder there (no permission needed). The choice is kept in the
+   app's private folder, user-place.txt: the chosen folder's path, no file for the phone's storage. A chosen folder that
+   is not there (the card taken out) leaves the phone's storage in use, and the launcher says so. */
+static int jni_failed(JNIEnv *env);
+static char place_missing[4096];
+static const char *place_file(void) {
+    static char path[4096];
+    if (!path[0]) {
+        const char *internal = SDL_AndroidGetInternalStoragePath();
+        snprintf(path, sizeof path, "%s/user-place.txt", internal ? internal : ".");
+    }
+    return path;
+}
+
+const char *msr_android_phone_root(void) {
     static char root[4096];
     if (!root[0]) {
         const char *dir = (SDL_AndroidGetExternalStorageState() & SDL_ANDROID_EXTERNAL_STORAGE_WRITE)
@@ -21,6 +37,92 @@ const char *msr_android_root(void) {
         snprintf(root, sizeof root, "%s", dir ? dir : ".");
     }
     return root;
+}
+
+const char *msr_android_root(void) {
+    static char root[4096];
+    if (!root[0]) {
+        char chosen[4096] = "";
+        FILE *f = fopen(place_file(), "r");
+        if (f) {
+            if (!fgets(chosen, sizeof chosen, f)) chosen[0] = 0;
+            fclose(f);
+            chosen[strcspn(chosen, "\r\n")] = 0;
+        }
+        struct stat st;
+        if (chosen[0] && !stat(chosen, &st) && S_ISDIR(st.st_mode) && !access(chosen, W_OK)) {
+            snprintf(root, sizeof root, "%s", chosen);
+        } else {
+            if (chosen[0]) snprintf(place_missing, sizeof place_missing, "%s", chosen);
+            snprintf(root, sizeof root, "%s", msr_android_phone_root());
+        }
+    }
+    return root;
+}
+
+const char *msr_android_root_missing(void) {
+    msr_android_root();
+    return place_missing;
+}
+
+int msr_android_set_root(const char *path) {
+    if (!path || !path[0] || !strcmp(path, msr_android_phone_root())) return unlink(place_file()) && errno != ENOENT ? -1 : 0;
+    char tmp[4200];
+    snprintf(tmp, sizeof tmp, "%s.new", place_file());
+    FILE *f = fopen(tmp, "w");
+    if (!f) return -1;
+    const int ok = fprintf(f, "%s\n", path) > 0;
+    if (fclose(f) || !ok || rename(tmp, place_file())) { unlink(tmp); return -1; }
+    return 0;
+}
+
+/* the SD card's folder for the app: getExternalFilesDirs' entries after the first (the phone's storage), the first on
+   removable storage that is mounted */
+int msr_android_sd_root(char *out, size_t n) {
+    out[0] = 0;
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return 0;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID dirs_m = (*env)->GetMethodID(env, cls, "getExternalFilesDirs", "(Ljava/lang/String;)[Ljava/io/File;");
+    jobjectArray dirs = dirs_m ? (jobjectArray)(*env)->CallObjectMethod(env, activity, dirs_m, NULL) : NULL;
+    if (jni_failed(env)) dirs = NULL;
+    jclass environment = (*env)->FindClass(env, "android/os/Environment");
+    jclass file = (*env)->FindClass(env, "java/io/File");
+    if (jni_failed(env)) environment = file = NULL;
+    jmethodID removable = environment ? (*env)->GetStaticMethodID(env, environment, "isExternalStorageRemovable", "(Ljava/io/File;)Z") : NULL;
+    jmethodID state = environment ? (*env)->GetStaticMethodID(env, environment, "getExternalStorageState", "(Ljava/io/File;)Ljava/lang/String;") : NULL;
+    jmethodID absolute = file ? (*env)->GetMethodID(env, file, "getAbsolutePath", "()Ljava/lang/String;") : NULL;
+    if (jni_failed(env)) removable = state = absolute = NULL;
+    const jsize count = dirs ? (*env)->GetArrayLength(env, dirs) : 0;
+    for (jsize i = 1; i < count && removable && state && absolute && !out[0]; i++) {
+        jobject dir = (*env)->GetObjectArrayElement(env, dirs, i);
+        if (!dir) continue;   /* a volume not mounted now */
+        const jboolean is_removable = (*env)->CallStaticBooleanMethod(env, environment, removable, dir);
+        jstring s = jni_failed(env) || !is_removable ? NULL : (jstring)(*env)->CallStaticObjectMethod(env, environment, state, dir);
+        if (jni_failed(env)) s = NULL;
+        int mounted = 0;
+        if (s) {
+            const char *c = (*env)->GetStringUTFChars(env, s, NULL);
+            mounted = c && !strcmp(c, "mounted");
+            if (c) (*env)->ReleaseStringUTFChars(env, s, c);
+            (*env)->DeleteLocalRef(env, s);
+        }
+        jstring path = mounted ? (jstring)(*env)->CallObjectMethod(env, dir, absolute) : NULL;
+        if (jni_failed(env)) path = NULL;
+        if (path) {
+            const char *c = (*env)->GetStringUTFChars(env, path, NULL);
+            if (c) { snprintf(out, n, "%s", c); (*env)->ReleaseStringUTFChars(env, path, c); }
+            (*env)->DeleteLocalRef(env, path);
+        }
+        (*env)->DeleteLocalRef(env, dir);
+    }
+    if (dirs) (*env)->DeleteLocalRef(env, dirs);
+    if (environment) (*env)->DeleteLocalRef(env, environment);
+    if (file) (*env)->DeleteLocalRef(env, file);
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, activity);
+    return out[0] != 0;
 }
 
 const char *msr_android_module(const char *path) {
