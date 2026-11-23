@@ -660,6 +660,17 @@ extern "C" void msr_overlay_frame(void) {
     using Kind = MSR::OverlayAction::Kind;
     MSR::FrameRate::game_frames.store(g_gsp_top_swaps, std::memory_order_relaxed);
     if (!launcher_mode) msr_report_tick();   // the REPORT tab's state, as its worker left it (launcher.cpp)
+#ifdef __ANDROID__
+    {   // the on-screen keyboard while a text field is typed in (the REPORT tab's): Android shows it only when asked,
+        // where desktop systems take typed text all the time
+        static bool keyboard = false;
+        if (const bool typing = O().Typing(); typing != keyboard) {
+            keyboard = typing;
+            if (typing) SDL_StartTextInput();
+            else SDL_StopTextInput();
+        }
+    }
+#endif
     if (capturing >= 0) {
         if (!capture_armed && !video_pad_any_held()) capture_armed = true;
         if (Now() > capture_until) {
