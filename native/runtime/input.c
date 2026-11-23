@@ -237,6 +237,9 @@ void input_pad_sdl(int button, int down) {
     const int trigger = button == PAD_TRIGGER_LEFT || button == PAD_TRIGGER_RIGHT;
     if (!trigger && (button < 0 || button >= SDL_CONTROLLER_BUTTON_MAX)) return;
     const int c = down ? input_pad_control_now(button) : -1;
+    static int tr = -1; if (tr < 0) tr = getenv("PWR_INPUT_TRACE") != NULL;
+    if (tr && down && (button == SDL_CONTROLLER_BUTTON_A || button == SDL_CONTROLLER_BUTTON_B))
+        fprintf(stderr, "input: pad %s -> 3DS %s\n", button == SDL_CONTROLLER_BUTTON_A ? "A" : "B", c == C_A ? "A" : c == C_B ? "B" : c < 0 ? "nothing" : "another button");
     pthread_mutex_lock(&I);
     if (trigger) trigger_held[button - PAD_TRIGGER_LEFT] = (unsigned char)(c + 1);
     else pad_held[button] = (unsigned char)(c + 1);
@@ -332,6 +335,11 @@ void input_update(void) {
     if (!cx && !cy) { cx = ax; cy = ay; }
     if (mouse_aim) { cx = (int)lrintf(aim_x * CIRCLE_MAX); cy = (int)lrintf(aim_y * CIRCLE_MAX); }
     uint32_t btn = keys | pad_keys | rstick_bits | mouse_buttons();
+    /* A Teleport Station's area map (#69; 2026-11-22, the user: "the mouse does work but the wasd keys do not work on
+       that"): the game chooses the station with the D-pad's Left and Right only, its circle pad moving the map, while
+       the world map before it takes either. There the circle pad's digital Left and Right (WASD, the arrows, a pad's
+       D-pad under the right stick option) are the D-pad's; the analog stick still moves the map. */
+    if (dx && !mouse_aim && msr_station_map()) { btn |= dx > 0 ? B_RIGHT : B_LEFT; cx = 0; }
     if (msr_input_blocked()) { btn = 0; cx = cy = 0; }   /* Samus Returns' touch navigation has the pad (msr/compositor.cpp) */
     if (cx > 0x28) btn |= B_CRIGHT; if (cx < -0x28) btn |= B_CLEFT;
     if (cy > 0x28) btn |= B_CUP;    if (cy < -0x28) btn |= B_CDOWN;

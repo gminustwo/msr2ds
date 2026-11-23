@@ -957,14 +957,17 @@ int main(int argc, char **argv) {
                     block_max_ms, block_over[0], block_over[1], block_over[2], span, dip ? ", a dip in its last 2 s" : "");
             load_line(span, g_gsp_top_swaps - block_swaps, block_max_ms, fps);
             {   /* the main thread's waits in presenting, per presented frame (video.c) */
-                extern double g_vid_wait_fence, g_vid_wait_acquire, g_vid_wait_present, g_vid_wait_queue_gx; extern unsigned g_vid_gx_kept;
+                extern double g_vid_wait_fence, g_vid_wait_acquire, g_vid_wait_present, g_vid_wait_queue_gx, g_vid_gap_min, g_vid_gap_max; extern unsigned g_vid_gx_kept;
                 static unsigned last_presented, last_kept;
                 const unsigned np = g_vid_presented - last_presented, kept = g_vid_gx_kept - last_kept; last_presented = g_vid_presented; last_kept = g_vid_gx_kept;
+                /* (and the pictures' spacing, #73: one per game frame, 33 ms apart at 30 FPS, where each frame went out twice) */
                 if (np) fprintf(stderr, "native: presenting waits per frame: last frame's fence %.2f ms, next image %.2f ms, present %.2f ms; "
-                                "the GX thread's wait for the queue %.2f ms (its submissions kept while the queue was in use: %.1f)\n",
+                                "the GX thread's wait for the queue %.2f ms (its submissions kept while the queue was in use: %.1f); "
+                                "%u pictures in %.1f s, %.1f to %.1f ms apart\n",
                                 g_vid_wait_fence * 1e3 / np, g_vid_wait_acquire * 1e3 / np, g_vid_wait_present * 1e3 / np,
-                                g_vid_wait_queue_gx * 1e3 / np, (double)kept / np);
+                                g_vid_wait_queue_gx * 1e3 / np, (double)kept / np, np, span, g_vid_gap_min * 1e3, g_vid_gap_max * 1e3);
                 g_vid_wait_fence = g_vid_wait_acquire = g_vid_wait_present = g_vid_wait_queue_gx = 0;
+                g_vid_gap_min = g_vid_gap_max = 0;
             }
             { extern void dsp_stats(void); dsp_stats(); extern void gsp_stats(void); gsp_stats(); }
             if (msr_textures_active()) { unsigned nt, nl, nf; msr_textures_stats(&nt, &nl, &nf);

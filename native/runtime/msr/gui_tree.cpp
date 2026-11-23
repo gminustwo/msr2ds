@@ -25,6 +25,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include "msr.h"
@@ -207,6 +209,37 @@ void Sprite(u32 o, const MsrGuiItem& base) {
     const float sx = F(o + 0x24), sy = F(o + 0x28);
     if (sx > 0.f && sx < 64.f) it.w = base.w * sx;
     if (sy > 0.f && sy < 64.f) it.h = base.h * sy;
+    // Its drawn turn (+0x18, radians; clockwise on the screen), about its drawn corner. 2026-11-20 (#71; the user: "the
+    // drift ability is indeed not centered"): Phase Drift's icon on the Aeion abilities' page is the sheet's upward
+    // chevrons turned a quarter counterclockwise (-1.5706), its corner at (136, 190): turned, its 46 x 46 lies at 136-182,
+    // 144-190, on its slot (130-190, 137-197), as the game draws it on the touch screen (pointing left); drawn unturned
+    // from that corner, it pointed up below the slot. Quarter turns only (the only ones seen); any other angle is drawn
+    // unturned, as before.
+    {
+        const float angle = F(o + 0x18);
+        const float quarters = angle / 1.5707964f;
+        const float nearest = std::round(quarters);
+        if (std::isfinite(angle) && std::fabs(quarters - nearest) < .02f && std::fabs(nearest) < 8.f)
+            it.turn = ((static_cast<int>(nearest) % 4) + 4) % 4;
+        if (it.turn) {
+            const float w = it.w, h = it.h;
+            // the corners (0, 0), (w, 0), (0, h), (w, h) turned about (0, 0): (dx, dy) -> (dx c - dy s, dx s + dy c)
+            const float c = it.turn == 2 ? -1.f : 0.f, s = it.turn == 1 ? 1.f : it.turn == 3 ? -1.f : 0.f;
+            const float xs[4] = {0.f, w * c, -h * s, w * c - h * s}, ys[4] = {0.f, w * s, h * c, w * s + h * c};
+            it.x = base.x + *std::min_element(xs, xs + 4);
+            it.y = base.y + *std::min_element(ys, ys + 4);
+            it.w = it.turn == 2 ? w : h;
+            it.h = it.turn == 2 ? h : w;
+            // PWR_MSR_TRACE: each turned sprite once
+            static const bool trace = std::getenv("PWR_MSR_TRACE") != nullptr;
+            static u32 told[32];
+            static int told_n;
+            if (trace && told_n < 32 && std::find(told, told + told_n, base.name) == told + told_n) {
+                told[told_n++] = base.name;
+                std::fprintf(stderr, "msr: GUI: %08x turned %d quarter(s) clockwise, at %.0f, %.0f\n", base.name, it.turn, it.x, it.y);
+            }
+        }
+    }
     it.atlas = msr_gui_atlas_by_path(rd32(o + 0x114));
     if (it.atlas < 0) return;   // a texture not loaded here: left out
     float uv[4] = {F(o + 0x118), F(o + 0x11C), 0.f, 0.f};
@@ -235,9 +268,11 @@ void Sprite(u32 o, const MsrGuiItem& base) {
 struct TextFields { u32 text, length, font, align; };
 constexpr TextFields LabelFields{0xF8, 0xFC, 0x148, 0x15C}, TextFieldsHud{0x12C, 0x130, 0x11C, 0x120};
 
+// (A label's text up to 2048 characters: the pause's Samus page describes the Grapple Beam in 300 (363 in Spanish);
+// above 256 the description was left out, #80.)
 void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
     const u32 text = rd32(o + at.text), length = rd32(o + at.length);
-    if (length == 0 || length > 256 || !ValidRange(text, length * 2)) return;
+    if (length == 0 || length > 2048 || !ValidRange(text, length * 2)) return;
     const u32 font_object = rd32(o + at.font);
     if (!ValidRange(font_object, 4)) return;
     const u32 resource = rd32(font_object);
@@ -251,8 +286,17 @@ void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
     if (labelled.anchor == MSR_ANCHOR_STRETCH)
         labelled.anchor = align == 1 ? MSR_ANCHOR_MIDDLE : align == 2 ? MSR_ANCHOR_RIGHT : MSR_ANCHOR_LEFT;
 
-    // the text's pieces: glyphs, embedded sprites, spaces and line breaks
-    enum Kind { Glyph, Sprite, Space, Break };
+    // Lines apart by the label's line height (CLabel +0x158, as the game works it out: 18 for the 20-pixel fonts, 15
+    // for digital_medium; else 0.9 of the size), the block (the lines above the last, and 1.2 times the size for it)
+    // centered in the box where it is shorter, else from its top. Measured: one line in boxes 14 to 24 pixels tall
+    // starts at their top, the copy prompt's in its 90 is centered, the Samus page's two-line description 15 apart.
+    // A page holds as many lines as the box (a paged label's, below).
+    const u32 game_line = at.text == LabelFields.text ? rd32(o + 0x158) : 0;
+    const float line_height = (game_line >= 4 && game_line <= 64 ? static_cast<float>(game_line) : std::round(size * .9f)) * sy;
+    const auto per = line_height > 0.f ? static_cast<std::size_t>(std::max(1.f, std::floor((base.h + 1.f) / line_height))) : 0;
+
+    // the text's pieces: glyphs, embedded sprites, spaces, line breaks and page breaks
+    enum Kind { Glyph, Sprite, Space, Break, PageBreak };
     struct Piece { Kind kind; MsrGlyph g; int atlas; float uv[4], w, h, advance; u32 icon; };
     std::vector<Piece> all;
     all.reserve(length);
@@ -280,6 +324,11 @@ void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
                 i = j;
                 continue;
             }
+        } else if (c == '@') {   // a page ends there, with the line break after it (#80: "rayo cargado.@|Mantén", the
+            p.kind = PageBreak;  // Spanish Charge Beam's third page one line; the @ drawn, and the pages after it off by one)
+            all.push_back(p);
+            if (i + 1 < length && (rd16(text + 2 * i + 2) == '|' || rd16(text + 2 * i + 2) == '\n')) ++i;
+            continue;
         }
         if (c == '\n' || c == '|') {   // (the game's texts break their lines with |: "even|more powerful")
             p.kind = Break;
@@ -302,10 +351,17 @@ void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
             line.pieces.pop_back();
         }
     };
-    for (std::size_t i = 0; i < all.size() && lines.size() <= 32;) {
+    for (std::size_t i = 0; i < all.size() && lines.size() <= 128;) {
         if (all[i].kind == Break) {
             trim(lines.back());
             lines.emplace_back();
+            ++i;
+            continue;
+        }
+        if (all[i].kind == PageBreak) {   // the next line starts a page
+            trim(lines.back());
+            if (!lines.back().pieces.empty()) lines.emplace_back();
+            while (per > 1 && (lines.size() - 1) % per != 0) lines.emplace_back();
             ++i;
             continue;
         }
@@ -330,30 +386,29 @@ void Label(u32 o, const MsrGuiItem& base, const TextFields& at) {
         }
     }
     trim(lines.back());
-    // Lines apart by the label's line height (CLabel +0x158, as the game works it out: 18 for the 20-pixel fonts, 15
-    // for digital_medium; else 0.9 of the size), the block (the lines above the last, and 1.2 times the size for it)
-    // centered in the box where it is shorter, else from its top. Measured: one line in boxes 14 to 24 pixels tall
-    // starts at their top, the copy prompt's in its 90 is centered, the Samus page's two-line description 15 apart.
-    const u32 game_line = at.text == LabelFields.text ? rd32(o + 0x158) : 0;
-    const float line_height = (game_line >= 4 && game_line <= 64 ? static_cast<float>(game_line) : std::round(size * .9f)) * sy;
     // A paged label (CLabel: +0x168 its pages, +0x17C the page shown, +0x194 how many of that page's characters are
     // typed out so far, an embedded sprite one): the game shows as many lines as its box holds, types them out and turns
-    // the page on A (the Aeion abilities' description). Laid out whole, every page showed at once, the first in the box
-    // and the rest past it (until 2026-11-18). Its pages as the game counts them, else (a text wrapped otherwise here)
-    // all of it as before. A label of one page is typed out too (the pause's Samus page: the user, "it sounds like text
-    // is appearing or something but when you look text is just there"); one the game shows at once counts all of its
-    // characters typed. (Not by +0x190, the page's length: it reads another number for a moment now and then.)
+    // the page on A (the Aeion abilities' description) or on Down (the pause's Samus page). Laid out whole, every page
+    // showed at once, the first in the box and the rest past it (until 2026-11-18). Its pages as the game counts them;
+    // a text wrapped into another number of pages here shows the page of its lines here that the game's page number
+    // says, all of it at once (the game's count of typed characters is for its own page). A label of one page is typed
+    // out too (the pause's Samus page: the user, "it sounds like text is appearing or something but when you look text
+    // is just there"); one the game shows at once counts all of its characters typed. (Not by +0x190, the page's
+    // length: it reads another number for a moment now and then.)
     std::size_t first = 0, shown = lines.size();
     long typed = -1;   // (-1: every character)
     if (at.text == LabelFields.text && ValidRange(o, 0x198)) {
         const u32 pages = rd32(o + 0x168), page = rd32(o + 0x17C), chars = rd32(o + 0x194);
-        const auto per = line_height > 0.f ? static_cast<std::size_t>(std::max(1.f, std::floor((base.h + 1.f) / line_height))) : 0;
+        const std::size_t here = per > 0 ? (lines.size() + per - 1) / per : 0;   // the pages of the lines here
         if (pages == 1 && page == 0) {
             if (chars < 4096) typed = static_cast<long>(chars);
-        } else if (pages >= 2 && pages <= 32 && page < pages && per > 0 && (lines.size() + per - 1) / per == pages) {
+        } else if (pages >= 2 && pages <= 64 && page < pages && per > 0 && here == pages) {
             first = page * per;
             shown = std::min(per, lines.size() - first);
             if (chars < 4096) typed = static_cast<long>(chars);
+        } else if (pages >= 2 && pages <= 64 && page < pages && here >= 2) {
+            first = std::min<std::size_t>(page, here - 1) * per;
+            shown = std::min(per, lines.size() - first);
         }
     }
     const float block = line_height * static_cast<float>(shown - 1) + std::round(size * 1.2f) * sy;
@@ -690,6 +745,15 @@ extern "C" int msr_gui_abilities(void) {
 extern "C" int msr_gui_dialog(void) {
     const Found* box = Named(0x7604B315u /* USMComposition */);
     return Shown(box) && F(box->object + 0x3C) > 0.f ? 1 : 0;
+}
+
+// The HUD's opacity as the game holds it (UpperComposition, energy and missiles; LowerComposition and SideComposition
+// fade with it): 0 to 1 while it and every container above it are shown, -1 when there is none (the title menus,
+// loading). After a file loads, the game fades it to half while Samus stands in the save station, then to whole as
+// play starts; during loading it is 0.
+extern "C" float msr_gui_hud_alpha(void) {
+    const Found* hud = Named(0x77BEC36Bu /* UpperComposition */);
+    return Shown(hud) ? F(hud->object + 0x3C) : -1.f;
 }
 
 // A paged label of the in-game interface by its name hash (Label: its page's length +0x190, how much of it is typed

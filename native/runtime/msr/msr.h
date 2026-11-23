@@ -75,6 +75,7 @@ typedef struct {
                          3: one of the game's atlases, atlas (msr_gui_atlas; src in it, 0..1) */
     int atlas;        /* source 3: MSR_ATLAS_* */
     float color[4];   /* fill colour */
+    int turn;         /* src turned in dst by quarter turns (MsrGuiItem.turn; msr.vert) */
 } MsrQuad;
 
 typedef struct {
@@ -155,6 +156,7 @@ void msr_touch_finger(int down);         /* press (hold to drag) and lift */
 void msr_touch_close(void);
 void msr_touch_frame(float stick_x, float stick_y, int any_held);   /* each frame: stick (-1..1, y up), anything held */
 int  msr_input_blocked(void);            /* the game gets no pad input (touch navigation, until its closing button is up) */
+int  msr_station_map(void);              /* a Teleport Station's area map shows, where the D-pad chooses the station */
 
 /* ---- cheats (cheats.cpp; the emulator-based build's ApplyMsrRefills) ---- */
 void msr_cheats_frame(double now);   /* each VBlank: the extras' patches follow the settings, refills, setter calls queued */
@@ -233,6 +235,8 @@ typedef struct {
     uint32_t sprite;    /* a sprite's sheet item's name hash (Button_Selected ...) */
     int anchor;         /* where it goes on a touch screen drawn wider than 4:3 (MSR_ANCHOR_*) */
     uint32_t group;     /* the named container it lies in where one matters (ControlsComposition: the pause's Controls page) */
+    int turn;           /* a sprite the game turns: quarter turns (1 a quarter clockwise on the screen, 3 counterclockwise);
+                           x, y, w, h are then the turned picture's rectangle (MsrQuad.turn) */
 } MsrGuiItem;
 /* MsrGuiItem.anchor: kept to the middle (as the 3DS draws it), to the left or right edge (a piece, or its group, against
    that edge of the screen, or lying in one that is), stretched between its ends (a piece wider than 60% of the screen
@@ -250,6 +254,9 @@ int msr_gui_abilities(void);
 /* The top screen's message box (USMComposition: an item's name, "Use the Teleport Station?", a Recharge Station's
    message): 1 while it shows. Main thread. */
 int msr_gui_dialog(void);
+/* The HUD's opacity as the game holds it (0 to 1), -1 when it has none: in play's buttons from its first fade in after a
+   load, before the bottom screen reads as the HUD (compositor.cpp). Main thread. */
+float msr_gui_hud_alpha(void);
 /* Objects of the in-game interface by their name hashes, shown or not, on either screen: each as msr_gui_tree's pieces
    (a sprite with its picture; anything else its rectangle and color, atlas -1), w 0 for one not found. The count found.
    Main thread. */

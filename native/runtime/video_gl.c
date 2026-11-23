@@ -138,7 +138,7 @@ static void msr_quad(const MsrQuad *q, const Tex *bottom, float W, float H) {
     if (q->dst[2] <= 0 || q->dst[3] <= 0) return;
     MsrPush p = { { q->dst[0] / W * 2 - 1, q->dst[1] / H * 2 - 1, (q->dst[0] + q->dst[2]) / W * 2 - 1, (q->dst[1] + q->dst[3]) / H * 2 - 1 },
                   { q->src[0], q->src[1], q->src[2], q->src[3] }, { q->style[0], q->style[1], q->style[2], q->style[3] },
-                  { q->feather, q->circle, 0, 0 }, { q->color[0], q->color[1], q->color[2], q->color[3] } };
+                  { q->feather, q->circle, q->turn, 0 }, { q->color[0], q->color[1], q->color[2], q->color[3] } };
     glBindTexture(GL_TEXTURE_2D, bottom->id);
     push(&p, sizeof p);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);

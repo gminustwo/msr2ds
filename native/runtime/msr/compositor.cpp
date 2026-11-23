@@ -302,8 +302,10 @@ void GuiQuads(const std::vector<MsrGuiItem>& items, float x, float y, float w, f
         if (focus && it.glyph && it.name == chosen_label && label_color[3] >= 0.f) std::copy(label_color, label_color + 4, q.color);
         if (pulse_floor >= 0.f) q.color[3] = pulse_floor + (1.f - pulse_floor) * std::min(it.color[3] / .88f, 1.f);
         // the part inside its clip (the pause map's view, opened to the window's width when wider), its texture with it
+        // (a turned sprite, gui_tree.cpp: whole, its texture turned in the shader; none is clipped or stretched so far)
         float x0 = it.x, y0 = it.y, x1 = it.x + it.w, y1 = it.y + it.h;
-        if (it.clip[2] > it.clip[0]) {
+        q.turn = it.turn;
+        if (it.clip[2] > it.clip[0] && !it.turn) {
             const bool open = extra > 0.f && it.anchor == MSR_ANCHOR_MAP;
             x0 = std::max(x0, open && it.clip[0] <= 2.f ? -1e9f : it.clip[0]);
             x1 = std::min(x1, open && it.clip[2] >= 318.f ? 1e9f : it.clip[2]);
@@ -320,7 +322,7 @@ void GuiQuads(const std::vector<MsrGuiItem>& items, float x, float y, float w, f
         // its pieces across: one, or (stretched on a wider screen) its two ends and its middle
         std::array<float, 4> cuts{x0, x1, x1, x1};
         int pieces = 1;
-        if (it.anchor == MSR_ANCHOR_STRETCH && extra > 0.f) {
+        if (it.anchor == MSR_ANCHOR_STRETCH && extra > 0.f && !it.turn) {
             const float cap = it.w * StretchCap, a = std::clamp(it.x + cap, x0, x1), b = std::clamp(it.x + it.w - cap, x0, x1);
             cuts = {x0, a, std::max(a, b), x1};
             pieces = 3;
@@ -610,6 +612,9 @@ struct PauseState {
 };
 std::mutex pause_lock;
 PauseState pause_shared;
+// A Teleport Station's area map shows, its bar's D-pad buttons choosing the station (msr_station_map)
+constexpr uint32_t StationLeft = 0x63B1A204u /* ButtonSelectLeftBase */, StationRight = 0x44C42AABu /* ...RightBase */;
+std::atomic<bool> station_map{false};
 
 void PauseFromTree() {
     PauseState next;
@@ -619,8 +624,21 @@ void PauseFromTree() {
     // controls are the game's; the map's tools come back with the map.
     const bool world_map = !gui_now.empty() && msr_gui_world_map() > .5f;   // (the tree read this frame)
     P::world_map.store(world_map, std::memory_order_relaxed);
+    // A map the game opened over play, without Start (a Teleport Station's, an elevator's): its controls are the game's
+    // too. A Teleport Station's area map, where Left and Right choose the station, read as the map pins tool, and the
+    // pins' D-pad kept Left and Right from the game (#69, #83: the stations could only be clicked).
+    const bool own_map = P::menu_unasked.load(std::memory_order_relaxed);
+    // ...and on that area map, the station is chosen only with the D-pad, the circle pad moving the map (input.c lets
+    // the keys that move the circle pad choose there too)
+    bool station = false;
+    if (own_map && !world_map)
+        for (const auto& it : gui_now)
+            if (!it.glyph && (it.name == StationLeft || it.name == StationRight) && it.color[3] > .05f) { station = true; break; }
+    station_map.store(station, std::memory_order_relaxed);
     if (world_map) {
         next.page = 3;
+    } else if (own_map) {
+        next.page = 0;
     } else if (page == P::Page::PauseMap && P::panel_visible.load(std::memory_order_relaxed)) {
         for (const auto& button : PauseToolbar) {
             for (const auto& it : gui_now) {
@@ -1284,8 +1302,16 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     // anything else held 300 ms (2026-11-03, the user: "in game it also needs to change too": the game's dialogs over
     // play, "Save your progress?", show the emblem below). Its icons follow from a menu, or a prompt held 300 ms (the
     // title's), until the HUD shows; cutscenes, loading and those dialogs keep what was (their text names play's buttons).
-    if (state == P::Bottom::Hud) {
-        st.hud_seen_us = now_us;
+    // The game's own HUD counts from its first fade in (its opacity, gui_tree.cpp), where the bottom screen is not read as
+    // a menu or a prompt: after a file loads, the game fades it to half while Samus stands in the save station and then
+    // to whole, and gives her play's buttons as it does, but the bottom screen read as the HUD only near the end of that
+    // fade (83% of it, 2.4 s after it began, 2026-11-20). Until then the pad's bottom button was still 3DS A, which in
+    // play uses the Aeion ability (#61: "if you press A after loading a new file, one of the special abilities
+    // activate"). The pause menu, the game's screens over play (an elevator's map, the Aeion abilities' page) and its
+    // message boxes keep the menus' layout as before.
+    const bool game_hud = state != P::Bottom::Menu && state != P::Bottom::Prompt && msr_gui_hud_alpha() > 0.f;
+    if (state == P::Bottom::Hud || game_hud) {
+        if (state == P::Bottom::Hud) st.hud_seen_us = now_us;
         st.menu_icons = false;
     } else if (state == P::Bottom::Menu || (state == P::Bottom::Prompt && now_us - st.prompt_since_us >= 300'000)) {
         st.menu_icons = true;
@@ -1295,7 +1321,7 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     // letting you out of that menu": the box's A, drawn in the menus' layout always, was the pad's bottom button, which
     // in play is bound to Jump, 3DS B)
     const bool dialog = st.in_play && msr_gui_dialog();
-    msr_buttons_state(dialog || (state != P::Bottom::Hud && (state == P::Bottom::Menu || now_us - st.hud_seen_us >= 300'000)),
+    msr_buttons_state(dialog || (state != P::Bottom::Hud && !game_hud && (state == P::Bottom::Menu || now_us - st.hud_seen_us >= 300'000)),
                       st.menu_icons);
     const auto page = static_cast<P::Page>(P::page.load(std::memory_order_relaxed));
     // Play ends at the title menus or a prompt (the title's, the prologue's), but not at the pause menu's own dialogs,
@@ -2034,6 +2060,9 @@ int PauseInput(uint32_t* buttons, uint32_t dpad, int* take, int* cx, int* cy, in
     }
     // a page shows: its own button chosen, unless it is the one just left (a moment's change of the reading)
     if (state.page != pause_page && !tapping) {
+        static const bool trace = std::getenv("PWR_MSR_TRACE") != nullptr;
+        if (trace) std::fprintf(stderr, "msr: pause D-pad page %d (%d buttons)%s\n", state.page, state.count,
+                                state.page == 1 || state.page == 2 ? ": the D-pad is the port's" : "");
         if (state.page == 0) {
             pause_left = now;
             pause_left_page = pause_page;
@@ -2451,4 +2480,5 @@ extern "C" void msr_touch_frame(float x, float y, int any_held) {
     }
 }
 extern "C" int msr_input_blocked(void) { return P::block_game_input.load(std::memory_order_relaxed); }
+extern "C" int msr_station_map(void) { return station_map.load(std::memory_order_relaxed) ? 1 : 0; }
 

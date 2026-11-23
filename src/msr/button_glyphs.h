@@ -57,6 +57,9 @@ inline constexpr u32 CellSize = 13;
 /// The L and R icons (a tab with the letter cut in, one top corner cut off) are 18 x 13.
 inline constexpr u32 ShoulderWidth = 18, ShoulderHeight = 13;
 enum Shoulder : u32 { ShoulderL, ShoulderR, ShoulderCount };
+/// The D-pad icons (a cross with one arm marked: the sprites D-UP, D-DOWN, D-LEFT and D-RIGHT), 13 x 13
+/// cells in their 15 x 15 places as the faces' are.
+enum Direction : u32 { DpadUp, DpadDown, DpadLeft, DpadRight, DpadCount };
 
 struct Sheet {
     u64 hash; ///< CityHash64 of the texture's data in emulated memory (Azahar's "new" hash)
@@ -64,17 +67,21 @@ struct Sheet {
     u32 format; ///< VideoCore::PixelFormat
     std::array<Cell, FaceCount> cells;
     std::array<Cell, ShoulderCount> shoulders; ///< L, R
+    std::array<Cell, DpadCount> dpad;          ///< up, down, left, right
 };
 
 /// Samus Returns (USA).
 inline constexpr std::array<Sheet, 3> Sheets{{
     // The font sheet (IA8), several sizes of text and the button icons.
-    {0x5223C28BC4470EB0, 512, 256, 5, {{{23, 204}, {87, 143}, {25, 221}, {105, 139}}}, {{{2, 226}, {63, 159}}}},
+    {0x5223C28BC4470EB0, 512, 256, 5, {{{23, 204}, {87, 143}, {25, 221}, {105, 139}}}, {{{2, 226}, {63, 159}}},
+     {{NoCell, NoCell, NoCell, NoCell}}},
     // The interface atlas (I8): the same icons beside the D-pad, L, R and START sprites.
-    {0xB0F410A02C69F9AB, 1024, 512, 7, {{{706, 66}, {691, 66}, {706, 51}, {691, 51}}}, {{{720, 66}, {720, 51}}}},
+    {0xB0F410A02C69F9AB, 1024, 512, 7, {{{706, 66}, {691, 66}, {706, 51}, {691, 51}}}, {{{720, 66}, {720, 51}}},
+     {{{676, 66}, {661, 66}, {661, 51}, {676, 51}}}},
     // The top screen's interface atlas (RGBA8): the dialogs' "(A) check mark" and "(B) cross"
     // ("Save your progress?"), only A and B.
-    {0x6EFC9BD1FD290C7A, 512, 256, 0, {{{415, 46}, {426, 31}, NoCell, NoCell}}, {{NoCell, NoCell}}},
+    {0x6EFC9BD1FD290C7A, 512, 256, 0, {{{415, 46}, {426, 31}, NoCell, NoCell}}, {{NoCell, NoCell}},
+     {{NoCell, NoCell, NoCell, NoCell}}},
 }};
 
 /// A sheet's pixels: the game's texture as the renderer decodes it, or a texture pack's
@@ -108,6 +115,9 @@ inline constexpr char LetterOf(u32 all, u32 face) {
 }
 /// The same for the L and R icons (the keyboard: the keys L and R are bound to), 8 bits each.
 inline std::atomic<u32> shoulder_letters{0};
+/// The same for the D-pad icons (the keyboard: the keys the D-pad's directions are bound to, 1 to 4), 8
+/// bits each in Direction order: drawn in the A icon's disc in place of the cross.
+inline std::atomic<u32> dpad_letters{0};
 
 /// A plain stroke font for those: polylines on a 4 x 6 grid (x right, y down), -1 ends a line.
 inline const std::vector<float>& LetterStrokes(char c) {
@@ -339,6 +349,48 @@ inline void WriteShoulders(const Sheet& sheet, const Image& image, u32 keys) {
         DrawMark(out.data(), w, h, std::size_t{w} * 4, icon.data(), NoSymbol, letter);
         for (u32 y = 0; y < h; ++y) {
             std::memcpy(row_of(y), out.data() + std::size_t{y} * w * 4, std::size_t{w} * 4);
+        }
+    }
+}
+
+/// The key letters `keys` names (Direction order, 8 bits each) in the D-pad icons' places, in place of
+/// the cross: the A icon as the game draws it (`icons`, read before any are rewritten, and the pixels
+/// around its cell) with the key cut in, as the faces' keys are. A place is written whole, or not at all.
+inline void WriteDpad(const Sheet& sheet, const Image& image, const Icons& icons, u32 keys) {
+    if (!keys || image.bpp != 4 || !Has(sheet.cells[A])) {
+        return;
+    }
+    const u32 scale = image.width / sheet.width, size = CellSize * scale, place = size + 2 * scale;
+    // a cell's 15 x 15 place, row y from its top (the image's rows run bottom first)
+    const auto row_of = [&](const Cell& cell, u32 y) {
+        return image.pixels + ((image.height - 1 - ((cell.y - 1) * scale + y)) * std::size_t{image.width} +
+                               (cell.x - 1) * scale) * 4;
+    };
+    const std::size_t place_row = std::size_t{place} * 4, cell_row = std::size_t{size} * 4;
+    std::vector<u8> around(place_row * place);   // the A icon's place (its pixels around the cell)
+    for (u32 y = 0; y < place; ++y) {
+        std::memcpy(around.data() + y * place_row, row_of(sheet.cells[A], y), place_row);
+    }
+    for (u32 d = 0; d < DpadCount; ++d) {
+        const char letter = LetterOf(keys, d);
+        if (LetterStrokes(letter).empty() || !Has(sheet.dpad[d])) {
+            continue;
+        }
+        std::vector<u8> cross(cell_row * size);   // the cross as it is, to tell whether the key was drawn
+        for (u32 y = 0; y < size; ++y) {
+            std::memcpy(cross.data() + y * cell_row, row_of(sheet.dpad[d], scale + y) + std::size_t{scale} * 4, cell_row);
+        }
+        std::vector<u8> key = cross;
+        DrawSymbol(key.data(), size, cell_row, icons[A].data(), NoSymbol, letter);
+        if (key == cross) {
+            continue;   // the A icon is not a disc with a letter (a pack's)
+        }
+        for (u32 y = 0; y < place; ++y) {
+            u8* out = row_of(sheet.dpad[d], y);
+            std::memcpy(out, around.data() + y * place_row, place_row);
+            if (y >= scale && y < scale + size) {
+                std::memcpy(out + std::size_t{scale} * 4, key.data() + (y - scale) * cell_row, cell_row);
+            }
         }
     }
 }

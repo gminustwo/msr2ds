@@ -3,8 +3,9 @@
 // pica_vk.c uploads them, a texture pack's too) and the control reminders' names (overlay.cpp). An Xbox pad (also
 // Steam's virtual pads and other pads SDL cannot name) shows the game's letter icons as Xbox labels its buttons, a
 // PlayStation pad its symbols, a Nintendo pad the game's own icons; the keyboard the letter or digit of the key bound
-// to each (the space bar's sign for Space, the game's icon where the key's name is longer) and in the L and R icons the
-// letters of their keys (Q and E), and the reminders name its keys (the circle pad's and touch navigation's from the
+// to each (the space bar's sign for Space, the game's icon where the key's name is longer), in the L and R icons the
+// letters of their keys (Q and E) and in the D-pad icons' places its keys (1 to 4, in the A icon's disc), and the
+// reminders name its keys (the circle pad's and touch navigation's from the
 // bindings too). MSR_BUTTON_ICONS=xbox|playstation|nintendo|keyboard forces one (tests).
 // Unless the HUD shows (menus, the game's dialogs over play, cutscenes), an Xbox or PlayStation pad chooses with its
 // bottom face button and goes back with its right one (input.c input_pad_bound, the menus' layout; compositor.cpp says
@@ -167,7 +168,7 @@ const char* KeyName(u32 control) {
 // the icons and symbols for the device and the bindings: each face shows the button it is bound to (in menus, the
 // menus' layout; the dialogs' sheet always)
 void Apply(u32 dev) {
-    u32 shown = G::Identity, symbols = 0, letters = 0, shoulders = 0, dshown = G::Identity, dsymbols = 0;
+    u32 shown = G::Identity, symbols = 0, letters = 0, shoulders = 0, dpad = 0, dshown = G::Identity, dsymbols = 0;
     if (dev == G::Xbox || dev == G::Nintendo || dev == G::PlayStation) {
         static const u32 nintendo_letter[4] = {G::B, G::A, G::Y, G::X};   // south, east, west, north
         static const u32 ps_symbol[4] = {G::Cross, G::Circle, G::Square, G::Triangle};
@@ -198,10 +199,20 @@ void Apply(u32 dev) {
             if (name && name[0] && !name[1] && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= '0' && name[0] <= '9')))
                 shoulders |= static_cast<u32>(name[0]) << (i * 8);
         }
+        // the D-pad icons: the keys its directions are bound to (1 to 4; 2026-11-22, the user, of the Teleport
+        // Station's map, whose bar shows the D-pad's Left and Right: "when using keyboard change it so that the 2 and
+        // 3 keys show instead of the dpad there")
+        for (u32 i = 0; i < G::DpadCount; ++i) {
+            const int sym = input_key_binds()[C_UP + static_cast<int>(i)];
+            const char* name = sym >= 0 ? SDL_GetKeyName(static_cast<SDL_Keycode>(sym)) : "";
+            if (name && name[0] && !name[1] && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= '0' && name[0] <= '9')))
+                dpad |= static_cast<u32>(name[0]) << (i * 8);
+        }
     }
     const bool device = G::device.exchange(dev) != dev;
     const bool changed = device | G::shown.exchange(shown) != shown | G::symbols.exchange(symbols) != symbols |
                          G::letters.exchange(letters) != letters | G::shoulder_letters.exchange(shoulders) != shoulders |
+                         G::dpad_letters.exchange(dpad) != dpad |
                          dialog_shown.exchange(dshown) != dshown | dialog_symbols.exchange(dsymbols) != dsymbols;
     if (changed) version.fetch_add(1);
     if (device) {
@@ -282,12 +293,13 @@ extern "C" void msr_glyph_patch(int sheet, uint8_t* rgba, uint32_t w, uint32_t h
     const G::Image image{rgba, w, h, 4};
     const bool dialog = sheet == DialogSheet;
     const u32 shown = (dialog ? dialog_shown : G::shown).load(), symbols = (dialog ? dialog_symbols : G::symbols).load();
-    const u32 letters = G::letters.load(), shoulders = G::shoulder_letters.load();
-    if (!G::Fits(s, image) || (shown == G::Identity && !symbols && !letters && !shoulders)) return;
+    const u32 letters = G::letters.load(), shoulders = G::shoulder_letters.load(), dpad = G::dpad_letters.load();
+    if (!G::Fits(s, image) || (shown == G::Identity && !symbols && !letters && !shoulders && !dpad)) return;
     const G::Icons icons = G::Read(s, image);
     G::Write(s, image, icons, shown);
     G::WriteSymbols(s, image, icons, symbols, letters);
     G::WriteShoulders(s, image, shoulders);
+    G::WriteDpad(s, image, icons, dpad);
 }
 extern "C" unsigned msr_glyph_version(void) { return version.load(std::memory_order_relaxed); }
 

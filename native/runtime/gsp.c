@@ -45,6 +45,7 @@ static void screen_from_lcd_regs(int scr) {
 }
 
 unsigned g_gsp_top_swaps;   /* top-screen framebuffer swaps = game frames */
+unsigned g_gsp_bottom_swaps;   /* the bottom screen's (video.c: a picture to present) */
 /* frame times between top-screen swaps, for main.c's 2 s line (stutter: the longest, how many over 10/20/50 ms) */
 double g_frame_max_ms; unsigned g_frame_over[3];
 double g_main_iter_max_ms, g_main_part_max[5];   /* main.c: its longest loop pass since the last frame, and of its parts (input, VBlank, cheats, video) (PWR_HITCH) */
@@ -148,7 +149,7 @@ static void take_fb_info(int screen) {
         screens[screen].format = rd32(e + 16) & 7; screens[screen].valid = 1;
         wr8(base + 1, 0);
         screen_from_regs = 0;   /* per-frame swaps through shared memory take over from the initial LCD registers */
-        if (screen == 0) { g_gsp_top_swaps++; frame_time_note(); }
+        if (screen == 0) { g_gsp_top_swaps++; frame_time_note(); } else g_gsp_bottom_swaps++;
     }
 }
 
