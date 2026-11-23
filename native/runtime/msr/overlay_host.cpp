@@ -609,6 +609,10 @@ extern "C" int msr_overlay_event(const SDL_Event* e, float sx, float sy) {
         if (!visible) return 0;
         O().MouseWheel(e->wheel.preciseY);
         return 1;
+    case SDL_TEXTINPUT:   // what a key typed, for the text fields (the launcher's game file, its REPORT tab)
+        if (!visible) return 0;
+        O().Text(e->text.text);
+        return 1;
     case SDL_KEYDOWN:
     case SDL_KEYUP: {
         if (!visible) return 0;
@@ -732,6 +736,16 @@ extern "C" void msr_overlay_frame(void) {
         case Kind::LauncherGpuDriver:
         case Kind::LauncherGpuDriverInstall:
         case Kind::LauncherGpuDriverRemove:
+        case Kind::LauncherDiscord:
+        case Kind::LauncherReportLogs:
+        case Kind::LauncherReportSend:
+        case Kind::LauncherReportCancel:
+        case Kind::LauncherReportCodePage:
+        case Kind::LauncherReportCopyCode:
+        case Kind::LauncherReportOpenIssue:
+        case Kind::LauncherReportNew:
+        case Kind::LauncherReportLogsFolder:
+        case Kind::LauncherReportWebForm:
             msr_launcher_action(static_cast<int>(action.kind), action.text.c_str());
             break;
         case Kind::Quit:

@@ -7,6 +7,7 @@ body:
       value: |
         Thanks for reporting! A few details make a problem much quicker to find and fix. One problem per issue, please.
         **Attach the session log of the play session where the problem happened**: a bug report can't be sent without it. "Session log" below says where it is.
+        Quicker: the launcher's **REPORT** tab sends this report for you, with the log of the session you choose.
 
   - type: input
     id: version

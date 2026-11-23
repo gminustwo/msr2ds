@@ -828,6 +828,7 @@ int main(int argc, char **argv) {
     }
     if (!settings) settings = exists("user/msr/settings.ini") ? "user/msr/settings.ini" : "../msr/settings.ini";
     msr_settings_load(settings);
+    msr_discord_start(0);   /* Discord Rich Presence, when the player's setting has it (msr/discord.cpp) */
     {   /* the game mods and texture packs, found as the launcher finds them: <user>/mods, <user>/msr/settings.ini */
         char msr_dir[4096], user_dir[4096];
         folder_of(settings, msr_dir, sizeof msr_dir);
@@ -928,6 +929,7 @@ int main(int argc, char **argv) {
         if (next > t) k_sleep_ns((int64_t)((next - t) * 1e9));   /* to the microsecond: the game's frame limiter wakes just before it */
         else if (t - next > 0.25) next = t;          /* fell behind: don't try to catch up */
         if (t - last_stat >= 2.0) {
+            msr_discord_tick();   /* the Metroids left, for Discord Rich Presence */
             stage_set(STAGE_MAIN, "writing the stats and the log");
             uint32_t lists, draws; pica_stats(&lists, &draws);
             extern unsigned g_vid_acquire_fail, g_vid_present_fail, g_vid_presented; extern int g_vid_last_err;
@@ -1051,6 +1053,7 @@ int main(int argc, char **argv) {
     const char *how = *done ? "the game's main returned" : g_exit == MSR_EXIT_RESTART ? "Restart: the game starts again" : "the window was closed";
     { extern void pica_vk_saves_wait(void); pica_vk_saves_wait(); }   /* a shader cache save under way lands first */
     video_shutdown();
+    msr_discord_stop();   /* the Discord presence cleared */
 #ifndef _WIN32
     /* Linux and macOS: end here, without exit()'s static destructors. The guest threads, the GX worker and the texture packs'
        PNG workers are still running, and glibc's pthread_cond_destroy waits for the waiters of a condition variable:

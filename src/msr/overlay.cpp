@@ -645,6 +645,17 @@ void Overlay::MouseWheel(float delta) {
     Push({Event::Type::Wheel, 0, false, 0.f, delta});
 }
 
+void Overlay::Text(const char* utf8) {
+    std::scoped_lock lock{mutex};
+    while (utf8 && *utf8) {
+        unsigned int c = 0;
+        const int n = ImTextCharFromUtf8(&c, utf8, nullptr);
+        if (n <= 0) break;
+        utf8 += n;
+        events.push_back({Event::Type::Text, static_cast<int>(c), false, 0.f, 0.f});
+    }
+}
+
 std::vector<OverlayAction> Overlay::TakeActions() {
     std::scoped_lock lock{mutex};
     return std::exchange(actions, {});
@@ -814,6 +825,9 @@ void Overlay::BuildFrame(std::uint32_t width, std::uint32_t height, void (*new_f
                 break;
             case Event::Type::Wheel:
                 io.AddMouseWheelEvent(0.f, event.y);
+                break;
+            case Event::Type::Text:
+                io.AddInputCharacter(static_cast<unsigned int>(event.code));
                 break;
             }
         }
@@ -1327,7 +1341,9 @@ void Overlay::DrawMenu(float scale, bool appearing) {
     bool player_changed = false;
     bool emulator_changed = false;
 
-    constexpr int TabCount = 7;
+    // The launcher has an eighth page, REPORT (a bug report sent to GitHub with a session's log)
+    const int TabCount = l.active ? 8 : 7;
+    if (tab >= TabCount) tab = 0;
     if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_PageUp, false)) {
         requested_tab = (tab + TabCount - 1) % TabCount;
     }
@@ -1403,13 +1419,21 @@ void Overlay::DrawMenu(float scale, bool appearing) {
     // PageUp / PageDown (above) or a click change it; focus stays in the page.
     if (requested_tab >= 0) tab = requested_tab;
     {
-        static constexpr const char* names[TabCount] = {"GAME", "DISPLAY", "HUD", "CONTROLS", "MODS", "TEXTURES", "CHEATS"};
+        static constexpr const char* names[8] = {"GAME", "DISPLAY", "HUD", "CONTROLS", "MODS", "TEXTURES", "CHEATS", "REPORT"};
         ImDrawList* draw = ImGui::GetWindowDrawList();
-        const float px = 17.f * scale, track = 2.5f * scale, pad = 14.f * scale, h = 36.f * scale;
+        float px = 17.f * scale, track = 2.5f * scale;
+        const float pad = 14.f * scale, h = 36.f * scale;
         const ImVec2 start = ImGui::GetCursorScreenPos();
         const float avail = ImGui::GetContentRegionAvail().x;
-        float widths[TabCount], total = 0.f;
+        float widths[8], total = 0.f;
         for (int i = 0; i < TabCount; ++i) total += widths[i] = Theme::Measure(Theme::title_font, px, names[i], track);
+        if (const float room = avail - TabCount * pad * 2.f; total > room && total > 0.f) {   // (the launcher's eight: smaller)
+            const float k = std::max(.6f, room / total);
+            px *= k;
+            track *= k;
+            for (int i = 0; i < TabCount; ++i) widths[i] *= k;
+            total *= k;
+        }
         const float gap = std::max(pad * 2.f, (avail - total) / TabCount);   // the strip spans the panel
         float x = start.x;
         ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
@@ -1503,6 +1527,13 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 player_changed |= OnOff("##fusionsuit", &p.fusion_suit);
                 Note("Fusion Mode: chosen when a game starts. The suit switches at once.");
             }
+#if defined(MSR_NATIVE) && !defined(__ANDROID__)
+            // msr-native: Discord Rich Presence (runtime/msr/discord.cpp), on and off at once
+            row("Discord Rich Presence");
+            player_changed |= OnOff("##discord", &p.discord_presence);
+            Note("Your Discord profile shows that you're playing msr2ds, the area you're in and the Metroids left. "
+                 "It needs the Discord app open on this computer.");
+#endif
             ImGui::Spacing();
             const ImVec2 button{-FLT_MIN, 0.f};
             if (l.active) {
@@ -1517,6 +1548,12 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 }
                 Note(("Saves, settings, game mods and texture packs: " + l.folder).c_str());
 #endif
+                if (!l.discord.empty()) {   // the project's Discord server
+                    if (ImGui::Button("Join the msr2ds Discord", button)) {
+                        Act(OverlayAction::Kind::LauncherDiscord);
+                    }
+                    Note("Chat and news. Bug reports go on GitHub Issues, from the REPORT tab.");
+                }
             } else {
                 if (ImGui::Button("Resume", button)) {
                     SetVisible(false);
@@ -1933,6 +1970,13 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                  "keeps what you have when you save.");
             end_tab_item();
         }
+        if (l.active && tab_item("Report", 7)) {
+            if (fresh) {
+                Act(OverlayAction::Kind::LauncherReportLogs);   // (the logs as they are now)
+            }
+            DrawReport(l, label_width, default_focus);
+            end_tab_item();
+        }
     }
     requested_tab = -1;
 
@@ -2236,6 +2280,238 @@ void Overlay::DrawLauncher(const LauncherSnapshot& l, float label_width,
     Note((l.version + ": the game's code runs as native code built from your own dump, on a small "
           "3DS runtime of its own. Nothing of the game comes with this program.").c_str());
     ImGui::Separator();
+}
+
+// The REPORT tab (msr-native's launcher, launcher.cpp's bug reports section): the repository's bug report form, asked
+// here and sent to GitHub Issues with the log of the play session the player chooses. Sending signs them in to GitHub
+// with a code; the log goes up first, and no report goes without it.
+void Overlay::DrawReport(const LauncherSnapshot& l, float label_width, const std::function<void()>& default_focus) {
+    using Report = LauncherSnapshot::Report;
+    const auto& style = ImGui::GetStyle();
+    const ImVec4 good{.53f, .89f, .6f, 1.f}, bad{1.f, .55f, .45f, 1.f}, accent{.43f, .8f, .98f, 1.f};
+    const float half = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) / 2.f;
+    const auto wrapped = [](const ImVec4& color, const std::string& text) {
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(color, "%s", text.c_str());
+        ImGui::PopTextWrapPos();
+    };
+    // the logs, newest first, as the launcher found them when the tab was shown
+    const auto log_list = [&] {
+        for (const auto& log : l.report_logs) {
+            ImGui::PushTextWrapPos(0.f);
+            ImGui::TextUnformatted(log.when.c_str());
+            ImGui::SameLine();
+            if (log.ended_badly) ImGui::TextColored(bad, "%s", log.detail.c_str());
+            else ImGui::TextDisabled("%s", log.detail.c_str());
+            ImGui::PopTextWrapPos();
+        }
+    };
+
+    if (!l.report_option) {   // no app to sign in with in this build, or no curl: the form on GitHub
+#ifdef __ANDROID__
+        Note("Bug reports go on msr2ds's GitHub Issues, with the log of the play session where the problem happened. "
+             "The button opens the bug report form in your browser. The logs are in the user folder's logs folder "
+             "(Android/data/io.github.gminustwo.msrnative/files/user/logs): attach the one from that session.");
+#else
+        Note("Bug reports go on msr2ds's GitHub Issues, with the log of the play session where the problem happened. "
+             "The button opens the bug report form in your browser and the logs folder: drag the log of that session "
+             "into the form's Session log box.");
+#endif
+        if (ImGui::Button("Open the bug report form", {-FLT_MIN, 0.f})) {
+            Act(OverlayAction::Kind::LauncherReportWebForm);
+        }
+        default_focus();
+        Section("THE SESSIONS' LOGS");
+        if (l.report_logs.empty()) Note("No logs yet: each start of the game writes one.");
+        log_list();
+        return;
+    }
+
+    if (l.report == Report::SigningIn) {
+        Section("SIGN IN TO GITHUB");
+        Note("Enter this code on GitHub's page, which opened in your browser:");
+        {   // the code, large, in the menu's orange
+            const float px = ImGui::GetFontSize() * 2.2f;
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            Theme::Text(ImGui::GetWindowDrawList(), Theme::title_font, px, {at.x, at.y + px * .6f}, Theme::Orange,
+                        l.report_code.empty() ? "..." : l.report_code.c_str(), px * .12f, Theme::Fade(Theme::Orange, .15f));
+            ImGui::Dummy({0.f, px * 1.25f});
+        }
+        if (ImGui::Button("Open the page again", {half, 0.f})) {
+            Act(OverlayAction::Kind::LauncherReportCodePage);
+        }
+        default_focus();
+        ImGui::SameLine();
+        if (ImGui::Button("Copy the code", {half, 0.f})) {
+            Act(OverlayAction::Kind::LauncherReportCopyCode);
+        }
+        if (ImGui::Button("Cancel", {-FLT_MIN, 0.f})) {
+            Act(OverlayAction::Kind::LauncherReportCancel);
+        }
+        std::string page = l.report_code_page;
+        if (page.rfind("https://", 0) == 0) page.erase(0, 8);
+        Note(("On a phone or another computer: open " + page + " and enter the code there. Sign in with your GitHub "
+              "account (a free one is enough) and allow msr2ds bug reports: it may open issues on msr2ds and make a gist "
+              "for your log, nothing else. The report goes out under your GitHub name, so you see the replies. This "
+              "launcher keeps the sign-in until it closes.").c_str());
+        return;
+    }
+    if (l.report == Report::Sending) {
+        Section("SENDING");
+        wrapped(accent, l.report_note + "...");
+        Note("The log goes up first, then the issue that links it.");
+        return;
+    }
+    if (l.report == Report::Sent) {
+        Section("SENT");
+        wrapped(good, l.report_note);
+        if (ImGui::Button("Open the issue", {half, 0.f})) {
+            Act(OverlayAction::Kind::LauncherReportOpenIssue);
+        }
+        default_focus();
+        ImGui::SameLine();
+        if (ImGui::Button("Write another report", {half, 0.f})) {
+            Act(OverlayAction::Kind::LauncherReportNew);
+            report_title.fill(0);
+            report_what.fill(0);
+            report_where.fill(0);
+            report_setup.fill(0);
+            report_media.fill(0);
+            report_own_dump = report_log_checked = false;
+            report_log.clear();
+        }
+        Note("On the issue's page you can add screenshots or a clip, and answer questions about it.");
+        return;
+    }
+
+    // Idle, or Failed: the form's fields
+    Note("A bug report for msr2ds's GitHub Issues, sent with the log of the play session where the problem happened. "
+         "One problem per report, please.");
+    if (l.report == Report::Failed && !l.report_note.empty()) {   // (at the top: the page shows from there again)
+        wrapped(bad, l.report_note);
+        if (ImGui::Button("Open the bug report form on GitHub instead", {-FLT_MIN, 0.f})) {
+            Act(OverlayAction::Kind::LauncherReportWebForm);
+        }
+    } else if (!l.report_note.empty()) {
+        Note(l.report_note.c_str());
+    }
+    Section("SESSION LOG");
+    const LauncherSnapshot::SessionLog* chosen = nullptr;   // by its file name; the newest when none was chosen
+    for (const auto& log : l.report_logs) {
+        if (log.name == report_log) chosen = &log;
+    }
+    if (!chosen && !l.report_logs.empty()) chosen = &l.report_logs.front();
+    Label("The session", label_width);
+    if (!chosen) {
+        ImGui::TextDisabled("No logs yet: each start of the game writes one");
+    } else {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##reportlog", chosen->when.c_str())) {
+            for (const auto& log : l.report_logs) {
+                if (ImGui::Selectable((log.when + ": " + log.detail + "##" + log.name).c_str(), &log == chosen)) {
+                    report_log = log.name;
+                }
+                if (&log == chosen) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        default_focus();
+        ImGui::SetCursorPosX(label_width);
+        if (chosen->ended_badly) wrapped(bad, chosen->detail);
+        else wrapped(ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), chosen->detail);
+    }
+    Note("Each start of the game writes its own log, named by when it started (the newest 10 are kept). Choose the one "
+         "from the session where the problem happened, not a later start.");
+#ifndef __ANDROID__
+    if (ImGui::Button("Open the logs folder", {-FLT_MIN, 0.f})) {
+        Act(OverlayAction::Kind::LauncherReportLogsFolder);
+    }
+#endif
+    if (!chosen) default_focus();
+
+    const float line = ImGui::GetTextLineHeight();
+    const auto note_under = [&](const char* text) {   // a field's explanation, under it in its column
+        ImGui::SetCursorPosX(label_width);
+        ImGui::PushTextWrapPos(0.f);
+        Note(text);
+        ImGui::PopTextWrapPos();
+    };
+    // Leaving a field keeps what was typed: ImGui's Escape (and a pad's B, the way out of a box of several lines)
+    // puts back what the field held before, which would throw a written report away
+    static std::string typed[5];
+    const auto keep = [](std::string& kept, char* buf, std::size_t size) {
+        if (ImGui::IsItemActive()) {
+            kept = buf;
+        } else if (ImGui::IsItemDeactivated() && kept != buf) {
+            std::snprintf(buf, size, "%s", kept.c_str());
+        }
+    };
+    Section("THE PROBLEM");
+    Label("Title", label_width);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##reporttitle", "Short: what went wrong, and where", report_title.data(), report_title.size());
+    keep(typed[0], report_title.data(), report_title.size());
+    Label("What happened?", label_width);
+    ImGui::InputTextMultiline("##reportwhat", report_what.data(), report_what.size(), {-FLT_MIN, line * 4.5f});
+    keep(typed[1], report_what.data(), report_what.size());
+    note_under("What you saw or heard, and what you expected instead.");
+    Label("Where, and how to make it happen", label_width);
+    ImGui::InputTextMultiline("##reportwhere", report_where.data(), report_where.size(), {-FLT_MIN, line * 4.5f});
+    keep(typed[2], report_where.data(), report_where.size());
+    note_under("The area (or a menu, a cutscene, the launcher) and the moment. Does it happen every time? The steps to "
+               "get there help a lot.");
+    Section("IF YOU CAN");
+    Label("Your setup", label_width);
+    ImGui::InputTextMultiline("##reportsetup", report_setup.data(), report_setup.size(), {-FLT_MIN, line * 3.f});
+    keep(typed[3], report_setup.data(), report_setup.size());
+    note_under("Your controller and whether you start msr2ds through Steam, your display and aspect ratio, the frame "
+               "rate, texture packs or game mods. Your PC, graphics, controllers and settings are in the log already.");
+    Label("Screenshots or video", label_width);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##reportmedia", "Links to them", report_media.data(), report_media.size());
+    keep(typed[4], report_media.data(), report_media.size());
+    note_under("Or add them on the issue's page once it is sent.");
+
+    Section("BEFORE YOU SEND IT");
+    OnOff("I'm playing my own decrypted dump of the USA release (CTR-P-A9AE)##reportdump", &report_own_dump);
+    OnOff("The log above is from the play session where the problem happened, not from a later start of the game "
+          "(I checked its date and time)##reportlogok",
+          &report_log_checked);
+    Note("The report and the log go on GitHub, where anyone can read them. The log names no account, and it writes "
+         "your home folder as ~ or %USERPROFILE%.");
+
+    std::vector<const char*> missing;
+    if (!chosen) missing.push_back("a log");
+    if (!report_title[0]) missing.push_back("a title");
+    if (!report_what[0]) missing.push_back("what happened");
+    if (!report_where[0]) missing.push_back("where and how");
+    if (!report_own_dump || !report_log_checked) missing.push_back("both checks");
+    ImGui::BeginDisabled(!missing.empty());
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+    if (ImGui::Button(l.report_signed_in ? "Send the report" : "Sign in to GitHub and send",
+                      {-FLT_MIN, ImGui::GetFrameHeight() * 1.5f}) &&
+        missing.empty() && chosen) {
+        std::string fields = chosen->name;
+        for (const char* text : {report_title.data(), report_what.data(), report_where.data(), report_setup.data(),
+                                 report_media.data()}) {
+            fields += '\x1f';
+            fields += text;
+        }
+        Act(OverlayAction::Kind::LauncherReportSend, 0, fields);
+    }
+    ImGui::PopStyleColor();
+    ImGui::EndDisabled();
+    if (!missing.empty()) {
+        std::string needs = "To send it: ";
+        for (std::size_t i = 0; i < missing.size(); ++i) {
+            needs += (i == 0 ? "" : i + 1 == missing.size() ? " and " : ", ") + std::string(missing[i]);
+        }
+        Note((needs + ".").c_str());
+    } else if (l.report == Report::Failed && !l.report_note.empty()) {
+        wrapped(bad, l.report_note);   // (and at the top)
+    } else if (!l.report_signed_in) {
+        Note("GitHub's sign-in page opens with a code to enter: the report then goes out under your GitHub name.");
+    }
 }
 
 Overlay& GetOverlay() {

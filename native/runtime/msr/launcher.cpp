@@ -40,6 +40,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -77,6 +78,12 @@
 #endif
 #ifndef MSR_UPDATE_REPO
 #define MSR_UPDATE_REPO "gminustwo/msr2ds"
+#endif
+#ifndef MSR_REPORT_CLIENT_ID
+#define MSR_REPORT_CLIENT_ID ""
+#endif
+#ifndef MSR_DISCORD_INVITE
+#define MSR_DISCORD_INVITE ""
 #endif
 
 extern "C" {
@@ -591,6 +598,15 @@ struct State {
     std::string installed_id, installed_note;
     bool game_ended_opening = false;      // the last start was the game's and ended while opening the graphics (Setup)
 #endif
+    // bug reports (the bug reports section below)
+    std::vector<Snapshot::SessionLog> report_logs;
+    Snapshot::Report report = Snapshot::Report::Idle;
+    std::string report_code, report_code_page, report_note, report_issue;
+    std::string report_token;     // the GitHub sign-in's, in memory only: never written to a file or a log
+    std::map<std::string, std::string> report_gists;   // logs uploaded this session: their gists' pages (a retry's)
+    bool report_cancel = false;
+    std::thread report_worker;
+    Child report_tool;            // the request under way (curl): stopped when the launcher closes
 } S;
 
 void WriteDirect();   // the direct start section
@@ -2103,6 +2119,8 @@ void OpenPage(const std::string& url) {
     if (url.rfind("https://", 0) != 0) return;
 #ifdef _WIN32
     ShellExecuteW(nullptr, L"open", Wide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#elif defined(__ANDROID__)
+    msr_android_open_url(url.c_str());   // the system's browser (MsrActivity)
 #else
     Child c;
 #ifdef __APPLE__
@@ -2111,6 +2129,488 @@ void OpenPage(const std::string& url) {
     if (Spawn({"xdg-open", url}, {}, false, {}, true, c)) std::thread([c]() mutable { Poll(c, true); Close(c); }).detach();
 #endif
 #endif
+}
+
+// ---- bug reports: the REPORT tab, sent to the repository's GitHub Issues with a play session's log ----
+// The player chooses the log of the session where the problem happened (user/logs: one for each start of the game, the
+// newest 10 kept, runtime/log.c), writes what happened and where, and ticks the two checks the repository's bug report
+// form asks for (.github/ISSUE_TEMPLATE/bug_report.yml). Sending signs them in to GitHub with its device sign-in: a code
+// shown here and entered on github.com/login/device (the page opens by itself; a phone works too), for the project's
+// GitHub App (MSR_REPORT_CLIENT_ID), which may open issues on the repository and make gists, nothing else. The report is
+// the player's own, under their GitHub name, so they see the replies. The sign-in is kept in memory until the launcher
+// closes, never written to a file or a log. The log goes up first, as a secret gist named as its file, and the issue
+// links it: no report goes without its log. The issue follows the form's headings, with the log's own lines on the
+// build, the game, the PC, the display and the controllers. Requests go through curl, as the updates do (the Android
+// app's through MsrActivity), each logged to user/msr/report.log by its address and status only. Without a client ID
+// or curl, the tab opens the repository's form in the browser and the logs folder instead.
+constexpr const char* ReportRepo = MSR_UPDATE_REPO;   // (the releases' repository takes the reports)
+fs::path ReportFolder() { return S.user / "msr" / "report"; }
+fs::path LogsFolder() { return S.user / "logs"; }
+
+void ReportLog(const std::string& text) {
+    std::error_code e;
+    fs::create_directories(S.user / "msr", e);
+    std::ofstream f(S.user / "msr" / "report.log", std::ios::binary | std::ios::app);
+    f << text << "\n";
+    std::fprintf(stderr, "launcher: report: %s\n", text.c_str());
+}
+
+void ReportStatus(Snapshot::Report state, const std::string& note) {
+    std::scoped_lock lock{S.lock};
+    S.report = state;
+    S.report_note = note;
+    if (state != Snapshot::Report::SigningIn) S.report_code.clear();
+    S.dirty = true;
+}
+
+bool ReportCanceled() {
+    std::scoped_lock lock{S.lock};
+    return S.report_cancel;
+}
+
+bool ReportOption() {
+#ifdef __ANDROID__
+    return *MSR_REPORT_CLIENT_ID != 0;
+#else
+    static const bool curl = !SystemTool("curl").empty();
+    return *MSR_REPORT_CLIENT_ID != 0 && curl;
+#endif
+}
+
+// A JSON string of any text: quotes, backslashes and control characters escaped, broken UTF-8 as U+FFFD
+std::string JsonText(const std::string& s) {
+    std::string out = "\"";
+    out.reserve(s.size() + s.size() / 16 + 2);
+    for (std::size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c < 0x80) {
+            if (c == '"') out += "\\\"";
+            else if (c == '\\') out += "\\\\";
+            else if (c == '\n') out += "\\n";
+            else if (c == '\r') out += "\\r";
+            else if (c == '\t') out += "\\t";
+            else if (c < 0x20 || c == 0x7F) { char b[8]; std::snprintf(b, sizeof b, "\\u%04x", c); out += b; }
+            else out += static_cast<char>(c);
+            i++;
+            continue;
+        }
+        const std::size_t n = c >= 0xF5 ? 0 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC2 ? 2 : 0;
+        bool whole = n && i + n <= s.size();
+        for (std::size_t k = 1; whole && k < n; k++) whole = (static_cast<unsigned char>(s[i + k]) & 0xC0) == 0x80;
+        if (whole) { out.append(s, i, n); i += n; }
+        else { out += "\xEF\xBF\xBD"; i++; }
+    }
+    return out + "\"";
+}
+
+struct HttpReply {
+    int status = 0;     // 0: no answer (no connection, stopped)
+    std::string body;
+};
+
+// A request to GitHub: its status and body. `form`: the body is form fields, else JSON. With `signed_in`, the
+// sign-in's token goes with it (a file curl reads its headers from, deleted at once: never on a command line).
+HttpReply Http(const char* method, const std::string& url, const std::string& body, bool form, bool signed_in) {
+    HttpReply r;
+    std::error_code e;
+    fs::create_directories(ReportFolder(), e);
+    const fs::path request = ReportFolder() / "request.txt", headers = ReportFolder() / "headers.txt",
+                   answer = ReportFolder() / "answer.txt", answer_head = ReportFolder() / "answer-headers.txt";
+    std::string h = url.rfind("https://api.github.com/", 0) == 0
+                        ? "Accept: application/vnd.github+json\nX-GitHub-Api-Version: 2022-11-28\n"
+                        : "Accept: application/json\n";
+    h += "User-Agent: msr2ds-launcher/" MSR_NATIVE_VERSION "\n";
+    if (!body.empty()) h += form ? "Content-Type: application/x-www-form-urlencoded\n" : "Content-Type: application/json\n";
+    if (signed_in) {
+        std::scoped_lock lock{S.lock};
+        if (!S.report_token.empty()) h += "Authorization: Bearer " + S.report_token + "\n";
+    }
+    fs::remove(answer, e);
+    fs::remove(answer_head, e);
+    if (!body.empty() && !WriteText(request, body)) {
+        ReportLog("could not write " + Utf8(request));
+        return r;
+    }
+#ifdef __ANDROID__
+    const std::string request_path = body.empty() ? std::string{} : Utf8(request), answer_path = Utf8(answer);
+    r.status = std::max(0, msr_android_http(method, url.c_str(), h.c_str(), request_path.c_str(), answer_path.c_str()));
+#else
+    const std::string curl = SystemTool("curl");
+    if (curl.empty() || !WriteText(headers, h)) {
+        ReportLog("no curl, or the request's headers could not be written");
+        fs::remove(headers, e);
+        fs::remove(request, e);
+        return r;
+    }
+    std::vector<std::string> argv{curl, "-sS", "--max-time", "300", "--connect-timeout", "20", "-X", method,
+                                  "-H", "@" + Utf8(headers), "-D", Utf8(answer_head), "-o", Utf8(answer)};
+    if (!body.empty()) {
+        argv.push_back("--data-binary");
+        argv.push_back("@" + Utf8(request));
+    }
+    argv.push_back(url);
+    Child c;
+    if (Spawn(argv, {}, false, S.user / "msr" / "report.log", true, c)) {
+        {
+            std::scoped_lock lock{S.lock};
+            S.report_tool = c;
+        }
+        while (Poll(c, false) == -1) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        {
+            std::scoped_lock lock{S.lock};
+            S.report_tool = Child{};
+        }
+        Close(c);
+        // the status: the last status line (a 100 Continue's or a redirect's come before it)
+        const std::string head = ReadText(answer_head);
+        for (std::size_t at = 0; (at = head.find("HTTP/", at)) != std::string::npos; at += 5)
+            if (at == 0 || head[at - 1] == '\n') {
+                const std::size_t space = head.find(' ', at);
+                if (space != std::string::npos) r.status = std::atoi(head.c_str() + space + 1);
+            }
+    } else {
+        ReportLog("curl could not start");
+    }
+    fs::remove(headers, e);   // (the token)
+#endif
+    fs::remove(request, e);
+    r.body = ReadText(answer);
+    fs::remove(answer, e);
+    fs::remove(answer_head, e);
+    ReportLog(std::string(method) + " " + url + ": " + (r.status ? std::to_string(r.status) : std::string("no answer")));
+    return r;
+}
+
+// What a failed request's answer says, for the player: " (404: Not Found)", or that there was no answer
+std::string Why(const HttpReply& r) {
+    if (!r.status) return ": GitHub did not answer (check the internet connection)";
+    JsonReader reader{r.body};
+    const Json j = reader.Value();
+    const std::string message = reader.ok ? j.Str("message") : std::string{};
+    return " (" + std::to_string(r.status) + (message.empty() ? "" : ": " + message) + ")";
+}
+
+// GitHub's device sign-in: a code for the player to enter on GitHub's page, then the token once they allowed the app.
+// false when it did not happen (the state then says why, or the player stopped it).
+bool SignIn() {
+    const HttpReply start = Http("POST", "https://github.com/login/device/code",
+                                 "client_id=" MSR_REPORT_CLIENT_ID "&scope=public_repo%20gist", true, false);
+    JsonReader reader{start.body};
+    const Json j = reader.Value();
+    const std::string device = reader.ok ? j.Str("device_code") : std::string{};
+    if (start.status != 200 || device.empty()) {
+        ReportStatus(Snapshot::Report::Failed, "GitHub's sign-in could not start" + Why(start) + ". Nothing was sent.");
+        return false;
+    }
+    int interval = std::max(5, static_cast<int>(j.Num("interval")));
+    const int expires = j.Num("expires_in") > 0 ? static_cast<int>(j.Num("expires_in")) : 900;
+    std::string page = j.Str("verification_uri");
+    if (page.rfind("https://", 0) != 0) page = "https://github.com/login/device";
+    {
+        std::scoped_lock lock{S.lock};
+        S.report = Snapshot::Report::SigningIn;
+        S.report_code = j.Str("user_code");
+        S.report_code_page = page;
+        S.report_note.clear();
+        S.dirty = true;
+    }
+    ReportLog("sign-in: waiting for the code to be entered on " + page);
+    OpenPage(page);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(expires);
+    while (std::chrono::steady_clock::now() < deadline) {
+        for (int waited = 0; waited < interval * 10; waited++) {
+            if (ReportCanceled()) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        const HttpReply r = Http("POST", "https://github.com/login/oauth/access_token",
+                                 "client_id=" MSR_REPORT_CLIENT_ID "&device_code=" + device +
+                                     "&grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code",
+                                 true, false);
+        if (ReportCanceled()) return false;
+        JsonReader answer{r.body};
+        const Json a = answer.Value();
+        if (!r.status || !answer.ok) continue;   // no answer: asked again
+        if (const std::string token = a.Str("access_token"); !token.empty()) {
+            std::scoped_lock lock{S.lock};
+            S.report_token = token;
+            S.report_code.clear();
+            S.dirty = true;
+            ReportLog("sign-in: done");
+            return true;
+        }
+        const std::string error = a.Str("error");
+        if (error == "authorization_pending") continue;
+        if (error == "slow_down") {
+            interval = a.Num("interval") > 0 ? static_cast<int>(a.Num("interval")) : interval + 5;
+            continue;
+        }
+        ReportLog("sign-in: " + error);
+        ReportStatus(Snapshot::Report::Failed,
+                     error == "access_denied"   ? "The sign-in was declined on GitHub. Nothing was sent."
+                     : error == "expired_token" ? "The code expired before the sign-in. Send again for a new code."
+                                                : "GitHub's sign-in failed (" + error + "). Nothing was sent.");
+        return false;
+    }
+    ReportStatus(Snapshot::Report::Failed, "The code expired before the sign-in. Send again for a new code.");
+    return false;
+}
+
+// The lines of a log, without each one's "[clock +seconds] "
+std::vector<std::string> LogLines(const std::string& text) {
+    std::vector<std::string> lines;
+    for (std::size_t at = 0; at < text.size();) {
+        std::size_t end = text.find('\n', at);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(at, end - at);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty() && line[0] == '[') {
+            const std::size_t close = line.find("] ");
+            if (close != std::string::npos && close < 32) line.erase(0, close + 2);
+        }
+        lines.push_back(std::move(line));
+        at = end + 1;
+    }
+    return lines;
+}
+
+// What a log says of its session: the version, how long it ran (its "exit:" line), the area last loaded
+struct LogSummary {
+    std::string version, played, area;
+    bool ended = false;   // its "exit:" line is there
+};
+LogSummary Summarize(const std::vector<std::string>& lines) {
+    LogSummary s;
+    for (const auto& line : lines) {
+        if (s.version.empty() && line.rfind("native: msr-native ", 0) == 0) {
+            const std::size_t end = line.find(',', 19);
+            s.version = line.substr(19, end == std::string::npos ? std::string::npos : end - 19);
+        } else if (line.rfind("exit: ", 0) == 0) {
+            s.ended = true;
+            if (const std::size_t after = line.rfind(" after "); after != std::string::npos) s.played = Trim(line.substr(after + 7));
+        } else if (line.rfind("where: packs/maps/", 0) == 0) {
+            const std::size_t start = 18, slash = line.find('/', start);
+            if (slash == std::string::npos) continue;
+            const std::string folder = line.substr(start, slash - start);
+            if (const char* area = msr_scenario_area(folder.c_str())) s.area = area;
+            else if (folder == "s020_credits") s.area = "the credits";
+            else if (folder == "s000_mainmenu" || folder == "s010_cockpit") s.area = "the main menu";
+        }
+    }
+    return s;
+}
+
+// The play sessions' logs, newest first: when each started, how long it ran or that it ended without its last line,
+// where it was last
+std::vector<Snapshot::SessionLog> ScanLogs() {
+    std::vector<std::string> names;
+    std::error_code e;
+    for (const auto& entry : fs::directory_iterator(LogsFolder(), e)) {
+        const std::string name = Utf8(entry.path().filename());
+        if (name.rfind("msr-native_", 0) == 0 && name.size() > 4 && name.compare(name.size() - 4, 4, ".log") == 0 &&
+            entry.is_regular_file(e))
+            names.push_back(name);
+    }
+    std::sort(names.rbegin(), names.rend());   // (named by the date and time each started)
+    const auto day = [](std::time_t t) {
+        char b[16];
+        std::strftime(b, sizeof b, "%Y-%m-%d", std::localtime(&t));
+        return std::string(b);
+    };
+    const std::time_t now = std::time(nullptr);
+    const std::string today = day(now), yesterday = day(now - 24 * 3600);
+    std::vector<Snapshot::SessionLog> logs;
+    for (const auto& name : names) {
+        Snapshot::SessionLog l;
+        l.name = name;
+        if (name.size() >= 30) {   // msr-native_2026-11-22_13-08-20.log
+            const std::string date = name.substr(11, 10);
+            std::string time = name.substr(22, 8);
+            std::replace(time.begin(), time.end(), '-', ':');
+            l.when = (date == today ? std::string("Today") : date == yesterday ? std::string("Yesterday") : date) + ", " + time;
+        } else {
+            l.when = name;
+        }
+        const LogSummary s = Summarize(LogLines(ReadText(LogsFolder() / FromUtf8(name))));
+        l.ended_badly = !s.ended;
+        l.detail = s.ended ? (s.played.empty() ? std::string("closed normally") : "played " + s.played)
+                           : std::string("ended without its last line: a crash, a freeze, or the game was ended");
+        if (!s.area.empty()) l.detail += ", last in " + s.area;
+        logs.push_back(std::move(l));
+    }
+    return logs;
+}
+
+// The log for its gist: whole up to 8 MB (a session's log stops growing at 10 MB, log.c), else its start and its end
+std::string LogForUpload(const std::string& text) {
+    constexpr std::size_t Most = 8u << 20, Head = 1u << 20, Tail = 6u << 20;
+    if (text.size() <= Most) return text;
+    std::size_t cut = text.find('\n', Head);
+    cut = cut == std::string::npos ? Head : cut + 1;
+    std::size_t from = text.rfind('\n', text.size() - Tail);
+    from = from == std::string::npos ? text.size() - Tail : from + 1;
+    return text.substr(0, cut) + "\n[... " + Megabytes(from - cut) +
+           " of the log left out here by the launcher: too large for one upload ...]\n\n" + text.substr(from);
+}
+
+// The log's own lines on the build, the game, the PC, the graphics, the display, the controllers and the end
+std::string LogHighlights(const std::vector<std::string>& lines) {
+    static constexpr const char* Wanted[] = {"native: msr-native ", "start: started by", "game: ", "pc: ", "native: running at",
+                                             "video: Vulkan device ", "video: presenting with", "video: OpenGL", "video: display:",
+                                             "video: HDR output", "pwr: controller opened:", "pwr: audio output opened", "exit: "};
+    int count[std::size(Wanted)] = {};
+    std::string out;
+    for (const auto& line : lines)
+        for (std::size_t i = 0; i < std::size(Wanted); i++)
+            if (line.rfind(Wanted[i], 0) == 0 && count[i] < 4 && out.size() < 12000) {
+                count[i]++;
+                out += line.substr(0, 600) + "\n";
+                break;
+            }
+    return out;
+}
+
+// The report's fields, from the tab ('\x1f' between them): the log's file name, the title, what happened, where and
+// how, the setup, the screenshots' links
+struct ReportFields {
+    std::string log, title, what, where, setup, media;
+};
+
+// The issue's text: the bug report form's headings (as GitHub writes a form's issue), the log linked at its gist
+std::string IssueBody(const ReportFields& f, const std::vector<std::string>& lines, const std::string& gist) {
+    const LogSummary summary = Summarize(lines);
+    const auto or_none = [](const std::string& s) { return s.empty() ? std::string("_No response_") : s; };
+    std::string started = f.log.size() >= 30 ? f.log.substr(11, 10) + " " + f.log.substr(22, 8) : f.log;
+    if (started.size() == 19) { started[13] = ':'; started[16] = ':'; }
+    std::string body = "### msr2ds version\n\n" + (summary.version.empty() ? std::string(MSR_NATIVE_VERSION) : summary.version) +
+                       "\n\n### What happened?\n\n" + f.what +
+                       "\n\n### Where, and how to make it happen\n\n" + f.where +
+                       "\n\n### Session log (required)\n\n[" + f.log + "](" + gist + "): the session that started " + started +
+                       (summary.ended ? (summary.played.empty() ? std::string(", closed normally") : ", played " + summary.played)
+                                      : std::string(", ended without its last line (a crash, a freeze, or the game was ended)")) +
+                       (summary.area.empty() ? std::string{} : ", last in " + summary.area) + ".\n";
+    if (const std::string h = LogHighlights(lines); !h.empty())
+        body += "\n<details><summary>From the log: the build, the game, the PC, the display, the controllers</summary>\n\n"
+                "```text\n" + h + "```\n\n</details>\n";
+    body += "\n### Your setup\n\n" + or_none(f.setup) +
+            "\n\n### Screenshots or video\n\n" + or_none(f.media) +
+            "\n\n### Before you send it\n\n"
+            "- [x] I'm playing my own decrypted dump of the USA release (CTR-P-A9AE)\n"
+            "- [x] The log I attached is from the play session where the problem happened, not from a later start of "
+            "the game (I checked its date and time)\n\n"
+            "<sub>Sent from the msr2ds launcher's REPORT tab (msr-native " MSR_NATIVE_VERSION ").</sub>\n";
+    return body;
+}
+
+void SendReport(const std::string& text) {
+    std::vector<std::string> parts(1);
+    for (char c : text) {
+        if (c == '\x1f') parts.emplace_back();
+        else parts.back() += c;
+    }
+    parts.resize(6);
+    const auto trim = [](std::string s) {   // (spaces and line ends only: Trim also takes off a pasted path's quotes)
+        const std::size_t first = s.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) return std::string{};
+        return s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);
+    };
+    ReportFields f{parts[0], trim(parts[1]), trim(parts[2]), trim(parts[3]), trim(parts[4]), trim(parts[5])};
+    std::error_code e;
+    const bool log_ok = f.log.rfind("msr-native_", 0) == 0 && f.log.find_first_of("/\\") == std::string::npos &&
+                        fs::is_regular_file(LogsFolder() / FromUtf8(f.log), e);
+    if (!log_ok || f.title.empty() || f.what.empty() || f.where.empty()) {
+        ReportStatus(Snapshot::Report::Failed, !log_ok ? "Choose the log of the session where the problem happened."
+                                                       : "Fill in the title and the two boxes first.");
+        return;
+    }
+    {
+        std::scoped_lock lock{S.lock};
+        if (S.report == Snapshot::Report::SigningIn || S.report == Snapshot::Report::Sending) return;
+        S.report = Snapshot::Report::Sending;
+        S.report_note = "Starting";
+        S.report_cancel = false;
+        S.dirty = true;
+    }
+    if (S.report_worker.joinable()) S.report_worker.join();
+    S.report_worker = std::thread([f] {
+        bool signed_in;
+        {
+            std::scoped_lock lock{S.lock};
+            signed_in = !S.report_token.empty();
+        }
+        if (!signed_in && !SignIn()) return;
+        const std::string log_text = ReadText(LogsFolder() / FromUtf8(f.log));
+        const std::vector<std::string> lines = LogLines(log_text);
+        // the log first, as a secret gist: the issue links it (a retry this session uses the one already up)
+        std::string gist;
+        {
+            std::scoped_lock lock{S.lock};
+            if (const auto it = S.report_gists.find(f.log); it != S.report_gists.end()) gist = it->second;
+        }
+        if (gist.empty()) {
+            ReportStatus(Snapshot::Report::Sending, "Uploading the log (" + Megabytes(log_text.size()) + ")");
+            const HttpReply r = Http("POST", "https://api.github.com/gists",
+                                     "{\"description\":" + JsonText("msr2ds: the session log of a bug report (" + f.log + ")") +
+                                         ",\"public\":false,\"files\":{" + JsonText(f.log) +
+                                         ":{\"content\":" + JsonText(LogForUpload(log_text)) + "}}}",
+                                     false, true);
+            JsonReader reader{r.body};
+            const Json j = reader.Value();
+            gist = reader.ok ? j.Str("html_url") : std::string{};
+            if (r.status == 401) {
+                std::scoped_lock lock{S.lock};
+                S.report_token.clear();
+            }
+            if (ReportCanceled()) {
+                ReportStatus(Snapshot::Report::Idle, "Not sent.");
+                return;
+            }
+            if (r.status != 201 || gist.rfind("https://", 0) != 0) {
+                ReportStatus(Snapshot::Report::Failed,
+                             r.status == 401 ? "GitHub no longer takes the sign-in. Send again to sign in once more."
+                                             : "The log could not be uploaded" + Why(r) + ". Nothing was sent.");
+                return;
+            }
+            std::scoped_lock lock{S.lock};
+            S.report_gists[f.log] = gist;
+        }
+        // the issue, under the form's headings
+        ReportStatus(Snapshot::Report::Sending, "Opening the issue");
+        const HttpReply r = Http("POST", std::string("https://api.github.com/repos/") + ReportRepo + "/issues",
+                                 "{\"title\":" + JsonText(f.title) + ",\"body\":" + JsonText(IssueBody(f, lines, gist)) +
+                                     ",\"labels\":[\"bug\"]}",
+                                 false, true);
+        JsonReader reader{r.body};
+        const Json j = reader.Value();
+        const std::string page = reader.ok ? j.Str("html_url") : std::string{};
+        const int number = reader.ok ? static_cast<int>(j.Num("number")) : 0;
+        if (r.status != 201 || page.rfind("https://", 0) != 0) {
+            if (r.status == 401) {
+                std::scoped_lock lock{S.lock};
+                S.report_token.clear();
+            }
+            ReportStatus(Snapshot::Report::Failed,
+                         "GitHub did not take the issue" + Why(r) + ". The log is up (" + gist +
+                             "): try again, or use the bug report form on GitHub and link it there.");
+            return;
+        }
+        ReportLog("sent as issue #" + std::to_string(number));
+        std::scoped_lock lock{S.lock};
+        S.report = Snapshot::Report::Sent;
+        S.report_issue = page;
+        S.report_note = "Sent as issue #" + std::to_string(number) + ". Thank you! Replies come to your GitHub notifications.";
+        S.dirty = true;
+    });
+}
+
+void CancelReport() {
+    std::scoped_lock lock{S.lock};
+    if (S.report != Snapshot::Report::SigningIn) return;
+    S.report_cancel = true;
+    Kill(S.report_tool);
+    S.report = Snapshot::Report::Idle;
+    S.report_code.clear();
+    S.report_note = "Not sent.";
+    S.dirty = true;
 }
 
 // ---- the direct start: the game without the launcher ----
@@ -2282,6 +2782,7 @@ bool StartGame() {
         return false;
     }
     std::fprintf(stderr, "launcher: started the game\n");
+    msr_discord_hold(1);   // the game shows its own Discord presence
     std::scoped_lock lock{S.lock};
     S.game_process = c;
     S.playing = true;
@@ -2326,7 +2827,17 @@ void Publish() {
         s.saves_detail = S.saves_detail;
         s.saves_note = S.saves_note;
         s.saves_folder = Utf8(SaveFolder().make_preferred());
+        s.report_logs = S.report_logs;
+        s.report = S.report;
+        s.report_code = S.report_code;
+        s.report_code_page = S.report_code_page;
+        s.report_note = S.report_note;
+        s.report_issue = S.report_issue;
+        s.report_signed_in = !S.report_token.empty();
+        s.discord = MSR_DISCORD_INVITE;
     }
+    static const bool reports = ReportOption();
+    s.report_option = reports;
     static const bool browse = CanBrowse();
     s.can_browse = browse;
     MSR::GetOverlay().SetLauncher(s);
@@ -2391,6 +2902,59 @@ extern "C" void msr_launcher_action(int kind, const char* text) {
             page = S.update_page;
         }
         OpenPage(page);
+        break;
+    }
+    case Kind::LauncherDiscord: OpenPage(MSR_DISCORD_INVITE); break;
+    case Kind::LauncherReportLogs: {
+        auto logs = ScanLogs();
+        std::scoped_lock lock{S.lock};
+        S.report_logs = std::move(logs);
+        S.dirty = true;
+        break;
+    }
+    case Kind::LauncherReportSend: SendReport(text ? text : ""); break;
+    case Kind::LauncherReportCancel: CancelReport(); break;
+    case Kind::LauncherReportCodePage:
+    case Kind::LauncherReportOpenIssue: {
+        std::string page;
+        {
+            std::scoped_lock lock{S.lock};
+            page = static_cast<Kind>(kind) == Kind::LauncherReportCodePage ? S.report_code_page : S.report_issue;
+        }
+        OpenPage(page);
+        break;
+    }
+    case Kind::LauncherReportCopyCode: {
+        std::string code;
+        {
+            std::scoped_lock lock{S.lock};
+            code = S.report_code;
+        }
+        if (!code.empty()) SDL_SetClipboardText(code.c_str());
+        break;
+    }
+    case Kind::LauncherReportNew: {
+        std::scoped_lock lock{S.lock};
+        if (S.report == Snapshot::Report::SigningIn || S.report == Snapshot::Report::Sending) break;
+        S.report = Snapshot::Report::Idle;
+        S.report_note.clear();
+        S.report_issue.clear();
+        S.dirty = true;
+        break;
+    }
+    case Kind::LauncherReportLogsFolder: {
+        std::error_code e;
+        fs::create_directories(LogsFolder(), e);
+        OpenFolder(LogsFolder());
+        break;
+    }
+    case Kind::LauncherReportWebForm: {   // the form in the browser, and the logs folder to drag the log from
+        OpenPage(std::string("https://github.com/") + ReportRepo + "/issues/new?template=bug_report.yml");
+#ifndef __ANDROID__
+        std::error_code e;
+        fs::create_directories(LogsFolder(), e);
+        OpenFolder(LogsFolder());
+#endif
         break;
     }
     case Kind::Quit: {
@@ -2496,6 +3060,7 @@ void ReadGame() {
 int Launcher() {
     const std::string settings = Utf8(S.settings);
     msr_settings_load(settings.c_str());
+    msr_discord_start(1);   // Discord Rich Presence: "In the launcher" (discord.cpp)
     {
         char* base = SDL_GetBasePath();
         msr_mods_init(Utf8(S.user).c_str(), settings.c_str(), base ? base : "");
@@ -2509,6 +3074,7 @@ int Launcher() {
                       file.Bool("native", "power_saving", MSR::PowerSavingDefault()));
     ReadGame();
     CheckCode();
+    S.report_logs = ScanLogs();   // (the REPORT tab's, there when it first shows; looked at again each time it does)
 #ifdef __ANDROID__
     ReadGpuDriver();
 #endif
@@ -2554,6 +3120,13 @@ int Launcher() {
             if (code == MSR_EXIT_RESTART && StartGame()) continue;   // its menu's Restart
             msr_overlay_reload();   // what its menu changed
             CheckCode();
+            msr_discord_hold(0);
+            {   // the session just played is the newest log (the REPORT tab)
+                auto logs = ScanLogs();
+                std::scoped_lock lock{S.lock};
+                S.report_logs = std::move(logs);
+                S.dirty = true;
+            }
             video_show(1);
         }
 #ifdef __ANDROID__
@@ -2578,6 +3151,13 @@ int Launcher() {
     }
     if (S.update_checker.joinable()) S.update_checker.join();
     if (S.update_worker.joinable()) S.update_worker.join();
+    {   // a report under way: stopped (its sign-in waits for the player; an upload ends with its request)
+        std::scoped_lock lock{S.lock};
+        S.report_cancel = true;
+        Kill(S.report_tool);
+    }
+    if (S.report_worker.joinable()) S.report_worker.join();
+    msr_discord_stop();
     msr_settings_save();
     video_shutdown();
     if (!S.restart_into.empty()) {   // an update: its program, in this one's place

@@ -57,6 +57,8 @@ dump and holds the settings, which are also in an in-game overlay (F1 or Select)
 - Nintendo controller layout is off by default. A is accept, B is back in menus but A is jump in gameplay. This is configurable
 - Mod support
 - Steamdeck preset mode to get 60fps performance
+- Discord Rich Presence: your Discord profile shows the area you're in and the Metroids left (on by default; a switch on the Game tab turns it off)
+- Bug reports from the launcher's REPORT tab, sent to Issues with the log of the session you choose
 
 ## Extra controls
 
@@ -291,7 +293,12 @@ same `settings.ini`; LB and RB switch tabs.
   language (English, French, Spanish, German, Italian or Dutch: the last three
   set the 3DS region to Europe, which the game needs for them); volume; **Unlock amiibo galleries**, **Unlock Fusion Mode** and **Hard Mode
   from the start** (all on by default) and **Fusion suit, any difficulty** (off);
-  in the game, Resume, Quick save, Quick load, Restart and Quit.
+  **Discord Rich Presence** (on: with the Discord app open on the same computer,
+  your Discord profile shows that you're playing, the area you're in and the
+  Metroids left; not in the Android app); in the launcher, **Join the msr2ds
+  Discord**; in the game, Resume, Quick save, Quick load, Restart and Quit.
+- **Report** (the launcher only): a bug report for Issues, sent with the log of
+  the play session you choose (see [Reporting a problem](#reporting-a-problem)).
 - **Display:** a video preset (below); fullscreen; Widescreen (16:9),
   Ultrawide (up to 32:9) and Fill 16:10 screens (the Steam Deck, most laptops,
   a Mac in fullscreen: more of the level above and below instead of bars), all
@@ -502,9 +509,16 @@ exports in `mods/game`. Randovania's tracker can't connect to the game.
 
 ## Reporting a problem
 
-Open an issue on the [Issues](../../issues/new/choose) page and pick **Bug report** (or **Feature
-request** for an idea): the form asks for what helps. Please check the open issues first, and
-report one problem per issue. What to have at hand:
+The quickest way is the launcher's **REPORT** tab: choose the play session where the problem
+happened (by the date and time it started), say what happened and where, and send it. You sign in
+to GitHub with a code shown there (on github.com/login/device, in your browser or on your phone;
+a free account is enough), and the report goes up under your name, so you see the replies: the
+log first (as a gist), then the issue that links it. Nothing is sent without the log. You can add
+screenshots or a clip on the issue's page afterwards.
+
+You can also open an issue on the [Issues](../../issues/new/choose) page and pick **Bug report** (or
+**Feature request** for an idea): the form asks for what helps. Please check the open issues first,
+and report one problem per issue. What to have at hand:
 
 - **The version**: at the bottom of the launcher's Game tab, e.g. "msr-native 2.2.0". Newer
   versions may already fix it: the Game tab offers updates.

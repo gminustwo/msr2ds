@@ -8,6 +8,14 @@ set(MSR_NATIVE_VERSION "2.2.0")   # the launcher shows it; the native code's mod
 # Where the launcher looks for newer releases (GitHub owner/repository; its releases must be public): their packages,
 # as tools/package names them, update the installation in place (launcher.cpp)
 set(MSR_UPDATE_REPO "gminustwo/msr2ds" CACHE STRING "GitHub repository whose releases the launcher offers as updates")
+# Discord Rich Presence (runtime/msr/discord.cpp): the project's application on Discord's developer portal (empty: none),
+# and its server's invite (the launcher's Join the Discord button)
+set(MSR_DISCORD_APP_ID "1574171696209076305" CACHE STRING "Discord application ID for Rich Presence (empty: no Rich Presence)")
+set(MSR_DISCORD_INVITE "https://discord.gg/u5SzfU66ZJ" CACHE STRING "The project's Discord invite (empty: no button)")
+# Bug reports from the launcher (launcher.cpp, the bug reports section): the client ID of the project's GitHub App the
+# player signs in to (GitHub's device sign-in; it opens issues on MSR_UPDATE_REPO and makes the log's gist). Empty: the
+# REPORT tab opens the repository's bug report form instead.
+set(MSR_REPORT_CLIENT_ID "Iv23li7RlomfomIysbBr" CACHE STRING "GitHub App client ID for the launcher's bug reports (empty: the web form)")
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 if(NOT CMAKE_BUILD_TYPE)
@@ -186,7 +194,7 @@ set(MSR_NATIVE_SOURCES
   runtime/msr/textures.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/common/cityhash.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/msr/touch_nav.cpp
   runtime/msr/ini.cpp runtime/msr/mods.cpp runtime/msr/patch.cpp runtime/msr/layered_fs.cpp runtime/msr/overlay_host.cpp
-  runtime/msr/launcher.cpp
+  runtime/msr/launcher.cpp runtime/msr/discord.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../src/msr/overlay.cpp
   ${SHO}/pica.vert.inc ${SHO}/pica_vs.vert.inc ${SHO}/pica.frag.inc
   ${SHO}/present.vert.inc ${SHO}/present.frag.inc
@@ -258,6 +266,9 @@ target_include_directories(msr-native PRIVATE runtime/msr/compat runtime ${SHO} 
                            ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_compile_definitions(msr-native PRIVATE _FILE_OFFSET_BITS=64 MSR_AOT_RUNTIME_SHA256="${MSR_AOT_RUNTIME_SHA256}" MSR_NATIVE
                            MSR_NATIVE_VERSION="${MSR_NATIVE_VERSION}" MSR_UPDATE_REPO="${MSR_UPDATE_REPO}")
+# Only the two files that use them, so changing an ID rebuilds those two and not the whole game
+set_source_files_properties(runtime/msr/launcher.cpp runtime/msr/discord.cpp PROPERTIES COMPILE_DEFINITIONS
+                            "MSR_DISCORD_APP_ID=\"${MSR_DISCORD_APP_ID}\";MSR_DISCORD_INVITE=\"${MSR_DISCORD_INVITE}\";MSR_REPORT_CLIENT_ID=\"${MSR_REPORT_CLIENT_ID}\"")
 # The log's first line names the build's commit and date (runtime/log.c): build_info.h, brought up to date before each build
 add_custom_target(msr-build-info
     COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}/.. -DOUT=${CMAKE_CURRENT_BINARY_DIR}/build_info.h
