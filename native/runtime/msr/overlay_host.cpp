@@ -508,6 +508,10 @@ extern "C" int msr_overlay_launcher_mode(void) {
     return launcher_mode;
 }
 
+extern "C" int msr_overlay_typing(void) {
+    return O().Typing();
+}
+
 extern "C" void msr_overlay_toggle(void) {
     if (!O().Visible()) {
         input_release_all();
@@ -655,6 +659,7 @@ extern "C" int msr_overlay_event(const SDL_Event* e, float sx, float sy) {
 extern "C" void msr_overlay_frame(void) {
     using Kind = MSR::OverlayAction::Kind;
     MSR::FrameRate::game_frames.store(g_gsp_top_swaps, std::memory_order_relaxed);
+    if (!launcher_mode) msr_report_tick();   // the REPORT tab's state, as its worker left it (launcher.cpp)
     if (capturing >= 0) {
         if (!capture_armed && !video_pad_any_held()) capture_armed = true;
         if (Now() > capture_until) {

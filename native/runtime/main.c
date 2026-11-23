@@ -835,6 +835,7 @@ int main(int argc, char **argv) {
         snprintf(user_dir, sizeof user_dir, "%s..", msr_dir[0] ? msr_dir : "./");
         char *base = SDL_GetBasePath();
         msr_mods_init(user_dir, settings, base ? base : "");
+        msr_report_game_start(user_dir);   /* the menu's REPORT tab and Discord button (msr/launcher.cpp) */
         if (base) SDL_free(base);
         msr_mods_boot(packs_given);
     }
@@ -1057,6 +1058,7 @@ int main(int argc, char **argv) {
     { extern void pica_vk_saves_wait(void); pica_vk_saves_wait(); }   /* a shader cache save under way lands first */
     video_shutdown();
     msr_discord_stop();   /* the Discord presence cleared */
+    msr_report_stop();    /* a bug report under way stopped (msr/launcher.cpp) */
 #ifndef _WIN32
     /* Linux and macOS: end here, without exit()'s static destructors. The guest threads, the GX worker and the texture packs'
        PNG workers are still running, and glibc's pthread_cond_destroy waits for the waiters of a condition variable:

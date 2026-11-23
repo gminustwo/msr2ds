@@ -291,14 +291,17 @@ struct LauncherSnapshot {
     std::string gpu_driver_note; ///< An install's or removal's result, or why the game went back to the system's
     bool gpu_driver_bad = false; ///< The note is a failure
     /// Bug reports (launcher.cpp, the bug reports section; the REPORT tab): sent to the repository's GitHub Issues with
-    /// the log of the play session the player chooses, after they sign in to GitHub with a code
+    /// the log of the play session the player chooses, after they sign in to GitHub with a code. The launcher has the
+    /// tab, and so has the game's menu (msr_report_game_start), where this session's own log comes first.
     struct SessionLog {
         std::string name;    ///< "msr-native_2026-11-22_13-08-20.log"
-        std::string when;    ///< "Today, 13:08:20"
+        std::string when;    ///< "Today, 13:08:20", or "This session, started 13:08:20"
         std::string detail;  ///< "played 0:01:33, last in Area 4", or how it ended without its last line
         bool ended_badly = false; ///< No "exit:" line: a crash, a freeze, or the game was ended
+        bool current = false;     ///< The game's own session: its log is still being written
     };
     enum class Report { Idle, SigningIn, Sending, Sent, Failed };
+    bool report_tab = false;             ///< The REPORT tab is shown (the launcher; the game's menu once it has the logs)
     bool report_option = false;          ///< Reports can be sent from here (an app to sign in with; a way to reach GitHub)
     std::vector<SessionLog> report_logs; ///< The play sessions' logs, newest first
     Report report = Report::Idle;
@@ -306,7 +309,7 @@ struct LauncherSnapshot {
     std::string report_code_page; ///< SigningIn: that page
     std::string report_note;      ///< The step under way, what failed, or the issue sent
     std::string report_issue;     ///< Sent: the issue's page
-    bool report_signed_in = false; ///< Signed in during this launcher session (kept in memory until it closes)
+    bool report_signed_in = false; ///< Signed in while this launcher (or the game) runs (kept in memory until it closes)
     std::string discord;          ///< The project's Discord invite, empty when there is none
     /// msr-native's Android app: the user folder on the phone's storage or the SD card, and a move between them (#39)
     enum class Place { Idle, Confirm, Moving, Failed };
@@ -396,6 +399,10 @@ public:
     void Toggle() {
         SetVisible(!Visible());
     }
+    /// A text field is being typed in (the last frame's): keys bound to the game (Select is Backspace) are its
+    bool Typing() const {
+        return visible.load() && typing.load();
+    }
     void ShowStartupHint();
     void SetEmulatorSettings(const EmulatorSettings& settings);
     void SetPlayerSettings(const PlayerSettings& settings);
@@ -471,6 +478,7 @@ private:
     void EmulatorChanged();
 
     std::atomic<bool> visible{false};
+    std::atomic<bool> typing{false};   ///< ImGui wanted text input in the last frame (Typing)
     std::atomic<bool> launcher_active{false};
     std::atomic<double> hint_started{-1.0};
 
@@ -499,8 +507,9 @@ private:
     double fps_started = 0.0;
     std::array<char, 1024> game_input{}; ///< The launcher's game file field
     std::string game_input_from;         ///< The path it was last filled from
-    // The REPORT tab's fields, kept while the launcher is open
+    // The REPORT tab's fields, kept while the launcher (or the game) is open
     std::string report_log;               ///< The chosen log's file name ("": the newest)
+    bool report_logs_pending = false;     ///< The tab opened before the logs were read: focus the list when they come
     std::array<char, 256> report_title{};
     std::array<char, 4096> report_what{};
     std::array<char, 4096> report_where{};

@@ -101,6 +101,7 @@ void msr_overlay_reload(void);
 void msr_mods_init(const char* user, const char* settings, const char* exe);
 void video_keep_crashed_log(const char* log);
 unsigned video_gpu_vendor(void);
+const char* log_path(void);   // (log.c: this session's log in the game, "" in the launcher)
 #ifdef __ANDROID__
 int video_game_ended_opening(void);
 void video_forget_ended_opening(void);
@@ -616,6 +617,7 @@ struct State {
     bool report_cancel = false;
     std::thread report_worker;
     Child report_tool;            // the request under way (curl): stopped when the launcher closes
+    bool in_game = false;         // the game's process (msr_report_game_start): its menu has the REPORT tab
 } S;
 
 void WriteDirect();   // the direct start section
@@ -2273,7 +2275,13 @@ void ReportLog(const std::string& text) {
     fs::create_directories(S.user / "msr", e);
     std::ofstream f(S.user / "msr" / "report.log", std::ios::binary | std::ios::app);
     f << text << "\n";
-    std::fprintf(stderr, "launcher: report: %s\n", text.c_str());
+    std::fprintf(stderr, "report: %s\n", text.c_str());
+}
+
+// The game's own session log ("msr-native_2026-11-22_17-58-50.log"); "" in the launcher, which writes none
+std::string CurrentLogName() {
+    const char* path = log_path();
+    return path && *path ? Utf8(FromUtf8(path).filename()) : std::string{};
 }
 
 void ReportStatus(Snapshot::Report state, const std::string& note) {
@@ -2375,6 +2383,7 @@ HttpReply Http(const char* method, const std::string& url, const std::string& bo
         {
             std::scoped_lock lock{S.lock};
             S.report_tool = c;
+            if (S.report_cancel) Kill(S.report_tool);   // (stopped while it started: the game or the launcher closing)
         }
         while (Poll(c, false) == -1) std::this_thread::sleep_for(std::chrono::milliseconds(100));
         {
@@ -2539,19 +2548,42 @@ std::vector<Snapshot::SessionLog> ScanLogs() {
     };
     const std::time_t now = std::time(nullptr);
     const std::string today = day(now), yesterday = day(now - 24 * 3600);
+    const std::string current = CurrentLogName();   // (the game's menu: its own session, still being written)
     std::vector<Snapshot::SessionLog> logs;
     for (const auto& name : names) {
         Snapshot::SessionLog l;
         l.name = name;
+        l.current = name == current;
+        std::string time;
         if (name.size() >= 30) {   // msr-native_2026-11-22_13-08-20.log
             const std::string date = name.substr(11, 10);
-            std::string time = name.substr(22, 8);
+            time = name.substr(22, 8);
             std::replace(time.begin(), time.end(), '-', ':');
             l.when = (date == today ? std::string("Today") : date == yesterday ? std::string("Yesterday") : date) + ", " + time;
         } else {
             l.when = name;
         }
         const LogSummary s = Summarize(LogLines(ReadText(LogsFolder() / FromUtf8(name))));
+        if (l.current) {   // playing now: how long so far, from when it started (its name), and where
+            if (!time.empty()) l.when = "This session, started " + time;
+            l.detail = "playing now";
+            std::tm start{};
+            if (name.size() >= 30 && std::sscanf(name.c_str() + 11, "%4d-%2d-%2d_%2d-%2d-%2d", &start.tm_year, &start.tm_mon,
+                                                 &start.tm_mday, &start.tm_hour, &start.tm_min, &start.tm_sec) == 6) {
+                start.tm_year -= 1900;
+                start.tm_mon -= 1;
+                start.tm_isdst = -1;
+                if (const std::time_t began = std::mktime(&start); began != -1 && now >= began) {
+                    const long long t = static_cast<long long>(now - began);
+                    char b[32];
+                    std::snprintf(b, sizeof b, "%lld:%02lld:%02lld", t / 3600, t / 60 % 60, t % 60);
+                    l.detail += std::string(", ") + b + " so far";
+                }
+            }
+            if (!s.area.empty()) l.detail += ", in " + s.area;
+            logs.insert(logs.begin(), std::move(l));   // (first, whatever the clock says of the names)
+            continue;
+        }
         l.ended_badly = !s.ended;
         l.detail = s.ended ? (s.played.empty() ? std::string("closed normally") : "played " + s.played)
                            : std::string("ended without its last line: a crash, a freeze, or the game was ended");
@@ -2599,6 +2631,7 @@ struct ReportFields {
 // The issue's text: the bug report form's headings (as GitHub writes a form's issue), the log linked at its gist
 std::string IssueBody(const ReportFields& f, const std::vector<std::string>& lines, const std::string& gist) {
     const LogSummary summary = Summarize(lines);
+    const bool live = f.log == CurrentLogName();   // sent from the game's menu, about the session still running
     const auto or_none = [](const std::string& s) { return s.empty() ? std::string("_No response_") : s; };
     std::string started = f.log.size() >= 30 ? f.log.substr(11, 10) + " " + f.log.substr(22, 8) : f.log;
     if (started.size() == 19) { started[13] = ':'; started[16] = ':'; }
@@ -2606,9 +2639,10 @@ std::string IssueBody(const ReportFields& f, const std::vector<std::string>& lin
                        "\n\n### What happened?\n\n" + f.what +
                        "\n\n### Where, and how to make it happen\n\n" + f.where +
                        "\n\n### Session log (required)\n\n[" + f.log + "](" + gist + "): the session that started " + started +
-                       (summary.ended ? (summary.played.empty() ? std::string(", closed normally") : ", played " + summary.played)
-                                      : std::string(", ended without its last line (a crash, a freeze, or the game was ended)")) +
-                       (summary.area.empty() ? std::string{} : ", last in " + summary.area) + ".\n";
+                       (live ? std::string(", still running when this was sent from its menu (the log up to then)")
+                        : summary.ended ? (summary.played.empty() ? std::string(", closed normally") : ", played " + summary.played)
+                                        : std::string(", ended without its last line (a crash, a freeze, or the game was ended)")) +
+                       (summary.area.empty() ? std::string{} : (live ? ", in " : ", last in ") + summary.area) + ".\n";
     if (const std::string h = LogHighlights(lines); !h.empty())
         body += "\n<details><summary>From the log: the build, the game, the PC, the display, the controllers</summary>\n\n"
                 "```text\n" + h + "```\n\n</details>\n";
@@ -2618,7 +2652,8 @@ std::string IssueBody(const ReportFields& f, const std::vector<std::string>& lin
             "- [x] I'm playing my own decrypted dump of the USA release (CTR-P-A9AE)\n"
             "- [x] The log I attached is from the play session where the problem happened, not from a later start of "
             "the game (I checked its date and time)\n\n"
-            "<sub>Sent from the msr2ds launcher's REPORT tab (msr-native " MSR_NATIVE_VERSION ").</sub>\n";
+            "<sub>Sent from msr2ds's REPORT tab, in " + std::string(S.in_game ? "the game's menu" : "the launcher") +
+            " (msr-native " MSR_NATIVE_VERSION ").</sub>\n";
     return body;
 }
 
@@ -2652,7 +2687,8 @@ void SendReport(const std::string& text) {
         S.dirty = true;
     }
     if (S.report_worker.joinable()) S.report_worker.join();
-    S.report_worker = std::thread([f] {
+    const bool live = f.log == CurrentLogName();   // this session's log grows: each report uploads it as it is then
+    S.report_worker = std::thread([f, live] {
         bool signed_in;
         {
             std::scoped_lock lock{S.lock};
@@ -2663,7 +2699,7 @@ void SendReport(const std::string& text) {
         const std::vector<std::string> lines = LogLines(log_text);
         // the log first, as a secret gist: the issue links it (a retry this session uses the one already up)
         std::string gist;
-        {
+        if (!live) {
             std::scoped_lock lock{S.lock};
             if (const auto it = S.report_gists.find(f.log); it != S.report_gists.end()) gist = it->second;
         }
@@ -2692,7 +2728,7 @@ void SendReport(const std::string& text) {
                 return;
             }
             std::scoped_lock lock{S.lock};
-            S.report_gists[f.log] = gist;
+            if (!live) S.report_gists[f.log] = gist;
         }
         // the issue, under the form's headings
         ReportStatus(Snapshot::Report::Sending, "Opening the issue");
@@ -2964,6 +3000,7 @@ void Publish() {
         s.report_issue = S.report_issue;
         s.report_signed_in = !S.report_token.empty();
         s.discord = MSR_DISCORD_INVITE;
+        s.report_tab = true;
     }
     static const bool reports = ReportOption();
     s.report_option = reports;
@@ -2972,7 +3009,58 @@ void Publish() {
     MSR::GetOverlay().SetLauncher(s);
 }
 
+// The game's menu (msr_report_tick): the REPORT tab and the Discord button, none of the launcher's own rows
+bool game_reports = false;   // (msr_report_game_start's ReportOption)
+void PublishGame() {
+    Snapshot s;
+    {
+        std::scoped_lock lock{S.lock};
+        if (!S.in_game || !S.dirty) return;
+        S.dirty = false;
+        s.report_tab = true;
+        s.report_logs = S.report_logs;
+        s.report = S.report;
+        s.report_code = S.report_code;
+        s.report_code_page = S.report_code_page;
+        s.report_note = S.report_note;
+        s.report_issue = S.report_issue;
+        s.report_signed_in = !S.report_token.empty();
+        s.discord = MSR_DISCORD_INVITE;
+    }
+    s.report_option = game_reports;
+    MSR::GetOverlay().SetLauncher(s);
+}
+
 } // namespace
+
+// The game's process (main.c): its menu gets the REPORT tab and the Discord button. The user folder is the one its
+// mods are found in (beside msr/settings.ini); the logs are read when the tab first opens.
+extern "C" void msr_report_game_start(const char* user_dir) {
+    S.user = FromUtf8(user_dir && *user_dir ? user_dir : "user");
+    game_reports = ReportOption();
+    std::scoped_lock lock{S.lock};
+    S.in_game = true;
+    S.dirty = true;
+}
+
+// Each frame (overlay_host.cpp msr_overlay_frame): what the report's worker changed, to the menu
+extern "C" void msr_report_tick(void) {
+    PublishGame();
+}
+
+// The game closing (main.c): a report under way stopped, its request (curl) ended. Windows returns from main, and a
+// worker left running would end the program there (a joinable std::thread); the others leave with _exit.
+extern "C" void msr_report_stop(void) {
+    {
+        std::scoped_lock lock{S.lock};
+        if (!S.in_game) return;
+        S.report_cancel = true;
+        Kill(S.report_tool);
+    }
+#ifdef _WIN32
+    if (S.report_worker.joinable()) S.report_worker.join();
+#endif
+}
 
 // The overlay's launcher actions (overlay_host.cpp)
 extern "C" void msr_launcher_action(int kind, const char* text) {
