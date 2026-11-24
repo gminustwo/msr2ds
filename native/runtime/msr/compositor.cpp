@@ -2334,8 +2334,8 @@ int PauseInput(uint32_t* buttons, uint32_t dpad, int* take, int* cx, int* cy, in
 }
 
 extern "C" int msr_footer_input(uint32_t* buttons, uint32_t dpad, int* take, int* cx, int* cy, int* x, int* y) {
-    // Playing as on the 3DS: the touch screen shows as the game draws it, without the single screen's highlights, so the
-    // D-pad stays the game's there, as on the console (the mouse or a touch screen is the stylus)
+    // 3DS mode: the touch screen shows as the game draws it, without the single screen's highlights, so the D-pad stays
+    // the game's there, as on the console (the mouse or a touch screen is the stylus)
     if (P::original.load(std::memory_order_relaxed)) return 0;
     if (PauseInput(buttons, dpad, take, cx, cy, x, y)) return 1;
     constexpr uint32_t A = 1u, Right = 0x10u | (1u << 28), Left = 0x20u | (1u << 29), Up = 0x40u | (1u << 30),

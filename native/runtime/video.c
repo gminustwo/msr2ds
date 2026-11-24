@@ -1260,9 +1260,9 @@ int video_init(int scale) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | (g_input_none ? 0 : SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK))) { fprintf(stderr, "video: SDL_Init: %s\n", SDL_GetError()); return -1; }
     static const int cw[L_COUNT] = { TOP_W, TOP_W + BOT_W, TOP_W + BOT_W / 2, TOP_W, BOT_W, 0, TOP_W }, chh[L_COUNT] = { 2 * SCR_H, SCR_H, SCR_H, SCR_H, SCR_H, SCR_H, 2 * SCR_H };
 #ifndef __ANDROID__
-    if (opt_layout != L_SINGLE) {   /* the screens' window smaller till it fits the display (Play as on the 3DS's stacked
-                                       screens are 1200x1440 at the launcher's 3: taller than a 1080p or 1440p display),
-                                       a twentieth of its height left for the title bar */
+    if (opt_layout != L_SINGLE) {   /* the screens' window smaller till it fits the display (3DS mode's stacked screens
+                                       are 1200x1440 at the launcher's 3: taller than a 1080p or 1440p display), a
+                                       twentieth of its height left for the title bar */
         SDL_Rect ub;
         if (!SDL_GetDisplayUsableBounds(0, &ub))
             while (scale > 1 && (cw[opt_layout] * scale > ub.w || chh[opt_layout] * scale + ub.h / 20 > ub.h)) scale--;

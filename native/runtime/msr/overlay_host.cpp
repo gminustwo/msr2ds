@@ -707,7 +707,7 @@ extern "C" void msr_overlay_frame(void) {
         case Kind::FrameRate:
             // In the launcher there is no game: its memory is not set up (rt_mem_init), and rewriting its code there
             // crashed (#28). The rate is saved with the settings, and the game applies it when it starts (main.c).
-            if (!launcher_mode) main_set_frame_rate(O().GetPlayerSettings().AsPlayed().frame_rate);   // (as on the 3DS: 30)
+            if (!launcher_mode) main_set_frame_rate(O().GetPlayerSettings().AsPlayed().frame_rate);
             break;
         case Kind::QuickSave:
             msr_state_quick_save();   // state.c

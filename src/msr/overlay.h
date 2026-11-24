@@ -73,8 +73,8 @@ struct PlayerSettings {
     bool infinite_aeion = false;
     int language = 1; ///< The game's text: a 3DS system language, one of Languages (msr-native)
     bool discord_presence = true; ///< msr-native: Discord Rich Presence (runtime/msr/discord.cpp)
-    /// msr-native: Play as on the 3DS, from the game's next start (Presentation::original). Never on by default, and no
-    /// preset turns it on.
+    /// msr-native: 3DS mode, from the game's next start (Presentation::original). Never on by default, and no preset
+    /// turns it on.
     bool original_3ds = false;
     // The video settings the player last set by hand, which no preset makes (the Display tab's Custom): kept when a
     // preset replaces them, so Custom brings them back
@@ -96,8 +96,8 @@ struct PlayerSettings {
 #endif
     /// Pushes the values to the renderer (msr/presentation.h).
     void Publish() const;
-    /// The values the game plays with: these, or with Play as on the 3DS running (Presentation::original) the 3DS's view,
-    /// picture and frame rate in place of the port's (the player's own are kept for when it is off).
+    /// The values the game plays with: these, or in 3DS mode (Presentation::original) with the 3DS's 5:3 view in place
+    /// of widescreen and the zoom (the player's own are kept for when it is off).
     PlayerSettings AsPlayed() const;
 };
 
