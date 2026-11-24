@@ -19,6 +19,9 @@ int msr_settings_frame_rate(void);
 int msr_settings_language(void);
 int msr_settings_region(void);
 int msr_settings_wide_culling(void);          /* the game draws all of a wider view (the menu's "Draw only the 3DS's view" off) */
+/* Play as on the 3DS (the Game tab's, off by default): once the settings are read, 1 when the game plays so (both
+   screens, 400x240, 30 FPS, the 5:3 view and the game's own picture; the caller sets the screens and the resolution) */
+int msr_original_3ds_start(void);
 void msr_state_quick_save(void);             /* state.c: the settings' Quick save and Quick load (main thread) */
 void msr_state_quick_load(void);
 const char *msr_state_message(void);          /* state.c: "Saved", "Loaded"... once, for the screen */

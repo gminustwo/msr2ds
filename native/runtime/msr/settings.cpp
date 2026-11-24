@@ -77,6 +77,7 @@ void PlayerSettings::Load(const std::string& path) {
         language = 1;   // English
     }
     flag("discord_presence", discord_presence);
+    flag("original_3ds", original_3ds);
     flag("custom_video", custom_video);
     custom_resolution = std::clamp(static_cast<int>(file.Number("General", "custom_resolution", custom_resolution)), 0, 10);
     custom_aniso = AnisoChoice(static_cast<int>(file.Number("General", "custom_aniso", custom_aniso)));
@@ -135,6 +136,7 @@ void PlayerSettings::Save(const std::string& path) const {
     flag("infinite_aeion", infinite_aeion);
     number("language", language);
     flag("discord_presence", discord_presence);
+    flag("original_3ds", original_3ds);
     flag("custom_video", custom_video);
     number("custom_resolution", custom_resolution);
     number("custom_aniso", custom_aniso);
@@ -165,11 +167,26 @@ extern "C" int msr_settings_load(const char* path) {
 }
 
 extern "C" int msr_settings_frame_rate(void) {
-    return MSR::GetOverlay().GetPlayerSettings().frame_rate;
+    return MSR::GetOverlay().GetPlayerSettings().AsPlayed().frame_rate;
 }
 
 extern "C" int msr_settings_wide_culling(void) {
-    return MSR::GetOverlay().GetPlayerSettings().wide_culling;
+    return MSR::GetOverlay().GetPlayerSettings().AsPlayed().wide_culling;
+}
+
+// main.c, once the settings are read: Play as on the 3DS when the player's setting has it. Published again as played
+// (PlayerSettings::AsPlayed: the 5:3 view, the game's picture, 30 FPS); main.c then gives video.c the screens and the
+// 400x240. The player's own settings stay as they are, and are saved as they are.
+extern "C" int msr_original_3ds_start(void) {
+    auto& overlay = MSR::GetOverlay();
+    const MSR::PlayerSettings p = overlay.GetPlayerSettings();
+    if (!p.original_3ds) return 0;
+    MSR::Presentation::original.store(true, std::memory_order_relaxed);
+    overlay.SetPlayerSettings(p);   // (publishes them as played)
+    std::fprintf(stderr, "msr: playing as on the 3DS: both screens (top above bottom), 400x240, 30 FPS, the 3DS's 5:3 "
+                         "view and the game's own picture (the port's widescreen, zoom, bloom, HDR, FXAA, colors and "
+                         "3D left off)\n");
+    return 1;
 }
 
 extern "C" int msr_settings_language(void) {
