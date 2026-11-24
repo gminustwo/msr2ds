@@ -1259,6 +1259,15 @@ int video_init(int scale) {
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | (g_input_none ? 0 : SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK))) { fprintf(stderr, "video: SDL_Init: %s\n", SDL_GetError()); return -1; }
     static const int cw[L_COUNT] = { TOP_W, TOP_W + BOT_W, TOP_W + BOT_W / 2, TOP_W, BOT_W, 0, TOP_W }, chh[L_COUNT] = { 2 * SCR_H, SCR_H, SCR_H, SCR_H, SCR_H, SCR_H, 2 * SCR_H };
+#ifndef __ANDROID__
+    if (opt_layout != L_SINGLE) {   /* the screens' window smaller till it fits the display (Play as on the 3DS's stacked
+                                       screens are 1200x1440 at the launcher's 3: taller than a 1080p or 1440p display),
+                                       a twentieth of its height left for the title bar */
+        SDL_Rect ub;
+        if (!SDL_GetDisplayUsableBounds(0, &ub))
+            while (scale > 1 && (cw[opt_layout] * scale > ub.w || chh[opt_layout] * scale + ub.h / 20 > ub.h)) scale--;
+    }
+#endif
     const int win_w = opt_layout == L_SINGLE ? (int)lroundf(SCR_H * scale * opt_window_aspect) : cw[opt_layout] * scale;   /* single: 16:9 (1280x720 at 3) */
     const int win_h = chh[opt_layout] * scale;
     /* auto: Vulkan where it has 1.3, else OpenGL, else Vulkan without 1.3 (its presenter scales on the CPU) */
@@ -1370,6 +1379,10 @@ void video_set_aniso(int aniso) {
 }
 int video_aniso(void) { return opt_aniso; }
 int video_filter_fsr(void) { return opt_filter == F_FSR; }
+const char *video_filter_text(void) {   /* for the log's start line (main.c settings_line) */
+    static const char *text[F_COUNT] = { "nearest", "linear", "sharp pixel", "FSR 1", "FXAA" };
+    return text[opt_filter];
+}
 int video_fullscreen(void) { return opt_fs != 0; }
 int video_vsync(void) { return opt_vsync; }
 /* every gamepad SDL can map is open (Steam can show a pad twice, a player can switch pads); gc is the one used last: its

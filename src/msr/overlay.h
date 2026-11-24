@@ -73,6 +73,9 @@ struct PlayerSettings {
     bool infinite_aeion = false;
     int language = 1; ///< The game's text: a 3DS system language, one of Languages (msr-native)
     bool discord_presence = true; ///< msr-native: Discord Rich Presence (runtime/msr/discord.cpp)
+    /// msr-native: Play as on the 3DS, from the game's next start (Presentation::original). Never on by default, and no
+    /// preset turns it on.
+    bool original_3ds = false;
     // The video settings the player last set by hand, which no preset makes (the Display tab's Custom): kept when a
     // preset replaces them, so Custom brings them back
     bool custom_video = false; ///< The values below are the player's (none yet: Custom is not offered)
@@ -93,6 +96,9 @@ struct PlayerSettings {
 #endif
     /// Pushes the values to the renderer (msr/presentation.h).
     void Publish() const;
+    /// The values the game plays with: these, or with Play as on the 3DS running (Presentation::original) the 3DS's view,
+    /// picture and frame rate in place of the port's (the player's own are kept for when it is off).
+    PlayerSettings AsPlayed() const;
 };
 
 /// The languages the North American game has text for, by 3DS system language (cfg block 0x000A0002). The game keeps
@@ -446,9 +452,10 @@ private:
 
     void Push(const Event& event);
     void Act(OverlayAction::Kind kind, int value = 0, std::string text = {});
-    /// The launcher's part of the Game tab: Play, the game file, the native code.
+    /// The launcher's part of the Game tab: Play, the game file, the native code. after_play draws the rows that go
+    /// right under Play (how it starts the game).
     void DrawLauncher(const LauncherSnapshot& launcher, float label_width,
-                      const std::function<void()>& default_focus);
+                      const std::function<void()>& default_focus, const std::function<void()>& after_play);
     /// The launcher's REPORT tab: a bug report, sent to GitHub with a play session's log.
     void DrawReport(const LauncherSnapshot& launcher, float label_width,
                     const std::function<void()>& default_focus);

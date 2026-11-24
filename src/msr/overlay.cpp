@@ -493,45 +493,63 @@ void PlayerSettings::Save(const QString& path) const {
 }
 #endif
 
+PlayerSettings PlayerSettings::AsPlayed() const {
+    PlayerSettings s = *this;
+    if (!Presentation::original.load(std::memory_order_relaxed)) return s;
+    // Play as on the 3DS: its 5:3 view at the game's own camera, drawn as the 3DS draws it, the game's glow and colors,
+    // 30 FPS. (The screens, the 400x240 and the pixels' scaling are video.c's, set by main.c at the start.)
+    s.widescreen = s.ultrawide = s.fill_16_10 = false;
+    s.camera_zoom = 1.f;
+    s.wide_culling = false;
+    s.bloom = 1.f;
+    s.hdr = false;
+    s.fxaa = false;
+    s.brightness = s.contrast = s.saturation = 1.f;
+    s.stereo = 0;
+    s.frame_rate = 30;
+    return s;
+}
+
 void PlayerSettings::Publish() const {
     namespace P = Presentation;
-    P::widescreen = widescreen;
-    P::ultrawide = ultrawide;
-    P::fill_16_10 = fill_16_10;
-    P::zoom = camera_zoom;
-    P::wide_culling = wide_culling;
-    P::hud_scale = hud_scale;
-    P::hud_opacity = hud_opacity;
-    P::show_minimap = show_minimap;
-    P::minimap_size = minimap_size;
-    P::minimap_opacity = minimap_opacity;
-    P::minimap_brightness = minimap_brightness;
-    P::show_counters = show_counters;
-    P::show_abilities = show_abilities;
-    P::hud_within_16_9 = hud_within_16_9;
-    P::panel_scale = panel_scale;
-    P::fit_pause = fit_pause;
-    P::menu_backdrop = menu_backdrop;
-    P::bloom = bloom;
-    P::hdr = hdr;
-    P::hdr_peak = hdr_peak;
-    P::hdr_paper = hdr_paper;
-    P::fxaa = fxaa;
-    P::smooth_packs = smooth_packs;
-    P::brightness = brightness;
-    P::contrast = contrast;
-    P::saturation = saturation;
-    P::stereo = stereo;
-    P::stereo_depth = stereo_depth;
-    P::stereo_swap = stereo_swap;
-    FrameRate::target = frame_rate;
-    Cheats::enabled = (unlock_galleries ? Cheats::Galleries : 0u) |
-                      (unlock_fusion_mode ? Cheats::FusionMode : 0u) |
-                      (unlock_hard_mode ? Cheats::HardMode : 0u) |
-                      (fusion_suit ? Cheats::FusionSuit : 0u) |
-                      (infinite_energy ? Cheats::InfiniteEnergy : 0u) |
-                      (infinite_missiles ? Cheats::InfiniteMissiles : 0u) |
-                      (infinite_aeion ? Cheats::InfiniteAeion : 0u);
+    const PlayerSettings s = AsPlayed();
+    P::widescreen = s.widescreen;
+    P::ultrawide = s.ultrawide;
+    P::fill_16_10 = s.fill_16_10;
+    P::zoom = s.camera_zoom;
+    P::wide_culling = s.wide_culling;
+    P::hud_scale = s.hud_scale;
+    P::hud_opacity = s.hud_opacity;
+    P::show_minimap = s.show_minimap;
+    P::minimap_size = s.minimap_size;
+    P::minimap_opacity = s.minimap_opacity;
+    P::minimap_brightness = s.minimap_brightness;
+    P::show_counters = s.show_counters;
+    P::show_abilities = s.show_abilities;
+    P::hud_within_16_9 = s.hud_within_16_9;
+    P::panel_scale = s.panel_scale;
+    P::fit_pause = s.fit_pause;
+    P::menu_backdrop = s.menu_backdrop;
+    P::bloom = s.bloom;
+    P::hdr = s.hdr;
+    P::hdr_peak = s.hdr_peak;
+    P::hdr_paper = s.hdr_paper;
+    P::fxaa = s.fxaa;
+    P::smooth_packs = s.smooth_packs;
+    P::brightness = s.brightness;
+    P::contrast = s.contrast;
+    P::saturation = s.saturation;
+    P::stereo = s.stereo;
+    P::stereo_depth = s.stereo_depth;
+    P::stereo_swap = s.stereo_swap;
+    FrameRate::target = s.frame_rate;
+    Cheats::enabled = (s.unlock_galleries ? Cheats::Galleries : 0u) |
+                      (s.unlock_fusion_mode ? Cheats::FusionMode : 0u) |
+                      (s.unlock_hard_mode ? Cheats::HardMode : 0u) |
+                      (s.fusion_suit ? Cheats::FusionSuit : 0u) |
+                      (s.infinite_energy ? Cheats::InfiniteEnergy : 0u) |
+                      (s.infinite_missiles ? Cheats::InfiniteMissiles : 0u) |
+                      (s.infinite_aeion ? Cheats::InfiniteAeion : 0u);
 }
 
 Overlay::Overlay() {
@@ -1476,6 +1494,40 @@ void Overlay::DrawMenu(float scale, bool appearing) {
     };
     const auto end_tab_item = [] { ImGui::EndChild(); };
 
+    // msr-native's Play as on the 3DS (PlayerSettings::original_3ds): in the launcher its setting, in the game what the
+    // game started with (Presentation::original). The Display and HUD tabs' rows that it sets wait while it is on.
+    const bool original_running = Presentation::original.load(std::memory_order_relaxed);
+    const bool original = l.active ? p.original_3ds : original_running;
+    const auto original_row = [&] {
+#ifdef MSR_NATIVE
+        row("Play as on the 3DS");
+        player_changed |= OnOff("##original3ds", &p.original_3ds);
+        if (!l.active && p.original_3ds != original_running) {
+            ImGui::TextColored({.53f, .89f, .6f, 1.f}, "Restart the game to play this way.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Restart now##original3ds")) {
+                Act(OverlayAction::Kind::Restart);
+                SetVisible(false);
+            }
+        } else {
+            Note("Both screens, the top one above the touch screen, at the 3DS's 400x240, 30 FPS and 5:3, with the "
+                 "game's own HUD, map and menus on the touch screen: the mouse (or a touch screen) is the stylus. "
+                 "The port's widescreen, resolution, frame rate, HUD and picture settings wait while it's on. Off by "
+                 "default.");
+        }
+#endif
+    };
+    // The note over the rows that wait while it is on
+    const auto original_note = [&](const char* what) {
+        if (!original) return;
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored({.43f, .8f, .98f, 1.f}, "%s", l.active ? "Play as on the 3DS is on (GAME tab)."
+                                                                   : "Playing as on the 3DS (GAME tab).");
+        ImGui::PopTextWrapPos();
+        Note(what);
+        ImGui::Spacing();
+    };
+
     {
         const auto default_focus = [&] {
             if (appearing) {
@@ -1487,7 +1539,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
         };
         if (tab_item("Game", 0)) {
             if (l.active) {
-                DrawLauncher(l, label_width, default_focus);
+                DrawLauncher(l, label_width, default_focus, original_row);
                 // The game reads the language when it starts: in the launcher only, as in the emulator-based 1.x
                 row("Language");
                 static constexpr auto names = [] {
@@ -1535,6 +1587,9 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             Note("Your Discord profile shows that you're playing msr2ds, the area you're in and the Metroids left. "
                  "It needs the Discord app open on this computer.");
 #endif
+            if (!l.active) {   // (the launcher's is under Play)
+                original_row();
+            }
             ImGui::Spacing();
             const ImVec2 button{-FLT_MIN, 0.f};
             if (l.active) {
@@ -1612,6 +1667,9 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             end_tab_item();
         }
         if (tab_item("Display", 1)) {
+            original_note("The video preset, widescreen, camera zoom, the picture's settings, the internal resolution and "
+                          "the frame rate wait until it's off.");
+            ImGui::BeginDisabled(original);
             if (e.deck_preset) {
                 // Measured on a Steam Deck OLED with the 4x texture pack (2026-11-03): 3x, the Deck's own 720p,
                 // left 40% of the GPU spare at 60 FPS (about 100 without a limit); 4x held 60 with less to spare.
@@ -1623,7 +1681,9 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                     p.frame_rate = 60;
                     player_changed = true;
                 }
-                default_focus();
+                if (!original) {
+                    default_focus();
+                }
                 Note(in_use ? "In use: 3x internal resolution, 60 FPS, V-Sync. For even frames, set the Deck's refresh "
                               "rate to 60 Hz (Quick Access menu, Performance)."
                             : "Sets 3x internal resolution (the Deck's 720p), 60 FPS and V-Sync. For even frames, set "
@@ -1663,7 +1723,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 }
                 ImGui::EndCombo();
             }
-            if (!e.deck_preset) {
+            if (!e.deck_preset && !original) {
                 default_focus();
             }
             {
@@ -1676,8 +1736,13 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                          : "Custom: the internal resolution and frame rate as you set them below. They are kept when "
                            "you choose a preset: Custom brings them back.");
             }
+            ImGui::EndDisabled();
             row("Fullscreen");
             emulator_changed |= OnOff("##fullscreen", &e.fullscreen);
+            if (original) {
+                default_focus();
+            }
+            ImGui::BeginDisabled(original);
             // Ultrawide widens the 16:9 view: on, it turns Widescreen on; Widescreen off turns it off
             row("Widescreen (16:9)");
             if (OnOff("##widescreen", &p.widescreen)) {
@@ -1788,10 +1853,12 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 player_changed |= OnOff("##fxaa", &p.fxaa);
                 Note("Smooths the game's jagged edges, before the picture is scaled to the window. A higher internal "
                      "resolution smooths them too, at a higher cost.");
+                ImGui::EndDisabled();
                 row("Smooth texture packs");
                 player_changed |= OnOff("##smoothpacks", &p.smooth_packs);
                 Note("A texture pack's textures filtered smoothly, also where the game shows its own with sharp "
                      "pixels.");
+                ImGui::BeginDisabled(original);
                 auto percent = [&](const char* label, const char* id, float& value) {
                     row(label);
                     int v = static_cast<int>(std::lround(value * 100.f));
@@ -1848,6 +1915,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 p.frame_rate = choices[rate];
                 player_changed = true;
             }
+            ImGui::EndDisabled();
             row("V-Sync");
             emulator_changed |= OnOff("##vsync", &e.vsync);
             row("Show FPS");
@@ -1863,6 +1931,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                      "loop: more of a slow processor for the game, and on a handheld or laptop more power for the "
                      "graphics. On by default with 4 processor threads or fewer.");
                 // checked lightens the load, as the row above: the setting kept is wide_culling, its opposite
+                ImGui::BeginDisabled(original);
                 row("Draw only the 3DS's view");
                 bool only_3ds = !p.wide_culling;
                 if (OnOff("##only3ds", &only_3ds)) {
@@ -1872,6 +1941,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 Note("As in 1.x: with widescreen, ultrawide or a zoom below 1, the game draws only what the 3DS's own "
                      "screen would show, so enemies and items at the edges appear as they come within it. Fewer "
                      "draws: about 12% at 16:9, 30% at zoom 0.70, 40% in ultrawide.");
+                ImGui::EndDisabled();
                 row("Texture pack size");
                 static constexpr std::array<const char*, 3> sizes{"Full", "Half (a quarter of the memory)",
                                                                   "Quarter (a sixteenth)"};
@@ -1916,9 +1986,14 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             end_tab_item();
         }
         if (tab_item("HUD", 2)) {
+            original_note("The HUD, the map and the menus are the game's own, on the touch screen: these rows are for "
+                          "the single screen, and wait until it's off.");
+            ImGui::BeginDisabled(original);
             row("HUD size");
             player_changed |= ImGui::SliderFloat("##hudsize", &p.hud_scale, .6f, 1.6f, "%.2f");
-            default_focus();
+            if (!original) {
+                default_focus();
+            }
             row("HUD opacity");
             player_changed |= ImGui::SliderFloat("##hudopacity", &p.hud_opacity, .3f, 1.f, "%.2f");
             row("Map");
@@ -1951,6 +2026,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             player_changed |= OnOff("##hints", &p.control_hints);
             Note("Help text beside the pause menu and file select, and in touch mode.");
 #endif
+            ImGui::EndDisabled();
             end_tab_item();
         }
         if (tab_item("Controls", 3)) {
@@ -2001,8 +2077,9 @@ void Overlay::DrawMenu(float scale, bool appearing) {
     ImGui::PopStyleVar();
 
     // Video settings that make no preset are the player's own (set by hand, the Steam Deck button, an older version's
-    // settings.ini): kept, so the Video preset row's Custom brings them back after a preset replaced them
-    if (VideoPresetOf(p, e) < 0 &&
+    // settings.ini): kept, so the Video preset row's Custom brings them back after a preset replaced them. Not while
+    // playing as on the 3DS: the game runs at its values then (400x240, 30 FPS), not the player's.
+    if (!original_running && VideoPresetOf(p, e) < 0 &&
         (!p.custom_video || p.custom_resolution != e.resolution || p.custom_aniso != e.aniso ||
          p.custom_fsr != e.fsr || p.custom_frame_rate != p.frame_rate ||
          p.custom_wide_culling != p.wide_culling || p.custom_power_saving != e.power_saving)) {
@@ -2047,7 +2124,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
 }
 
 void Overlay::DrawLauncher(const LauncherSnapshot& l, float label_width,
-                           const std::function<void()>& default_focus) {
+                           const std::function<void()>& default_focus, const std::function<void()>& after_play) {
     using Code = LauncherSnapshot::Code;
     using Update = LauncherSnapshot::Update;
     const auto& style = ImGui::GetStyle();
@@ -2096,6 +2173,7 @@ void Overlay::DrawLauncher(const LauncherSnapshot& l, float label_width,
     if (l.can_play) {
         default_focus();
     }
+    after_play();
     ImGui::Spacing();
 
     // The game file: typed or chosen with the file dialog

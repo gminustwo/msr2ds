@@ -678,7 +678,7 @@ static void settings_line(int fps) {
     char aniso_text[24];
     if (aniso > 1) snprintf(aniso_text, sizeof aniso_text, "%dx", aniso); else snprintf(aniso_text, sizeof aniso_text, "off");
     fprintf(stderr, "native: running at %s, %d FPS, V-Sync %s, %s upscaling, anisotropic filtering %s, power-saving waits %s, %s; "
-            "on %s, %d threads, %s, %.1f GB of memory (%.1f GB free)\n", res_text, fps, video_vsync() ? "on" : "off", video_filter_fsr() ? "FSR 1" : "linear",
+            "on %s, %d threads, %s, %.1f GB of memory (%.1f GB free)\n", res_text, fps, video_vsync() ? "on" : "off", video_filter_text(),
             aniso_text, k_power_saving() ? "on" : "off", msr_settings_wide_culling() ? "the wider view drawn" : "only the 3DS's view drawn",
             cpu, k_cpu_threads(), cpu_features(), memory_gb(), memory_free_gb());
 }
@@ -828,6 +828,14 @@ int main(int argc, char **argv) {
     }
     if (!settings) settings = exists("user/msr/settings.ini") ? "user/msr/settings.ini" : "../msr/settings.ini";
     msr_settings_load(settings);
+    if (msr_original_3ds_start()) {   /* Play as on the 3DS: both screens as the console has them, its 400x240 and its
+                                          pixels kept sharp at any size, no anisotropic filtering (the 3DS has none); in
+                                          place of the launcher's --layout=single and the rest (30 FPS: the settings') */
+        video_option("layout", "stacked");
+        video_option("resolution", "1");
+        video_option("aniso", "1");
+        video_option("filter", "sharp");
+    }
     msr_discord_start(0);   /* Discord Rich Presence, when the player's setting has it (msr/discord.cpp) */
     {   /* the game mods and texture packs, found as the launcher finds them: <user>/mods, <user>/msr/settings.ini */
         char msr_dir[4096], user_dir[4096];

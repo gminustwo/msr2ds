@@ -42,6 +42,7 @@ dump and holds the settings, which are also in an in-game overlay (F1 or Select)
 ## Features
 
 - All play occurs on a single 16:9 screen, with full controller or keyboard support
+- Play as on the 3DS (off by default): both screens, the top one above the touch screen, at the 3DS's 400x240 and 30 FPS
 - Unlock amiibo galleries
 - All difficulty modes available from start (Hard, Fusion)
 - Fusion suit on any difficulty (and able to swap between on the fly)
@@ -310,6 +311,17 @@ same `settings.ini`; LB and RB switch tabs.
   your Discord profile shows that you're playing, the area you're in and the
   Metroids left; not in the Android app); **Join the msr2ds Discord**; in the
   game, Resume, Quick save, Quick load, Restart and Quit.
+
+  **Play as on the 3DS** (off by default; in the launcher under Play, and on the
+  game's Game tab, from the next start): the game as the 3DS shows it. Both
+  screens, the top one above the touch screen, at the 3DS's 400x240 with its
+  pixels kept sharp, 30 FPS and the 3DS's 5:3 view, with the game's own HUD, map
+  and menus on the touch screen. The mouse (or a touch screen) is the stylus, and
+  the D-pad is the game's in the menus, as on the console. Widescreen, the camera
+  zoom, the internal resolution, the frame rate, bloom (the game's own glow),
+  HDR, FXAA, the colors, stereoscopic 3D and the HUD tab wait while it's on: your
+  settings for them stay as they are and come back when you turn it off. Mods,
+  texture packs, the extras and the cheats still apply.
 - **Report:** a bug report for Issues, sent with the log of the play session you
   choose; in the game's menu, the session you're playing comes first (see
   [Reporting a problem](#reporting-a-problem)).

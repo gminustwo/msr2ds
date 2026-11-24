@@ -61,6 +61,7 @@ int  video_resolution(void);
 int  video_vsync(void);
 int  video_aniso(void);
 int  video_filter_fsr(void);             /* the upscaling filter is FSR 1 (video_option "filter") */
+const char *video_filter_text(void);    /* the upscaling filter in words, for the log ("FSR 1", "linear", "sharp pixel") */
 void dsp_set_volume(float volume);       /* dsp.c: 0..1 */
 int  k_power_saving(void);               /* kernel.c: power-saving waits (sleep, don't spin) */
 int  k_cpu_threads(void);                /* kernel.c: the host's processor threads */

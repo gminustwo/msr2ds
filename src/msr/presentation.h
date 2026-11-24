@@ -18,6 +18,11 @@ namespace MSR::Presentation {
 /// (energy, missiles, Aeion, map, DNA and Metroid counts) are composited onto it.
 inline std::atomic<bool> enabled{false};
 
+/// msr-native's Play as on the 3DS (PlayerSettings::original_3ds), as the game started: both screens, the top one
+/// above the touch screen, at the 3DS's 400x240, 30 FPS and its 5:3 view, with the game's own picture
+/// (PlayerSettings::AsPlayed). Set once at the start (settings.cpp msr_original_3ds_start); never in the launcher.
+inline std::atomic<bool> original{false};
+
 /// Widen the top screen to 16:9: depth-tested world draws are squeezed by NativeAspect /
 /// WideAspect before clipping, revealing more of the level, and presentation stretches it back.
 inline std::atomic<bool> widescreen{true};
