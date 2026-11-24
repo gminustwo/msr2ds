@@ -41,8 +41,13 @@ inline constexpr float UltraAspect = 32.f / 9.f;
 /// the level above and below; off, it stays 16:9 there, with bars above and below.
 inline std::atomic<bool> fill_16_10{true};
 inline constexpr float TallAspect = 16.f / 10.f;
+/// 4:3 mode (msr-native): in play, the view is 4:3, the 3DS's width with more of the level above and
+/// below (a quarter more), filling a 4:3 screen and with bars at the sides of a wider one; out of
+/// play the game's own 5:3. Widescreen, ultrawide and 16:10 are off with it (PlayerSettings::AsPlayed).
+inline std::atomic<bool> aspect_4_3{false};
+inline constexpr float FourThreeAspect = 4.f / 3.f;
 /// The view's aspect in effect, set by the single-screen layout from the window (msr-native's
-/// compositor.cpp): 16:10 to 32:9 with widescreen, else 5:3.
+/// compositor.cpp): 16:10 to 32:9 with widescreen, 4:3 in 4:3 mode, else 5:3.
 inline std::atomic<float> view_aspect{WideAspect};
 /// The narrowest view at its full height: 16:9 with widescreen, else the 3DS's 5:3. A view wider than it
 /// shows more at the sides; one narrower (16:10) keeps its width and shows more above and below.

@@ -22,6 +22,7 @@ int msr_settings_wide_culling(void);          /* the game draws all of a wider v
 /* 3DS mode (the Game tab's, off by default): once the settings are read, 1 when the game plays so (both screens, the
    3DS's 5:3 view, the HUD on the touch screen; the caller sets the screens) */
 int msr_original_3ds_start(void);
+int msr_settings_aspect_4_3(void);            /* 4:3 mode as played (not in 3DS mode): the window opens 4:3 */
 void msr_state_quick_save(void);             /* state.c: the settings' Quick save and Quick load (main thread) */
 void msr_state_quick_load(void);
 const char *msr_state_message(void);          /* state.c: "Saved", "Loaded"... once, for the screen */

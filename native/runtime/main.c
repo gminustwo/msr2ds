@@ -830,6 +830,7 @@ int main(int argc, char **argv) {
     msr_settings_load(settings);
     if (msr_original_3ds_start()) video_option("layout", "stacked");   /* 3DS mode: both screens as the console has them, in
                                                                           place of the launcher's --layout=single */
+    else if (msr_settings_aspect_4_3()) video_option("window_aspect", "4:3");   /* 4:3 mode: a window of its shape */
     msr_discord_start(0);   /* Discord Rich Presence, when the player's setting has it (msr/discord.cpp) */
     {   /* the game mods and texture packs, found as the launcher finds them: <user>/mods, <user>/msr/settings.ini */
         char msr_dir[4096], user_dir[4096];

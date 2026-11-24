@@ -728,10 +728,11 @@ void PauseExtras() {
     // window's shape): the icons in the bars, beside their ends. As the 3DS draws it, they would sit on the corners'
     // buttons there: above the bar instead (2026-11-17, the user: "on the nonwidescreen version of the pause menu, move
     // the dpad icons above the bottom bar").
+    // (4:3 mode: fitted to its 4:3 view, never wider)
     const bool wide = st.touch_extra > 0.f
                           ? st.touch_extra >= 30.f
-                          : P::fit_pause.load(std::memory_order_relaxed) && st.composed_h > 0.f &&
-                                st.composed_w / st.composed_h * 240.f - 320.f >= 30.f;
+                          : P::fit_pause.load(std::memory_order_relaxed) && !P::aspect_4_3.load(std::memory_order_relaxed) &&
+                                st.composed_h > 0.f && st.composed_w / st.composed_h * 240.f - 320.f >= 30.f;
     if (state.page == 1) {   // the toolbar: its first and last buttons' bases
         const MsrGuiItem *first = nullptr, *last = nullptr;
         const auto consider = [&](uint32_t base) {
@@ -1067,7 +1068,10 @@ void Consume(const BC::Image& image, s64 now) {
 // test, which the squeeze leaves as they are (they would stretch to the window's width).
 // Fill 16:10 (2026-11-06, #38): in play the view also takes a taller window's aspect, down to 16:10, keeping 16:9's
 // width and showing more above and below (P::ViewScaleV); the camera culls for that too.
+// 4:3 mode (2026-11-23): in play 4:3, the 3DS's width and a quarter more above and below (P::ViewScaleV 0.8), the camera
+// culling for it; out of play the game's own 5:3, as without widescreen.
 float ViewAspectWanted(float ww, float wh) {
+    if (P::aspect_4_3.load(std::memory_order_relaxed)) return st.in_play ? P::FourThreeAspect : P::NativeAspect;
     if (!P::widescreen.load(std::memory_order_relaxed)) return P::NativeAspect;
     if (!st.in_play || wh <= 0.f) return P::WideAspect;
     const float lo = P::fill_16_10.load(std::memory_order_relaxed) ? P::TallAspect : P::WideAspect;
@@ -1414,10 +1418,12 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
         view_top = mix(layout_top, vx, vy, vw, vh);
         panel = mix(layout_panel, px, py, pw, ph);
     }
-    if (st.fit > 0.f) {   // the pause screen over the window
+    if (st.fit > 0.f) {   // the pause screen over the window; in 4:3 mode over its 4:3 view (2026-11-23, the user: "update
+                          // the pause screen as well"), the touch screen's own shape, with the view's bars beside it
+        const Rect to = P::aspect_4_3.load(std::memory_order_relaxed) ? layout_top : Rect{0.f, 0.f, ww, wh};
         const float e = st.fit * st.fit * (3.f - 2.f * st.fit);
         const auto lerp = [e](float a, float b) { return std::round(a + (b - a) * e); };
-        panel = Rect{lerp(panel.l, 0.f), lerp(panel.t, 0.f), lerp(panel.r, ww), lerp(panel.b, wh)};
+        panel = Rect{lerp(panel.l, to.l), lerp(panel.t, to.t), lerp(panel.r, to.r), lerp(panel.b, to.b)};
     }
     st.panel_moved = ease > 0.f || st.fit > 0.f;   // (msr_single_layout: touches)
     st.touch_items = nullptr;

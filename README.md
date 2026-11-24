@@ -52,6 +52,7 @@ dump and holds the settings, which are also in an in-game overlay (F1 or Select)
 - HDR support
 - Stereoscopic 3D, side by side, for 3D TVs, Acer SpatialLabs displays and VR headsets
 - Ultrawide 32:9 support
+- 4:3 mode (off by default): the 3DS's width with more of the level above and below, for 4:3 screens
 - HUD controls (turn off/on each element & change their size)
 - Texture Pack support
 - Cheats: Infinite energy, infinite missiles and bombs, unlimited Aeion
@@ -319,15 +320,19 @@ same `settings.ini`; LB and RB switch tabs.
   screen) is the stylus, and the D-pad is the game's in the menus, as on the
   console. Your video and texture settings still apply: internal resolution,
   upscaling, frame rate, HDR and the rest of the Display tab, and texture packs.
-  Widescreen, ultrawide, Fill 16:10, the camera zoom and the HUD tab wait while
-  it's on, and come back as you set them when you turn it off.
+  Widescreen, ultrawide, Fill 16:10, 4:3 mode, the camera zoom and the HUD tab
+  wait while it's on, and come back as you set them when you turn it off.
 - **Report:** a bug report for Issues, sent with the log of the play session you
   choose; in the game's menu, the session you're playing comes first (see
   [Reporting a problem](#reporting-a-problem)).
 - **Display:** a video preset (below); fullscreen; Widescreen (16:9),
   Ultrawide (up to 32:9) and Fill 16:10 screens (the Steam Deck, most laptops,
   a Mac in fullscreen: more of the level above and below instead of bars), all
-  on by default; camera zoom (0.70-1.50); bloom
+  on by default; **4:3 mode** (off by default: in play a 4:3 view, the 3DS's
+  width with a quarter more of the level above and below; it fills a 4:3
+  screen, with bars at the sides of a wider one, and the pause screen keeps to
+  it; the title and file menus keep the game's own shape; Widescreen, Ultrawide
+  and Fill 16:10 wait while it's on); camera zoom (0.70-1.50); bloom
   (0-100%, default 75%); HDR (Windows, once Use HDR is on in Windows' display
   settings) with its highlights and paper white (by default the display's peak,
   up to 1000 nits, and Windows' SDR content brightness; **Reset HDR to the

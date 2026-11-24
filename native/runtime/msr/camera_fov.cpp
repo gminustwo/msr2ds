@@ -211,7 +211,9 @@ extern "C" void msr_camera_frame(double now) {
     // and 16:9 only scaled the picture. The hooks stay, for the mouse's aim (msr_samus_view); PWR_NO_CAMERA_FOV=1 leaves
     // them out, and the aim with them.
     // the view's larger squeeze: 15/16 at 16:9, 15/32 at 32:9, 0.9 (up the view) at 16:10
-    const float ws = P::widescreen.load(std::memory_order_relaxed) ? std::fmin(P::ViewScale(), P::ViewScaleV()) : 1.f;
+    // (4:3 mode: 0.8 up the view; without either, the 5:3 view's 1)
+    const float ws = P::widescreen.load(std::memory_order_relaxed) || P::aspect_4_3.load(std::memory_order_relaxed)
+                         ? std::fmin(P::ViewScale(), P::ViewScaleV()) : 1.f;
     const float zoom = P::world_zoom.load(std::memory_order_relaxed);
     const bool widen = P::wide_culling.load(std::memory_order_relaxed);
     const float want = widen && at && msr_world_in_play() ? std::fmax(1.f, 1.f / (ws * zoom)) : 1.f;
