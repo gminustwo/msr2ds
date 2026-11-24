@@ -31,6 +31,7 @@ struct PlayerSettings {
     bool widescreen = true;
     bool ultrawide = true;   ///< With widescreen: the view fills a window wider than 16:9, up to 32:9 (never on without it)
     bool fill_16_10 = true;  ///< With widescreen: the view fills a window taller than 16:9, down to 16:10 (never on without it)
+    bool aspect_4_3 = false; ///< msr-native: 4:3 mode (Presentation::aspect_4_3), in place of widescreen while on
     float camera_zoom = 1.f; ///< The view in play: below 1 wider, above 1 closer
     bool wide_culling = true; ///< msr-native: the game draws all of a wider view (Presentation::wide_culling)
     float hud_scale = .6f;

@@ -495,11 +495,14 @@ void PlayerSettings::Save(const QString& path) const {
 
 PlayerSettings PlayerSettings::AsPlayed() const {
     PlayerSettings s = *this;
+    if (s.aspect_4_3) {   // 4:3 mode: the 3DS's width (the player's widescreen settings kept for when it is off)
+        s.widescreen = s.ultrawide = s.fill_16_10 = false;
+    }
     if (!Presentation::original.load(std::memory_order_relaxed)) return s;
     // 3DS mode: the 3DS's 5:3 view at the game's own camera (the screens are video.c's, set by main.c at the start). The
     // two-screen layouts neither squeeze nor zoom the world's draws (msr_single), so a wider view or a zoom would only
     // widen the camera there. The video and texture settings stay the player's.
-    s.widescreen = s.ultrawide = s.fill_16_10 = false;
+    s.widescreen = s.ultrawide = s.fill_16_10 = s.aspect_4_3 = false;
     s.camera_zoom = 1.f;
     return s;
 }
@@ -510,6 +513,7 @@ void PlayerSettings::Publish() const {
     P::widescreen = s.widescreen;
     P::ultrawide = s.ultrawide;
     P::fill_16_10 = s.fill_16_10;
+    P::aspect_4_3 = s.aspect_4_3;
     P::zoom = s.camera_zoom;
     P::wide_culling = s.wide_culling;
     P::hud_scale = s.hud_scale;
@@ -1661,8 +1665,8 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             end_tab_item();
         }
         if (tab_item("Display", 1)) {
-            original_note("It shows the 3DS's 5:3 view: widescreen, ultrawide, Fill 16:10 and the camera zoom wait until "
-                          "it's off.");
+            original_note("It shows the 3DS's 5:3 view: widescreen, ultrawide, Fill 16:10, 4:3 mode and the camera zoom "
+                          "wait until it's off.");
             if (e.deck_preset) {
                 // Measured on a Steam Deck OLED with the 4x texture pack (2026-11-03): 3x, the Deck's own 720p,
                 // left 40% of the GPU spare at 60 FPS (about 100 without a limit); 4x held 60 with less to spare.
@@ -1730,6 +1734,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             row("Fullscreen");
             emulator_changed |= OnOff("##fullscreen", &e.fullscreen);
             ImGui::BeginDisabled(original);
+            ImGui::BeginDisabled(p.aspect_4_3);   // (4:3 mode has the 3DS's width: these wait while it is on)
             // Ultrawide widens the 16:9 view: on, it turns Widescreen on; Widescreen off turns it off
             row("Widescreen (16:9)");
             if (OnOff("##widescreen", &p.widescreen)) {
@@ -1754,6 +1759,14 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                 Note("In play, a window taller than 16:9, down to 16:10 (Steam Deck, most laptops, a Mac in "
                      "fullscreen), shows more of the level above and below instead of bars. It needs Widescreen "
                      "(16:9), which it turns on.");
+            }
+            ImGui::EndDisabled();
+            if (e.ultrawide_option) {   // msr-native's compositor
+                row("4:3 mode");
+                player_changed |= OnOff("##aspect43", &p.aspect_4_3);
+                Note("In play, a 4:3 view: the 3DS's width with more of the level above and below. It fills a 4:3 "
+                     "screen, with bars at the sides of a wider one; menus and the title keep the game's own shape. "
+                     "Widescreen, ultrawide and Fill 16:10 wait while it's on.");
             }
             row("Camera zoom");
             player_changed |= ImGui::SliderFloat("##zoom", &p.camera_zoom, CameraZoomMin,
@@ -2082,6 +2095,7 @@ void Overlay::DrawMenu(float scale, bool appearing) {
     }
     if (player_changed) {
         PlayerChanged(p.widescreen != before.widescreen || p.ultrawide != before.ultrawide || p.fill_16_10 != before.fill_16_10 ||
+                      p.aspect_4_3 != before.aspect_4_3 ||
                       p.panel_scale != before.panel_scale || p.fit_pause != before.fit_pause);
         if (p.frame_rate != before.frame_rate) {
             Act(OverlayAction::Kind::FrameRate);

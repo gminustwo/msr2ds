@@ -26,6 +26,7 @@ void PlayerSettings::Load(const std::string& path) {
     ultrawide = ultrawide && widescreen;   // it widens the 16:9 view: never on without it (the Display tab keeps to that)
     flag("fill_16_10", fill_16_10);
     fill_16_10 = fill_16_10 && widescreen;   // the same: it keeps 16:9's width
+    flag("aspect_4_3", aspect_4_3);
     number("camera_zoom", camera_zoom);
     camera_zoom = std::clamp(camera_zoom, CameraZoomMin, CameraZoomMax);
     flag("wide_culling", wide_culling);
@@ -97,6 +98,7 @@ void PlayerSettings::Save(const std::string& path) const {
     flag("widescreen", widescreen);
     flag("ultrawide", ultrawide);
     flag("fill_16_10", fill_16_10);
+    flag("aspect_4_3", aspect_4_3);
     number("camera_zoom", camera_zoom);
     flag("wide_culling", wide_culling);
     number("hud_scale", hud_scale);
@@ -172,6 +174,11 @@ extern "C" int msr_settings_frame_rate(void) {
 
 extern "C" int msr_settings_wide_culling(void) {
     return MSR::GetOverlay().GetPlayerSettings().AsPlayed().wide_culling;
+}
+
+// main.c: 4:3 mode as the game starts (not in 3DS mode): its window opens 4:3
+extern "C" int msr_settings_aspect_4_3(void) {
+    return MSR::GetOverlay().GetPlayerSettings().AsPlayed().aspect_4_3;
 }
 
 // main.c, once the settings are read: 3DS mode when the player's setting has it. Published again as played
