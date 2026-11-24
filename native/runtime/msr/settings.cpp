@@ -174,18 +174,17 @@ extern "C" int msr_settings_wide_culling(void) {
     return MSR::GetOverlay().GetPlayerSettings().AsPlayed().wide_culling;
 }
 
-// main.c, once the settings are read: Play as on the 3DS when the player's setting has it. Published again as played
-// (PlayerSettings::AsPlayed: the 5:3 view, the game's picture, 30 FPS); main.c then gives video.c the screens and the
-// 400x240. The player's own settings stay as they are, and are saved as they are.
+// main.c, once the settings are read: 3DS mode when the player's setting has it. Published again as played
+// (PlayerSettings::AsPlayed: the 3DS's 5:3 view); main.c then gives video.c the two screens. The player's own settings
+// stay as they are, and are saved as they are; the video and texture settings apply as usual.
 extern "C" int msr_original_3ds_start(void) {
     auto& overlay = MSR::GetOverlay();
     const MSR::PlayerSettings p = overlay.GetPlayerSettings();
     if (!p.original_3ds) return 0;
     MSR::Presentation::original.store(true, std::memory_order_relaxed);
     overlay.SetPlayerSettings(p);   // (publishes them as played)
-    std::fprintf(stderr, "msr: playing as on the 3DS: both screens (top above bottom), 400x240, 30 FPS, the 3DS's 5:3 "
-                         "view and the game's own picture (the port's widescreen, zoom, bloom, HDR, FXAA, colors and "
-                         "3D left off)\n");
+    std::fprintf(stderr, "msr: 3DS mode: both screens (top above bottom) in the 3DS's 5:3 view, the HUD on the touch "
+                         "screen (widescreen, ultrawide, 16:10 and the camera zoom left off)\n");
     return 1;
 }
 

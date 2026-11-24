@@ -828,14 +828,8 @@ int main(int argc, char **argv) {
     }
     if (!settings) settings = exists("user/msr/settings.ini") ? "user/msr/settings.ini" : "../msr/settings.ini";
     msr_settings_load(settings);
-    if (msr_original_3ds_start()) {   /* Play as on the 3DS: both screens as the console has them, its 400x240 and its
-                                          pixels kept sharp at any size, no anisotropic filtering (the 3DS has none); in
-                                          place of the launcher's --layout=single and the rest (30 FPS: the settings') */
-        video_option("layout", "stacked");
-        video_option("resolution", "1");
-        video_option("aniso", "1");
-        video_option("filter", "sharp");
-    }
+    if (msr_original_3ds_start()) video_option("layout", "stacked");   /* 3DS mode: both screens as the console has them, in
+                                                                          place of the launcher's --layout=single */
     msr_discord_start(0);   /* Discord Rich Presence, when the player's setting has it (msr/discord.cpp) */
     {   /* the game mods and texture packs, found as the launcher finds them: <user>/mods, <user>/msr/settings.ini */
         char msr_dir[4096], user_dir[4096];
