@@ -2125,6 +2125,9 @@ int video_frame(void) {
         }
         if (!read_back) decode_screen(&bottom, BOT_W, bot_px);
     }
+#ifdef MSR_DRM_LEASE
+    second_display_bottom(bot_px);
+#endif
     {   /* PWR_SEQ=<first presented frame>,<count>[,<every>]: both screens as decoded, one PPM pair per presented frame
            (or every <every>th of them) */
         static long first = -2, count, every = 1; static long n;

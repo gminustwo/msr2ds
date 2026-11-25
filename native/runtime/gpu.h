@@ -72,6 +72,11 @@ void msr_overlay_start(int fullscreen, int resolution, int vsync, int volume, in
 int  video_frame(void);                                        /* present current screens; 0 when the window closed */
 int  video_stereo(void);                                       /* stereoscopic 3D shown now (both eyes): its mode, else 0 */
 void video_shutdown(void);
+#ifdef MSR_DRM_LEASE
+/* second_display_lease.c (Linux): the bottom screen on a panel the compositor leases (a dual-screen handheld in gamescope) */
+void second_display_start(void);                 /* main.c, once the game's window is open: asks for the panel */
+void second_display_bottom(const uint8_t *rgba); /* video.c, each frame: the bottom screen, 320x240 RGBA8 */
+#endif
 
 /* main.c: what the main thread (the window, VBlank, presenting) and the GX thread (the PICA renderer) are doing, for the
    watchdog (a stage held for 5 s is logged, with where the game's threads wait) and the crash report. `what` is a
