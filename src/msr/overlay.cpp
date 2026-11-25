@@ -1920,6 +1920,12 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             player_changed |= OnOff("##fps", &p.show_fps);
             row("Menu size");
             player_changed |= ImGui::SliderFloat("##menu", &p.menu_scale, .7f, 1.5f, "%.2f");
+            if (e.bottom_display_option) {
+                row("Bottom screen on the second display");
+                emulator_changed |= OnOff("##bottomdisplay", &e.bottom_display);
+                Note("For a dual-screen handheld such as the AYN Thor: the 3DS's bottom screen on the lower screen, "
+                     "which is its touch screen too, and the top screen alone on the main one. With Vulkan.");
+            }
             if (e.performance_options) {
                 ImGui::Spacing();
                 ImGui::SeparatorText("For slower computers");

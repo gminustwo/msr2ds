@@ -45,6 +45,8 @@ int msr_android_http(const char *method, const char *url, const char *headers, c
    events of type msr_android_bottom_event() (0 before the first request): user.code 1 down, 0 up, data1 and data2 the
    place in the surface's pixels (intptr_t). */
 void msr_android_bottom_display(int on);
+/* 1 when there is a display for it now (a presentation display besides the app's), else 0: the settings' row */
+int msr_android_bottom_available(void);
 int msr_android_bottom_poll(unsigned *serial, void **window, int *w, int *h);
 void msr_android_bottom_held(int held);
 unsigned msr_android_bottom_event(void);

@@ -56,6 +56,11 @@ public class MsrActivity extends SDLActivity {
         bottom.want(on);
     }
 
+    /** From the settings (overlay_host.cpp, through android.c): whether there is a display for the bottom screen. */
+    public boolean hasBottomDisplay() {
+        return bottom.available();
+    }
+
     /**
      * From the launcher (launcher.cpp, its GPU driver section): the system's file picker for a GPU driver package, a .zip
      * as emulators take them. {@link #onActivityResult} unpacks the one chosen ({@link GpuDrivers}).

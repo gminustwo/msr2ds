@@ -302,6 +302,19 @@ void msr_android_bottom_display(int on) {
 
 unsigned msr_android_bottom_event(void) { return bottom_event_type; }
 
+int msr_android_bottom_available(void) {
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return 0;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID m = (*env)->GetMethodID(env, cls, "hasBottomDisplay", "()Z");
+    const jboolean has = m ? (*env)->CallBooleanMethod(env, activity, m) : JNI_FALSE;
+    const int ok = !jni_failed(env) && has;
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, activity);
+    return ok;
+}
+
 int msr_android_bottom_poll(unsigned *serial, void **window, int *w, int *h) {
     pthread_mutex_lock(&bottom_lock);
     const int changed = *serial != bottom_serial;

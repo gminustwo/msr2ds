@@ -55,6 +55,9 @@ final class BottomDisplay {
     /** Before the activity's own onPause: the surface is let go of while the game's thread still runs. */
     void onPause() { resumed = false; hide(); }
 
+    /** Whether there is a display for it now (any thread). */
+    boolean available() { return pick() != null; }
+
     /** A presentation display other than the activity's, switched on; null when there is none. */
     private Display pick() {
         final Display own = activity.getWindowManager().getDefaultDisplay();
