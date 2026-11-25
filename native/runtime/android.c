@@ -5,7 +5,11 @@
 #include <SDL.h>
 #include <SDL_system.h>
 #include <jni.h>
+#include <android/native_window_jni.h>
 #include <errno.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <time.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -268,4 +272,87 @@ void msr_android_relaunch(int argc, const char *const *argv) {
     }
     fflush(NULL);
     _exit(0);
+}
+
+/* ---- the bottom screen on a second display (android.h; MsrActivity's BottomDisplay) ---- */
+static pthread_mutex_t bottom_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t bottom_cond = PTHREAD_COND_INITIALIZER;
+static ANativeWindow *bottom_window;   /* the app's newest surface (a reference of ours), NULL: none */
+static int bottom_w, bottom_h;
+static unsigned bottom_serial = 1;   /* each change of the surface */
+static int bottom_holding;   /* video.c draws into a surface it took */
+static Uint32 bottom_event_type;
+
+void msr_android_bottom_display(int on) {
+    if (on && !bottom_event_type) {
+        const Uint32 t = SDL_RegisterEvents(1);
+        if (t != (Uint32)-1) bottom_event_type = t;
+    }
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (!env || !activity) return;
+    jclass cls = (*env)->GetObjectClass(env, activity);
+    jmethodID m = (*env)->GetMethodID(env, cls, "bottomDisplay", "(Z)V");
+    if (m) (*env)->CallVoidMethod(env, activity, m, (jboolean)(on != 0));
+    else fprintf(stderr, "android: MsrActivity.bottomDisplay is missing\n");
+    jni_failed(env);
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, activity);
+}
+
+unsigned msr_android_bottom_event(void) { return bottom_event_type; }
+
+int msr_android_bottom_poll(unsigned *serial, void **window, int *w, int *h) {
+    pthread_mutex_lock(&bottom_lock);
+    const int changed = *serial != bottom_serial;
+    if (changed) {
+        *serial = bottom_serial;
+        *window = bottom_window; *w = bottom_w; *h = bottom_h;
+        if (bottom_window) ANativeWindow_acquire(bottom_window);
+    }
+    pthread_mutex_unlock(&bottom_lock);
+    return changed;
+}
+
+void msr_android_bottom_held(int held) {
+    pthread_mutex_lock(&bottom_lock);
+    bottom_holding = held;
+    pthread_cond_broadcast(&bottom_cond);
+    pthread_mutex_unlock(&bottom_lock);
+}
+
+/* BottomDisplay's SurfaceView (the app's UI thread): a surface, or none (surfaceDestroyed). Without one it returns once
+   video.c has let go of the old surface (a second at most: the game may be held, or not drawing) */
+JNIEXPORT void JNICALL Java_io_github_gminustwo_msrnative_BottomDisplay_bottomSurface(JNIEnv *env, jclass cls, jobject surface,
+                                                                                      jint w, jint h) {
+    (void)cls;
+    ANativeWindow *window = surface ? ANativeWindow_fromSurface(env, surface) : NULL;
+    pthread_mutex_lock(&bottom_lock);
+    if (bottom_window) ANativeWindow_release(bottom_window);
+    bottom_window = window; bottom_w = w; bottom_h = h;
+    ++bottom_serial;
+    if (!window) {
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_sec += 1;
+        while (bottom_holding)
+            if (pthread_cond_timedwait(&bottom_cond, &bottom_lock, &until)) {
+                fprintf(stderr, "android: the bottom screen's surface went while still in use\n");
+                break;
+            }
+    }
+    pthread_mutex_unlock(&bottom_lock);
+}
+
+/* ...and a touch there (down 1, up 0), at that place in the surface's pixels: an event for video_frame */
+JNIEXPORT void JNICALL Java_io_github_gminustwo_msrnative_BottomDisplay_bottomTouch(JNIEnv *env, jclass cls, jint down, jfloat x, jfloat y) {
+    (void)env; (void)cls;
+    if (!bottom_event_type) return;
+    SDL_Event e;
+    SDL_zero(e);
+    e.type = bottom_event_type;
+    e.user.code = down;
+    e.user.data1 = (void *)(intptr_t)x;
+    e.user.data2 = (void *)(intptr_t)y;
+    SDL_PushEvent(&e);
 }

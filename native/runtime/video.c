@@ -176,6 +176,7 @@ SDL_bool msr_vk_surface(SDL_Window *win, VkInstance inst, VkSurfaceKHR *surf);
 static int opt_drawdist = 1;        /* draw distance multiplier (drawdist.c), read when the game starts */
 static int fs_last = 1;   /* the fullscreen mode F11 toggles to */
 static float opt_window_aspect = 16.f / 9.f;   /* the single layout's window when it opens ("21:9", "2.37") */
+static int opt_bottom_display;   /* Android: the bottom screen on a second display (bottom_display, the bottom output below) */
 
 static int pick(const char *v, const char *const *names, int n) { for (int i = 0; i < n; i++) if (!strcmp(v, names[i])) return i; return -1; }
 int video_option(const char *name, const char *value) {
@@ -201,6 +202,7 @@ int video_option(const char *name, const char *value) {
     else if (!strcmp(name, "select_layout")) opt_select_layout = !strcmp(value, "settings") || !strcmp(value, "2") ? 2 : !strcmp(value, "1") || !strcmp(value, "on") || !strcmp(value, "true");
     else if (!strcmp(name, "draw_distance")) { i = atoi(value); if (i < 1 || i > 4) return -1; opt_drawdist = i; drawdist_set(i); }
     else if (!strcmp(name, "free_look")) { opt_free_look = !strcmp(value, "1") || !strcmp(value, "on") || !strcmp(value, "true"); freelook_enable(opt_free_look); }
+    else if (!strcmp(name, "bottom_display")) opt_bottom_display = !strcmp(value, "1") || !strcmp(value, "on") || !strcmp(value, "true");
     else if (!strcmp(name, "gpu_driver")) { if (strlen(value) >= sizeof opt_gpu_driver || strchr(value, '/')) return -1; snprintf(opt_gpu_driver, sizeof opt_gpu_driver, "%s", value); }
     else return -1;
     return 0;
@@ -261,7 +263,11 @@ static void drawable_size(int *w, int *h) {
 typedef struct { float x, y, w, h; int on; } Rect;   /* window pixels */
 static int auto_state;   /* 0 = menu, 1 = gameplay */
 
-static int effective_layout(void) { return opt_layout == L_AUTO ? (auto_state ? opt_auto_gameplay : L_STACKED) : opt_layout; }
+static int bottom_live;  /* the bottom screen is on a second display (the bottom output): the window shows the top one */
+static int effective_layout(void) {
+    if (bottom_live) return L_TOP;
+    return opt_layout == L_AUTO ? (auto_state ? opt_auto_gameplay : L_STACKED) : opt_layout;
+}
 
 /* the layout's canvas in 3DS pixels, scaled into the window by the aspect mode */
 static void layout_rects(int ww, int wh, Rect *top, Rect *bot) {
@@ -1920,6 +1926,145 @@ static int present_wanted(void) {
     return 1;
 }
 
+#ifdef __ANDROID__
+/* ---------------- the bottom output: the bottom screen on a second display ----------------
+ * A dual-screen handheld's lower screen is a display of its own on Android (the AYN Thor's: a presentation display
+ * beside the default one), not part of the window. With bottom_display on, the game asks the app for a window there
+ * (MsrActivity's BottomDisplay, a Presentation that never takes the focus, so the controller stays the game's) and
+ * draws the bottom screen into its surface: a surface and swapchain of their own on the same device and queue, drawn
+ * in the frame's command buffer and presented with the frame. The window above then shows the top screen alone
+ * (effective_layout), and touches there are the 3DS's touch screen (video_frame). The window's own swapchain never
+ * waits for this one: its image is taken without waiting, and a frame without one leaves the lower screen as it was.
+ * Vulkan's GPU presenter only (OpenGL and the CPU path never ask for it). */
+#include "android.h"
+#include <android/native_window.h>
+#include <vulkan/vulkan_android.h>
+static struct {
+    int asked;                  /* the app was asked for the window */
+    unsigned serial;            /* the app's surface as last taken (msr_android_bottom_poll) */
+    ANativeWindow *window; int w, h;   /* that surface (ours to release), its size */
+    int rebuild;                /* the swapchain is out of date: again from the same surface */
+    VkSurfaceKHR surf; VkSwapchainKHR swap; VkFormat format; VkExtent2D extent;
+    uint32_t count; VkImage images[MAX_IMAGES];
+    VkSemaphore sem_acquire, sem_done[MAX_IMAGES];
+    Img target;                 /* the bottom screen drawn at the display's size, copied into the swapchain's image */
+} bo;
+
+static void bottom_release(void) {   /* the swapchain and the surface, the window: let go */
+    if (bo.swap || bo.surf || bo.target.img) { queue_acquire(); vk_wait_device(dev); queue_release(); }
+    if (bo.swap) { vkDestroySwapchainKHR(dev, bo.swap, NULL); bo.swap = VK_NULL_HANDLE; }
+    if (bo.surf) { vkDestroySurfaceKHR(inst, bo.surf, NULL); bo.surf = VK_NULL_HANDLE; }
+    img_free(&bo.target);
+    bottom_live = 0;
+}
+
+static int bottom_build(void) {   /* the surface's swapchain, from bo.window (0: done) */
+    if (!bo.surf) {
+        PFN_vkCreateAndroidSurfaceKHR create = (PFN_vkCreateAndroidSurfaceKHR)vkGetInstanceProcAddr(inst, "vkCreateAndroidSurfaceKHR");
+        VkAndroidSurfaceCreateInfoKHR ci = { .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, .window = bo.window };
+        if (!create || create(inst, &ci, NULL, &bo.surf) != VK_SUCCESS) { bo.surf = VK_NULL_HANDLE; fprintf(stderr, "video: bottom display: no surface\n"); return -1; }
+        VkBool32 pres = 0; vkGetPhysicalDeviceSurfaceSupportKHR(phys, qfam, bo.surf, &pres);
+        if (!pres) { fprintf(stderr, "video: bottom display: the queue cannot present there\n"); return -1; }
+    }
+    VkSurfaceCapabilitiesKHR caps; vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys, bo.surf, &caps);
+    if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) { fprintf(stderr, "video: bottom display: its swapchain cannot be a copy target\n"); return -1; }
+    /* the window's picture format, so that the drawing's image copies into it as it is (else the first 8-bit one) */
+    uint32_t nf = 0; vkGetPhysicalDeviceSurfaceFormatsKHR(phys, bo.surf, &nf, NULL);
+    VkSurfaceFormatKHR fmts[64]; if (nf > 64) nf = 64; vkGetPhysicalDeviceSurfaceFormatsKHR(phys, bo.surf, &nf, fmts);
+    bo.format = VK_FORMAT_UNDEFINED; VkColorSpaceKHR cs = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    for (uint32_t i = 0; i < nf && !bo.format; i++)
+        if (fmts[i].format == target_fmt && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) bo.format = fmts[i].format;
+    if (!bo.format) { fprintf(stderr, "video: bottom display: no format %d there\n", (int)target_fmt); return -1; }
+    /* the surface's size as the app has it (landscape, as the window's: create_swapchain), not pre-rotated */
+    bo.extent = (VkExtent2D){ (uint32_t)bo.w, (uint32_t)bo.h };
+    if (!bo.w || !bo.h) bo.extent = caps.currentExtent;
+    VkSurfaceTransformFlagBitsKHR transform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
+    VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    if (!(caps.supportedCompositeAlpha & alpha))
+        for (uint32_t bit = 1; bit <= VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR; bit <<= 1)
+            if (caps.supportedCompositeAlpha & bit) { alpha = (VkCompositeAlphaFlagBitsKHR)bit; break; }
+    uint32_t n = caps.minImageCount + 1; if (caps.maxImageCount && n > caps.maxImageCount) n = caps.maxImageCount;
+    VkSwapchainCreateInfoKHR ci = { .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = bo.surf, .minImageCount = n,
+        .imageFormat = bo.format, .imageColorSpace = cs, .imageExtent = bo.extent, .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT, .preTransform = transform, .compositeAlpha = alpha,
+        .presentMode = VK_PRESENT_MODE_FIFO_KHR, .clipped = VK_TRUE, .oldSwapchain = bo.swap };
+    VkSwapchainKHR old = bo.swap;
+    queue_acquire(); vk_wait_device(dev); queue_release();
+    if (vkCreateSwapchainKHR(dev, &ci, NULL, &bo.swap) != VK_SUCCESS) { bo.swap = old; fprintf(stderr, "video: bottom display: no swapchain\n"); return -1; }
+    if (old) vkDestroySwapchainKHR(dev, old, NULL);
+    bo.count = MAX_IMAGES; vkGetSwapchainImagesKHR(dev, bo.swap, &bo.count, bo.images);
+    if (!bo.sem_acquire) {
+        VkSemaphoreCreateInfo si = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+        vkCreateSemaphore(dev, &si, NULL, &bo.sem_acquire);
+        for (int i = 0; i < MAX_IMAGES; i++) vkCreateSemaphore(dev, &si, NULL, &bo.sem_done[i]);
+    }
+    img_free(&bo.target);
+    if (img_make(&bo.target, bo.extent.width, bo.extent.height, target_fmt, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) return -1;
+    fprintf(stderr, "video: bottom display: swapchain %ux%u, %u images\n", bo.extent.width, bo.extent.height, bo.count);
+    bottom_live = 1;
+    return 0;
+}
+
+/* each frame, before anything is drawn: the window asked for or let go of, the app's surface taken when it changed */
+static void bottom_update(void) {
+    const int want = opt_bottom_display && gpu_ok && !use_gl && !msr_overlay_launcher_mode();
+    if (want != bo.asked) { bo.asked = want; msr_android_bottom_display(want); }
+    void *window; int w, h;
+    if (msr_android_bottom_poll(&bo.serial, &window, &w, &h)) {
+        bottom_release();
+        if (bo.window) ANativeWindow_release(bo.window);
+        bo.window = window; bo.w = w; bo.h = h; bo.rebuild = 0;
+        msr_android_bottom_held(bo.window != NULL);   /* (after the old surface is gone: the app may let go of it now) */
+        if (bo.window && bottom_build()) bottom_release();
+    } else if (bo.rebuild && bo.window) {
+        bo.rebuild = 0;
+        if (bottom_build()) bottom_release();
+    }
+}
+
+/* the bottom screen's place on that display: the whole of it at 4:3 (the aspect setting as the window's) */
+static Rect bottom_rect(float W, float H) {
+    float sx = W / BOT_W, sy = H / SCR_H;
+    if (opt_aspect != 2) { float k = sx < sy ? sx : sy; if (opt_aspect == 1 && k >= 1) k = floorf(k); sx = sy = k; }
+    return (Rect){ (W - BOT_W * sx) / 2, (H - SCR_H * sy) / 2, BOT_W * sx, SCR_H * sy, 1 };
+}
+
+/* a touch there (the app's event): the 3DS's touch screen */
+static void bottom_touch(const SDL_Event *e) {
+    if (!bottom_live || msr_overlay_visible()) return;
+    const Rect r = bottom_rect((float)bo.extent.width, (float)bo.extent.height);
+    const float x = (float)(intptr_t)e->user.data1, y = (float)(intptr_t)e->user.data2;
+    if (e->user.code && x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+        input_touch(1, (int)((x - r.x) * BOT_W / r.w), (int)((y - r.y) * SCR_H / r.h));
+    else input_touch(0, -1, -1);
+}
+
+/* the frame's image there, without waiting (none free: this frame leaves the lower screen as it was); 1 when taken */
+static int bottom_acquire(uint32_t *idx) {
+    if (!bo.swap) return 0;
+    const VkResult r = vkAcquireNextImageKHR(dev, bo.swap, 0, bo.sem_acquire, VK_NULL_HANDLE, idx);
+    if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) return 1;
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) bo.rebuild = 1;
+    return 0;
+}
+
+/* into the frame's command buffer: the bottom screen drawn at the display's size, copied into its image */
+static void bottom_draw(const Img *sb, uint32_t idx) {
+    const float W = (float)bo.extent.width, H = (float)bo.extent.height;
+    begin_pass(&bo.target, VK_ATTACHMENT_LOAD_OP_CLEAR);
+    const int f = opt_filter == F_NEAREST ? 0 : opt_filter == F_SHARP ? 2 : opt_filter == F_FXAA ? 4 : 1;   /* (FSR: linear here) */
+    float g[4]; const int grade = msr_grade(g), fb = sb == &tex_bot && msr_fxaa() ? 4 : f;
+    gpu_quad_view(pipe, sb->view, sb->w, sb->h, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, bottom_rect(W, H), W, H, fb, 0, g, grade && sb == &tex_bot);
+    end_pass();
+    barrier_img(bo.target.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    barrier_img(bo.images[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkImageCopy ic = { .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                       .extent = { bo.extent.width, bo.extent.height, 1 } };
+    vkCmdCopyImage(cmdbuf, bo.target.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, bo.images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+    barrier_img(bo.images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
+}
+#endif
+
 int video_frame(void) {
     test_pad_frame();
     {   /* PWR_TEST_STALL=<from s>,<every s>,<ms>: the main thread held that long now and then, from that run time on, as a
@@ -1949,6 +2094,7 @@ int video_frame(void) {
         if (e.type == SDL_QUIT) return 0;
 #ifdef __ANDROID__
         if (e.type == SDL_APP_DIDENTERFOREGROUND) { surface_reset = 1; continue; }   /* a new window surface */
+        if (e.type && e.type == msr_android_bottom_event()) { bottom_touch(&e); continue; }   /* the bottom output's touch */
         if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && e.key.keysym.sym == SDLK_AC_BACK) {
             /* Back: the menu, as F1; in the launcher, out of what is open, as Escape */
             const int launcher = msr_overlay_launcher_mode();
@@ -2157,6 +2303,9 @@ int video_frame(void) {
         const char *m = msr_state_message();
         if (m) { static char shown[64]; snprintf(shown, sizeof shown, "%s", m); toast_text = shown; toast_until = now_s() + 2.0; toast_dirty = 1; }
     }
+#ifdef __ANDROID__
+    bottom_update();   /* (before an early return: the app may wait for the bottom output to let go of its surface) */
+#endif
     if (!present_wanted()) return 1;   /* nothing new to show (#73) */
 #ifdef MSR_OPENGL
     if (use_gl) {
@@ -2226,6 +2375,10 @@ int video_frame(void) {
        vk_swapchain.cpp, which never submits after a failed acquire). The fence stays signaled. */
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return 1;
     vkResetFences(dev, 1, &fence);
+    uint32_t bidx = 0; int bottom_out = 0;   /* the bottom output's image this frame (none: it stays as it was) */
+#ifdef __ANDROID__
+    bottom_out = gpu_ok && bottom_acquire(&bidx);
+#endif
     layout_rects((int)eye_w(), (int)eye_h(), &rt, &rb);   /* drawable pixels (differs from window size on HiDPI); stereo: one eye's window */
     /* Samus Returns' single screen: the compositor places the view (the gallery moves it aside) and lists the HUD
        pieces, menus and prompts drawn over it; the bottom screen is never drawn as a screen */
@@ -2350,6 +2503,9 @@ int video_frame(void) {
                                .extent = { sc_extent.width, sc_extent.height, 1 } };
             vkCmdCopyImage(cmdbuf, target.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, sc_images[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
         }
+#ifdef __ANDROID__
+        if (bottom_out) bottom_draw(sb, bidx);
+#endif
     } else {
         memset(stage_ptr, 0, (size_t)stage_size);
         cpu_blit(top_px, TOP_W, rt); cpu_blit(bot_px, BOT_W, rb);
@@ -2361,14 +2517,21 @@ int video_frame(void) {
     vk_mark(cmdbuf, VKM_FRAME_END, frame_mark);
     vkEndCommandBuffer(cmdbuf);
     VkPipelineStageFlags ws = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    VkSubmitInfo sub = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem_acquire, .pWaitDstStageMask = &ws,
-        .commandBufferCount = 1, .pCommandBuffers = &cmdbuf, .signalSemaphoreCount = 1, .pSignalSemaphores = &sem_done[idx] };
+    VkSemaphore waits[2] = { sem_acquire }, signals[2] = { sem_done[idx] };
+    VkPipelineStageFlags wss[2] = { ws, VK_PIPELINE_STAGE_TRANSFER_BIT };
+    VkSwapchainKHR swaps[2] = { swap }; uint32_t idxs[2] = { idx }; VkResult results[2] = { VK_SUCCESS, VK_SUCCESS };
+#ifdef __ANDROID__
+    if (bottom_out) { waits[1] = bo.sem_acquire; signals[1] = bo.sem_done[bidx]; swaps[1] = bo.swap; idxs[1] = bidx; }   /* presented with the frame */
+#endif
+    VkSubmitInfo sub = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1 + (uint32_t)bottom_out, .pWaitSemaphores = waits, .pWaitDstStageMask = wss,
+        .commandBufferCount = 1, .pCommandBuffers = &cmdbuf, .signalSemaphoreCount = 1 + (uint32_t)bottom_out, .pSignalSemaphores = signals };
     stage_set(STAGE_MAIN, "waiting for the Vulkan queue (the GX thread submits on it too)");
     queue_acquire();   /* (any GX submissions kept go first, in order) */
     stage_set(STAGE_MAIN, "submitting the frame");
     if (vkQueueSubmit(queue, 1, &sub, fence) == VK_ERROR_DEVICE_LOST) vk_diag_lost("a frame's submission");
     if (gpu_ok && vk_hw) pica_vk_scan_lock(0);
-    VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &sem_done[idx], .swapchainCount = 1, .pSwapchains = &swap, .pImageIndices = &idx };
+    VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1 + (uint32_t)bottom_out, .pWaitSemaphores = signals,
+        .swapchainCount = 1 + (uint32_t)bottom_out, .pSwapchains = swaps, .pImageIndices = idxs, .pResults = bottom_out ? results : NULL };
     double w2 = wait_clock();
     stage_set(STAGE_MAIN, "presenting the frame (vkQueuePresentKHR)");
     {   /* PWR_TEST_LIMITER=<fps>: an outside frame limiter imitated (RivaTuner's cap, #73), each present held until 1/fps
@@ -2377,6 +2540,12 @@ int video_frame(void) {
         if (fps > 0) { const double due = at + 1.0 / fps, t = wait_clock(); if (t < due) k_sleep_ns((int64_t)((due - t) * 1e9)); at = wait_clock(); }
     }
     r = vkQueuePresentKHR(queue, &pi);
+    if (bottom_out) {   /* the window's result alone; the bottom output's own trouble stays its own */
+        if (r != VK_ERROR_DEVICE_LOST) r = results[0];
+#ifdef __ANDROID__
+        if (results[1] == VK_ERROR_OUT_OF_DATE_KHR || results[1] == VK_ERROR_SURFACE_LOST_KHR) bo.rebuild = 1;
+#endif
+    }
     if (r == VK_ERROR_DEVICE_LOST) vk_diag_lost("the present");
     {   /* PWR_PRESENT_HOLD_MS=<ms>: the queue held that much longer, as a driver that blocks in the present holds it (#49:
            AMD's on Windows, ~15 ms at 60 Hz): the GX thread's kept submissions tested on any GPU */
@@ -2467,6 +2636,10 @@ VkResult video_queue_submit(uint32_t n, const VkCommandBuffer *cbs, VkFence f) {
 
 void video_shutdown(void) {
     safe_end();
+#ifdef __ANDROID__
+    if (dev) bottom_release();
+    if (bo.asked) msr_android_bottom_display(0);
+#endif
     if (dev) { queue_acquire(); vk_wait_device(dev); queue_release(); if (gpu_ok) msr_overlay_shutdown(); }
 #ifdef MSR_OPENGL
     if (use_gl) vgl_shutdown();
