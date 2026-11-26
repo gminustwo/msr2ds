@@ -547,9 +547,9 @@ a free account is enough), and the report goes up under your name, so you see th
 log first (as a gist), then the issue that links it. Nothing is sent without the log. You can add
 screenshots or a clip on the issue's page afterwards.
 
-You can also open an issue on the [Issues](../../issues/new/choose) page and pick **Bug report** (or
-**Feature request** for an idea): the form asks for what helps. Please check the open issues first,
-and report one problem per issue. What to have at hand:
+You can also open an issue on the [Issues](https://github.com/gminustwo/msr2ds/issues/new/choose) page
+and pick **Bug report** (or **Feature request** for an idea): the form asks for what helps. Please
+check the open issues first, and report one problem per issue. What to have at hand:
 
 - **The version**: at the bottom of the launcher's Game tab, e.g. "msr-native 2.2.0". Newer
   versions may already fix it: the Game tab offers updates.
