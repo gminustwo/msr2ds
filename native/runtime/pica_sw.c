@@ -576,7 +576,11 @@ float pica_f20(uint32_t v) {   /* 1.7.12, bias 63 */
 static V3 light_color(uint32_t v) { return v3((float)((v >> 20) & 0xff) / 255.f, (float)((v >> 10) & 0xff) / 255.f, (float)(v & 0xff) / 255.f); }
 static float lut_lookup(int lut, int index, float delta) {
     uint32_t e = light_lut[lut][index & 255];
-    int diff = (int)((e >> 12) & 0xfff); if (diff & 0x800) diff -= 0x1000;
+    /* the difference to the next entry: 11 bits of magnitude (12-22) and a sign of its own (23), as Azahar's LutEntry.
+       Read as a 12-bit two's complement number (until 2026-11-23), a falling LUT's small steps became steps of almost
+       the whole range, a sawtooth within every entry (found on Federation Force's striped mechs, recomp-force; Samus
+       Returns' D0, Fresnel and distance attenuation LUTs fall too). */
+    int diff = (int)((e >> 12) & 0x7ff); if ((e >> 23) & 1) diff = -diff;
     return (float)(e & 0xfff) / 4095.f + (float)diff / 2047.f * delta;
 }
 /* LUT samplers that each lighting configuration (config0 bits 4-7) provides; bit n = sampler n */

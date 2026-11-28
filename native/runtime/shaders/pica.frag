@@ -88,7 +88,7 @@ vec4 sample_unit(int unit, vec2 uv) {
 // ---- lighting ----
 float lut_lookup(uint l, uint idx, float d) {
     uint e = LUT(l * 256u + (idx & 255u));
-    int diff = int((e >> 12) & 0xfffu); if (diff >= 0x800) diff -= 0x1000;
+    int diff = int((e >> 12) & 0x7ffu); if (((e >> 23) & 1u) != 0u) diff = -diff;   // sign and magnitude (pica_sw.c lut_lookup)
     return float(e & 0xfffu) / 4095.0 + float(diff) / 2047.0 * d;
 }
 vec3 light_color(uint v) { return vec3(float((v >> 20) & 255u), float((v >> 10) & 255u), float(v & 255u)) / 255.0; }
