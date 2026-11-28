@@ -167,22 +167,25 @@ The emulator-based 1.x is still on the releases page, and its code is on the
 
 ### Android
 
-There is no Android APK in the 2.0 release yet; the app's source is in
-`native/android` (see [Android app](#android-app) to build it). It needs Android
-10 or newer, a 64-bit device with Vulkan 1.3, and a controller or keyboard:
-there are no touch controls. The app can't build the native code itself, so a
-PC builds it for the app:
+The app is `msr2ds-<version>-android-arm64.apk` on the
+[releases page](../../releases/latest) (its source is in `native/android`, see
+[Android app](#android-app)). It needs Android 10 or newer on a 64-bit ARM
+device with Vulkan 1.1 or newer, and a controller or keyboard: there are no
+touch controls. The app can't build the native code itself, so a PC builds it
+for the app:
 
 1. In the launcher on a PC, with your game file chosen: Game tab, **Build for
    Android** (a few minutes). It goes into the PC's `user/msr/recomp-android`.
-2. Install the APK and start it once, so it makes its folder.
+2. Install the APK (allow your browser or file manager to install apps when
+   Android asks) and start it once, so it makes its folder.
 3. Connect the device to the PC over USB and open its storage. In
    `Android/data/io.github.gminustwo.msrnative/files/user`, put your game file,
    and copy the PC's `user/msr/recomp-android` folder into `user/msr` there.
 4. Start the app: the launcher finds both. Play.
 
 The Back button opens the game's menu. Saves and settings are in the same user
-folder on the device.
+folder on the device. The app has no in-app update: install a newer APK over it,
+and the user folder stays.
 
 **On the SD card.** The launcher's Game tab has a **User folder** row: **Move to
 the SD card** moves the whole user folder (game file, native code, saves,
