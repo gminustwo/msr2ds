@@ -76,7 +76,11 @@ void video_shutdown(void);
 /* second_display_lease.c (Linux): the bottom screen on a panel the compositor leases (a dual-screen handheld in gamescope) */
 void second_display_start(void);                 /* main.c, once the game's window is open: asks for the panel */
 void second_display_bottom(const uint8_t *rgba); /* video.c, each frame: the bottom screen, 320x240 RGBA8 */
+void second_display_probe(void);                 /* overlay_host.cpp: is a panel offered? (asked on a thread) */
+int  second_display_offered(void);               /* ...1 once one is, or while one is leased */
 #endif
+int  video_bottom_display(void);                 /* the Display tab's Bottom screen on the second display (--bottom-display) */
+void video_bottom_leased(int on);                /* second_display_lease.c: the bottom screen is on a leased panel */
 
 /* main.c: what the main thread (the window, VBlank, presenting) and the GX thread (the PICA renderer) are doing, for the
    watchdog (a stage held for 5 s is logged, with where the game's threads wait) and the crash report. `what` is a

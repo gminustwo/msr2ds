@@ -1,8 +1,9 @@
 /* The bottom screen on a panel the compositor leases to the game (drm-lease-v1), driven directly through VK_KHR_display
  * while the game plays in its own window. On a dual-screen handheld in gamescope (the AYN Thor in Armada's Game Mode)
  * that is the bottom panel, which gamescope does not show. The panel's touchscreen is the 3DS touch screen.
- *   MSR_SECOND_DISPLAY=1                          on; off by default (the game in its window only, as without this
- *                                                 file: nothing is asked of the compositor)
+ *   MSR_SECOND_DISPLAY=1|0                        on or off whatever the Display tab's Bottom screen on the second
+ *                                                 display says (settings.ini [native] bottom_display, off by default:
+ *                                                 the game in its window only, as without this file)
  *   MSR_SECOND_DISPLAY_CONNECTOR=<name>           that connector (default: the first internal panel offered)
  *   MSR_SECOND_DISPLAY_ROTATION=0|90|180|270      the picture's turn, counter-clockwise (default: the connector's panel
  *                                                 orientation)
@@ -18,7 +19,7 @@
  * MHGU fills the whole panel on the processor (here that took a third of a core at 60 pictures a second on the AYN
  * Thor), the swapchain has the fewest images the panel allows, the thread wakes when the game hands over a new
  * picture (MHGU looks 60 times a second), a touch goes to input_touch in the bottom screen's pixels, the thread starts
- * once when the game's window is open (no settings menu switch), the physical device is the first one listed (MHGU's
+ * once when the game's window is open (the Display tab's row: from the game's next start), the physical device is the first one listed (MHGU's
  * matches the game's own device), and the thread's priority is k_background_thread's. The lease and the surface are Azahar's code
  * (drm_lease/README.md).
  *
@@ -114,7 +115,7 @@ static void upright_size(uint32_t *w, uint32_t *h) {
     *h = turned ? s.extent.width : s.extent.height;
 }
 
-/* The bottom screen's place in the upright w x h picture: as large as it fits at its own 4:3 shape, centred. */
+/* The bottom screen's place in the upright w x h picture: as large as it fits at its own 4:3 shape, centered. */
 static void bottom_rect(uint32_t w, uint32_t h, uint32_t *x0, uint32_t *y0, uint32_t *rw, uint32_t *rh) {
     if ((uint64_t)w * BOT_H <= (uint64_t)h * BOT_W) *rw = w, *rh = (uint32_t)((uint64_t)w * BOT_H / BOT_W);
     else *rh = h, *rw = (uint32_t)((uint64_t)h * BOT_W / BOT_H);
@@ -452,7 +453,7 @@ static void wait_for_picture(void) {
 
 static void *panel_thread(void *arg) {
     (void)arg;
-    /* signals stay with the game's threads, and the scheduler favours them over this one */
+    /* signals stay with the game's threads, and the scheduler favors them over this one */
     sigset_t set;
     sigfillset(&set);
     sigdelset(&set, SIGSEGV), sigdelset(&set, SIGBUS), sigdelset(&set, SIGILL), sigdelset(&set, SIGFPE), sigdelset(&set, SIGABRT);
@@ -461,7 +462,9 @@ static void *panel_thread(void *arg) {
 
     if (bring_up()) {
         SD_LOG("up: the bottom screen is on the leased panel\n");
+        video_bottom_leased(1);   /* the window shows the top screen alone (video.c effective_layout) */
         while (drm_lease_alive() && present_once()) wait_for_picture();
+        video_bottom_leased(0);
         SD_LOG("the panel is gone: the game goes on, on its window only\n");
     } else {
         SD_LOG("no panel to lease: the game goes on, on its window only\n");
@@ -470,9 +473,42 @@ static void *panel_thread(void *arg) {
     return NULL;
 }
 
+/* The Display tab's Bottom screen on the second display row (overlay_host.cpp): shown where the compositor offers a
+   panel to lease. Asked once, without leasing, on a thread of its own (drm_lease_offered can wait two timeouts of 5 s):
+   -1 not known yet, 0 none, 1 one is offered. Not asked by a game that leases (its own lease would take the offer away
+   while the probe looks); the row shows there anyway, its setting being on. */
+static atomic_int offered = -1;
+
+static void *probe_thread(void *arg) {
+    (void)arg;
+    k_background_thread();
+    const bool yes = drm_lease_offered(getenv("MSR_SECOND_DISPLAY_CONNECTOR"));
+    atomic_store(&offered, yes ? 1 : 0);
+    SD_LOG("%s\n", yes ? "a panel is offered (the Display tab's Bottom screen on the second display)"
+                       : "no panel offered (the Display tab's row stays hidden)");
+    return NULL;
+}
+
+void second_display_probe(void) {
+    static bool asked;
+    if (asked) return;
+    asked = true;
+    if (!getenv("GAMESCOPE_WAYLAND_DISPLAY") && !getenv("WAYLAND_DISPLAY")) { atomic_store(&offered, 0); return; }
+    pthread_t th;
+    if (pthread_create(&th, NULL, probe_thread, NULL) != 0) { atomic_store(&offered, 0); return; }
+    pthread_detach(th);
+}
+
+int second_display_offered(void) {
+    return atomic_load(&offered) == 1 || atomic_load_explicit(&panel_up, memory_order_relaxed);
+}
+
+/* On with the Display tab's row (settings.ini [native] bottom_display, which the launcher passes as --bottom-display=on)
+   or MSR_SECOND_DISPLAY=1; MSR_SECOND_DISPLAY=0 keeps it off whatever the row says. */
 void second_display_start(void) {
     const char *e = getenv("MSR_SECOND_DISPLAY");
-    if (!e || strcmp(e, "1")) { SD_LOG("off (MSR_SECOND_DISPLAY=1 turns it on)\n"); return; }
+    const bool on = e && *e ? !strcmp(e, "1") : video_bottom_display() != 0;
+    if (!on) { SD_LOG("off (the Display tab's Bottom screen on the second display, or MSR_SECOND_DISPLAY=1)\n"); return; }
     /* (read when the thread's vkCreateInstance runs; the game's instance exists by now, and nothing makes another) */
     setenv("VK_LOADER_LAYERS_DISABLE", "~implicit~", 1);
     pthread_t th;

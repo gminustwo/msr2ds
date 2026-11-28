@@ -46,6 +46,11 @@ void video_set_vsync(int on);
 void video_set_resolution(int factor);
 void video_set_aniso(int aniso);
 int video_option(const char* name, const char* value);
+int video_bottom_display(void);
+#ifdef MSR_DRM_LEASE
+void second_display_probe(void);   // second_display_lease.c: the Bottom screen on the second display row (Linux)
+int second_display_offered(void);
+#endif
 int video_pad_connected(void);
 int video_pad_any_held(void);
 unsigned video_pad_combo_held(void);
@@ -454,6 +459,14 @@ extern "C" void msr_overlay_start(int fullscreen, int resolution, int vsync, int
     // the Bottom screen on the second display row, where there is one (a dual-screen handheld's lower screen)
     launched.bottom_display_option = msr_android_bottom_available() != 0;
     launched.bottom_display = MsrIni::File(msr_settings_file()).Bool("native", "bottom_display", false);
+#elif defined(MSR_DRM_LEASE)
+    // Linux: the same row, where the compositor offers a panel to lease (second_display_lease.c asks on a thread of its
+    // own; the row comes with its answer, msr_overlay_frame) or the setting is on (so it can be turned off there). The
+    // game leases the panel as it starts: in the game the row applies from the next start.
+    launched.bottom_display = MsrIni::File(msr_settings_file()).Bool("native", "bottom_display", false);
+    if (launcher_mode || !video_bottom_display()) second_display_probe();   // (a game leasing it: not asked)
+    launched.bottom_display_option = launched.bottom_display || second_display_offered();
+    if (!launcher_mode) launched.bottom_display_running = video_bottom_display() ? 1 : 0;
 #endif
     launched.max_resolution = 10;
     launched.quick_saves = true;
@@ -673,6 +686,13 @@ extern "C" void msr_overlay_frame(void) {
     using Kind = MSR::OverlayAction::Kind;
     MSR::FrameRate::game_frames.store(g_gsp_top_swaps, std::memory_order_relaxed);
     if (!launcher_mode) msr_report_tick();   // the REPORT tab's state, as its worker left it (launcher.cpp)
+#ifdef MSR_DRM_LEASE
+    // Linux: the compositor's answer (msr_overlay_start): a panel offered brings the Bottom screen on the second display row
+    if (!emulator.bottom_display_option && second_display_offered()) {
+        launched.bottom_display_option = emulator.bottom_display_option = true;
+        O().SetEmulatorSettings(emulator);
+    }
+#endif
 #ifdef __ANDROID__
     {   // the on-screen keyboard while a text field is typed in (the REPORT tab's): Android shows it only when asked,
         // where desktop systems take typed text all the time

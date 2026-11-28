@@ -1941,8 +1941,23 @@ void Overlay::DrawMenu(float scale, bool appearing) {
             if (e.bottom_display_option) {
                 row("Bottom screen on the second display");
                 emulator_changed |= OnOff("##bottomdisplay", &e.bottom_display);
-                Note("For a dual-screen handheld such as the AYN Thor: the 3DS's bottom screen on the lower screen, "
-                     "which is its touch screen too, and the top screen alone on the main one. With Vulkan.");
+                if (!l.active && e.bottom_display_running >= 0 && e.bottom_display != (e.bottom_display_running != 0)) {
+                    // Linux: the leased panel is set up as the game starts
+                    ImGui::TextColored({.53f, .89f, .6f, 1.f}, "Restart the game to use it.");
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Restart now##bottomdisplay")) {
+                        Act(OverlayAction::Kind::Restart);
+                        SetVisible(false);
+                    }
+                } else {
+#ifdef __ANDROID__
+                    Note("For a dual-screen handheld such as the AYN Thor: the 3DS's bottom screen on the lower screen, "
+                         "which is its touch screen too, and the top screen alone on the main one. With Vulkan.");
+#else
+                    Note("For a dual-screen handheld such as the AYN Thor in gamescope: the 3DS's bottom screen on the "
+                         "lower screen, which is its touch screen too, and the top screen alone on the main one.");
+#endif
+                }
             }
             if (e.performance_options) {
                 ImGui::Spacing();
