@@ -215,6 +215,7 @@ void ScaleContactMinimum() {
 extern "C" void msr_patches_module_loaded(void) {
     static constexpr u32 Unchecked[] = {
         0x4E30C8,   // Hard Mode from the start: a new file's Play (2026-11-03)
+        0x25E300,   // the credits' scroll at the frame rate's pace (frame_rate.h StepPatches, main.c; #93, 2026-11-28)
     };
     rt_code_patchable(Unchecked, static_cast<u32>(sizeof Unchecked / sizeof Unchecked[0]));
     HookNewFileDifficulty();

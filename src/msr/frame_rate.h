@@ -76,7 +76,7 @@ struct StepPatch {
     u32 original;
     u32 replacement;
 };
-inline constexpr std::array<StepPatch, 3> StepPatches{{
+inline constexpr std::array<StepPatch, 4> StepPatches{{
     // The HUD's update (0x49DFDC) runs its timers and children with a constant:
     // vldr s16, =1/30 -> vmov.f32 s16, s0, the frame time it is given.
     {0x49DFF8, 0xED9F8AA6, 0xEEB08A40},
@@ -86,6 +86,12 @@ inline constexpr std::array<StepPatch, 3> StepPatches{{
     // The interface's fixed-step mode (game object +0x1804, step at +0x340; not seen in play):
     // vldrne s0, [r4, #0x340] -> mov r0, r0, so 0x10C688 keeps the measured time.
     {0x10C6B4, 0x1D940AD0, 0xE1A00000},
+    // The credits' scroll (0x25E2E4, called by the credits' update 0x262E98 with the frame time in s0; #93): each
+    // line moves up by a constant 1/240 of the screen, a pixel, a frame, while the time the credits keep (+0x110)
+    // advances by 0.125 a second, which is that pixel at 30 FPS; at 144 FPS the text ran 4.8 times too fast and ran out
+    // while the scenes went on. vldr s17, =1/240 -> vmul.f32 s17, s2, s0: the step is 0.125 (s2, still the constant
+    // there) times the frame time, 1/240 at 30 FPS.
+    {0x25E300, 0xEDDF8AB2, 0xEE618A00},
 }};
 
 } // namespace MSR::FrameRate

@@ -224,6 +224,7 @@ static int set_frame_rate(int fps) {
         { 0x49DFF8, 0xED9F8AA6, 0xEEB08A40, steps_patched },           /* the HUD: vldr s16, =1/30 -> vmov.f32 s16, s0 */
         { 0x4E3BA4, 0xED9F8AD5, 0xE1A00000, steps_patched },           /* an interface class: vldr s16, =1/30 -> mov r0, r0 */
         { 0x10C6B4, 0x1D940AD0, 0xE1A00000, steps_patched },           /* the interface's fixed-step mode: vldrne s0, [r4, #0x340] -> nop */
+        { 0x25E300, 0xEDDF8AB2, 0xEE618A00, steps_patched },           /* the credits' scroll (#93): vldr s17, =1/240 -> vmul.f32 s17, s2, s0 */
     };
     if (!limit_patched && !steps_patched && !applied) return 30;
     if (!applied) {
