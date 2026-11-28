@@ -736,6 +736,11 @@ extern "C" void msr_overlay_frame(void) {
             msr_settings_save();
             main_exit(MSR_EXIT_RESTART);
             break;
+        case Kind::QuitToLauncher:   // (shown only in a game started without the launcher: launcher.cpp opens it)
+            if (launcher_mode) break;
+            msr_settings_save();
+            main_exit(MSR_EXIT_LAUNCHER);
+            break;
         case Kind::LauncherPlay:
         case Kind::LauncherBuild:
         case Kind::LauncherBuildAndroid:

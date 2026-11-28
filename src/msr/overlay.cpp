@@ -1516,6 +1516,15 @@ void Overlay::DrawMenu(float scale, bool appearing) {
         }
 #endif
     };
+    // msr-native's Skip the launcher (PlayerSettings::skip_launcher): the launcher's, under Play (not in the Android app)
+    const auto skip_row = [&] {
+#if defined(MSR_NATIVE) && !defined(__ANDROID__)
+        row("Skip the launcher");
+        player_changed |= OnOff("##skiplauncher", &p.skip_launcher);
+        Note("From the next start, msr-native goes straight into the game. Quit to the launcher in the game's menu "
+             "comes back here; so does an update waiting, or the game failing to start or crashing. Off by default.");
+#endif
+    };
     // The note over the rows that wait while it is on
     const auto original_note = [&](const char* what) {
         if (!original) return;
@@ -1537,7 +1546,10 @@ void Overlay::DrawMenu(float scale, bool appearing) {
         };
         if (tab_item("Game", 0)) {
             if (l.active) {
-                DrawLauncher(l, label_width, default_focus, original_row);
+                DrawLauncher(l, label_width, default_focus, [&] {
+                    original_row();
+                    skip_row();
+                });
                 // The game reads the language when it starts: in the launcher only, as in the emulator-based 1.x
                 row("Language");
                 static constexpr auto names = [] {
@@ -1657,6 +1669,12 @@ void Overlay::DrawMenu(float scale, bool appearing) {
                         Act(OverlayAction::Kind::LauncherDiscord);
                     }
                     Note("Opens the invite in your browser. Bug reports go on GitHub Issues, from the REPORT tab.");
+                }
+                if (l.quit_to_launcher) {   // started without the launcher's window: its Quit ends the program
+                    if (ImGui::Button("Quit to the launcher", button)) {
+                        Act(OverlayAction::Kind::QuitToLauncher);
+                        SetVisible(false);
+                    }
                 }
             }
             if (ImGui::Button("Quit", button)) {

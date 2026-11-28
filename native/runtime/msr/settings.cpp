@@ -79,8 +79,9 @@ void PlayerSettings::Load(const std::string& path) {
     }
     flag("discord_presence", discord_presence);
     flag("original_3ds", original_3ds);
+    flag("skip_launcher", skip_launcher);
     flag("custom_video", custom_video);
-    custom_resolution = std::clamp(static_cast<int>(file.Number("General", "custom_resolution", custom_resolution)), 0, 10);
+    custom_resolution =std::clamp(static_cast<int>(file.Number("General", "custom_resolution", custom_resolution)), 0, 10);
     custom_aniso = AnisoChoice(static_cast<int>(file.Number("General", "custom_aniso", custom_aniso)));
     flag("custom_fsr", custom_fsr);
     flag("custom_wide_culling", custom_wide_culling);
@@ -139,6 +140,7 @@ void PlayerSettings::Save(const std::string& path) const {
     number("language", language);
     flag("discord_presence", discord_presence);
     flag("original_3ds", original_3ds);
+    flag("skip_launcher", skip_launcher);
     flag("custom_video", custom_video);
     number("custom_resolution", custom_resolution);
     number("custom_aniso", custom_aniso);
