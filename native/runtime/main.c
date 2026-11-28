@@ -2,9 +2,11 @@
  * The game's ARM code runs from the module the launcher builds from the player's own dump (tools/msr/recomp,
  * msr_aot.dll / libmsr_aot.so); the 3DS kernel, services, GPU and DSP are this runtime (from Woohoo! Flight School).
  *
- * Started on its own (no options, or --launcher) it is the launcher (msr/launcher.cpp): the settings menu with the
- * game file, the native code's build and Play, which starts this program again with --play and the options below.
- * --direct (msr-native-direct.exe's): Play without the launcher, which opens only when the game cannot start yet.
+ * Started on its own (no options) it is the launcher (msr/launcher.cpp): the settings menu with the game file, the native
+ * code's build and Play, which starts this program again with --play and the options below; with the launcher's Skip
+ * the launcher on, Play at once, as --direct. --launcher: the launcher always.
+ * --direct (msr-native-direct.exe's): Play without the launcher, which opens only when the game cannot start yet, a
+ * newer release waits, the game crashed, or its menu's Quit to the launcher asked.
  *
  * usage: msr-native [--play] [--dump <dump.3ds|.cci|.cxi>] [--module <library>] [options]
  *   --dump        the decrypted dump (also $MSR_DUMP, or the first line of user/msr/game-path.txt)
@@ -595,7 +597,7 @@ static void log_buffered(void) {
     setvbuf(stderr, NULL, _IOFBF, 1 << 16);
 }
 
-int msr_launcher_main(void);
+int msr_launcher_main(int may_skip);
 int msr_launcher_direct(void);
 
 /* ---- what a slow computer is short of, in the log players send (2026-11-06) ---- */
@@ -766,7 +768,8 @@ int main(int argc, char **argv) {
     }
 #endif
     log_buffered();
-    if (argc == 1 || (argc == 2 && !strcmp(argv[1], "--launcher"))) return msr_launcher_main();
+    if (argc == 1) return msr_launcher_main(1);   /* (Play at once when the launcher's Skip the launcher is on) */
+    if (argc == 2 && !strcmp(argv[1], "--launcher")) return msr_launcher_main(0);
     if (argc == 2 && !strcmp(argv[1], "--direct")) return msr_launcher_direct();
 #ifndef __ANDROID__
     log_start("user/logs");   /* this session's own log, the newest 10 kept (log.c; Android's main started it) */
@@ -1059,8 +1062,10 @@ int main(int argc, char **argv) {
         }
     }
     stage_set(STAGE_MAIN, "closing the game");
-    fprintf(stderr, "native: %s\n", *done ? "guest main returned" : g_exit == MSR_EXIT_RESTART ? "restart" : "window closed");
-    const char *how = *done ? "the game's main returned" : g_exit == MSR_EXIT_RESTART ? "Restart: the game starts again" : "the window was closed";
+    fprintf(stderr, "native: %s\n", *done ? "guest main returned" : g_exit == MSR_EXIT_RESTART ? "restart"
+                                    : g_exit == MSR_EXIT_LAUNCHER ? "quit to the launcher" : "window closed");
+    const char *how = *done ? "the game's main returned" : g_exit == MSR_EXIT_RESTART ? "Restart: the game starts again"
+                      : g_exit == MSR_EXIT_LAUNCHER ? "Quit to the launcher" : "the window was closed";
     { extern void pica_vk_saves_wait(void); pica_vk_saves_wait(); }   /* a shader cache save under way lands first */
     video_shutdown();
     msr_discord_stop();   /* the Discord presence cleared */

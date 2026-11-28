@@ -24,6 +24,9 @@
 extern "C" {
 #include "input.h"   // the triggers as buttons (PAD_TRIGGER_*), their press point
 }
+#ifdef __ANDROID__
+#include "android.h"   // msr_android_bottom_available: the Bottom screen on the second display row
+#endif
 
 extern "C" {
 const char* input_control_label(int c);
@@ -282,6 +285,7 @@ void ApplyEmulator(const MSR::EmulatorSettings& e) {
         file.SetString("native", "filter", e.fsr ? "fsr" : "linear");
         file.SetBool("native", "power_saving", e.power_saving);
         file.SetNumber("native", "texture_detail", e.texture_detail);
+        if (e.bottom_display_option) file.SetBool("native", "bottom_display", e.bottom_display);
         if (e.renderer_option) file.SetString("native", "renderer", RendererName(e.renderer));
         if (!file.Save()) std::fprintf(stderr, "msr: could not save the display settings\n");
         return;
@@ -293,6 +297,7 @@ void ApplyEmulator(const MSR::EmulatorSettings& e) {
     if (e.aniso != emulator.aniso) video_set_aniso(e.aniso);
     if (e.fsr != emulator.fsr) video_option("filter", e.fsr ? "fsr" : "linear");
     if (e.power_saving != emulator.power_saving) main_set_power_saving(e.power_saving);
+    if (e.bottom_display != emulator.bottom_display) video_option("bottom_display", e.bottom_display ? "on" : "off");
     emulator = e;
     MsrIni::File file(msr_settings_file());
     if (emulator.fullscreen != launched.fullscreen) file.SetBool("native", "fullscreen", emulator.fullscreen);
@@ -302,6 +307,8 @@ void ApplyEmulator(const MSR::EmulatorSettings& e) {
     if (emulator.aniso != launched.aniso) file.SetNumber("native", "aniso", emulator.aniso);
     if (emulator.fsr != launched.fsr) file.SetString("native", "filter", emulator.fsr ? "fsr" : "linear");
     if (emulator.power_saving != launched.power_saving) file.SetBool("native", "power_saving", emulator.power_saving);
+    // (as it is now, not only when it differs from the start: back to that value, the file kept the other one)
+    if (emulator.bottom_display_option) file.SetBool("native", "bottom_display", emulator.bottom_display);
     if (emulator.texture_detail != launched.texture_detail) file.SetNumber("native", "texture_detail", emulator.texture_detail);
     if (emulator.renderer != launched.renderer) file.SetString("native", "renderer", RendererName(emulator.renderer));
     if (!file.Save()) std::fprintf(stderr, "msr: could not save the display settings\n");
@@ -395,6 +402,7 @@ extern "C" void msr_overlay_reload(void) {
     emulator.aniso = MSR::AnisoChoice(static_cast<int>(file.Number("native", "aniso", emulator.aniso)));
     emulator.fsr = file.String("native", "filter", emulator.fsr ? "fsr" : "linear") != "linear";
     emulator.power_saving = file.Bool("native", "power_saving", emulator.power_saving);
+    emulator.bottom_display = file.Bool("native", "bottom_display", emulator.bottom_display);
     emulator.texture_detail = emulator.texture_detail_running = TextureDetail(file);
     emulator.renderer = emulator.renderer_running = Renderer(file);
     O().SetEmulatorSettings(emulator);
@@ -441,6 +449,11 @@ extern "C" void msr_overlay_start(int fullscreen, int resolution, int vsync, int
     launched.renderer = launched.renderer_running = Renderer(MsrIni::File(msr_settings_file()));
 #ifdef MSR_OPENGL
     launched.renderer_option = true;
+#endif
+#ifdef __ANDROID__
+    // the Bottom screen on the second display row, where there is one (a dual-screen handheld's lower screen)
+    launched.bottom_display_option = msr_android_bottom_available() != 0;
+    launched.bottom_display = MsrIni::File(msr_settings_file()).Bool("native", "bottom_display", false);
 #endif
     launched.max_resolution = 10;
     launched.quick_saves = true;
@@ -735,6 +748,11 @@ extern "C" void msr_overlay_frame(void) {
         case Kind::Restart:
             msr_settings_save();
             main_exit(MSR_EXIT_RESTART);
+            break;
+        case Kind::QuitToLauncher:   // (shown only in a game started without the launcher: launcher.cpp opens it)
+            if (launcher_mode) break;
+            msr_settings_save();
+            main_exit(MSR_EXIT_LAUNCHER);
             break;
         case Kind::LauncherPlay:
         case Kind::LauncherBuild:

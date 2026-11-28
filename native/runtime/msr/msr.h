@@ -40,6 +40,8 @@ const char *msr_settings_file(void);    /* settings.ini */
 
 /* msr-native's exit code asking the launcher to start it again (the overlay's Restart) */
 #define MSR_EXIT_RESTART 75
+/* ... and to open its window (the overlay's Quit to the launcher, in a game started without it: launcher.cpp) */
+#define MSR_EXIT_LAUNCHER 76
 
 /* ---- Discord Rich Presence (discord.cpp; the Game tab's setting). Not in the Android app. ---- */
 void msr_discord_start(int launcher);         /* the connection to the Discord app: the launcher's ("In the launcher") or the game's */

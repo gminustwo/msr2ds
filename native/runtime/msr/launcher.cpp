@@ -12,7 +12,8 @@
 //     files (the updates section below);
 //   - the direct start: once the native code is built, msr-native-direct.exe beside the program (msr-native-direct.sh
 //     beside the AppImage, msr-native-direct.app beside msr-native.app) starts the game without the launcher (the
-//     direct start section below);
+//     direct start section below); Skip the launcher (under Play) plays so when the program itself is started, and the
+//     game's menu has Quit to the launcher there (PlayWithoutLauncher; --launcher opens the launcher all the same);
 //   - saves: Import saves... brings the player's saves from a 3DS backup or another emulator's folder, in place of the
 //     ones here (the saves section below).
 // The user folder: beside the program (Windows, a portable folder; Linux when a user/ folder is there, also beside the
@@ -1959,26 +1960,15 @@ bool Installable() {
 #endif
 }
 
-// the release list (a worker thread, when the launcher starts): the newest release above this version, if any
-void CheckForUpdate() {
-    std::string url = "https://api.github.com/repos/" MSR_UPDATE_REPO "/releases?per_page=20";
-    if (const char* u = std::getenv("MSR_UPDATE_URL"); u && *u) url = u;
-    if (url == "off") return;
-    const std::string curl = SystemTool("curl");
-    if (curl.empty()) return;
-    std::error_code e;
-    fs::create_directories(UpdateFolder(), e);
-    const fs::path list = UpdateFolder() / "releases.json";
-    fs::remove(list, e);
-    if (!UpdateTool({curl, "-sSfL", "--max-time", "20", "--connect-timeout", "10", "-H", "Accept: application/vnd.github+json",
-                     "-o", Utf8(list), url})) {
-        UpdateLog("no release list from " + url);
-        return;
-    }
-    const std::string text = ReadText(list);
+// A release list's newest release above this version with a package for here: offered (apply: the Game tab shows it),
+// or only looked for (UpdateWaiting). False when there is none.
+bool ReadOffer(const std::string& text, bool apply) {
     JsonReader reader{text};
     const Json releases = reader.Value();
-    if (!reader.ok || releases.type != Json::Array) { UpdateLog("the release list could not be read"); return; }
+    if (!reader.ok || releases.type != Json::Array) {
+        if (apply) UpdateLog("the release list could not be read");
+        return false;
+    }
     const std::vector<int> current = VersionOf(MSR_NATIVE_VERSION);
     std::vector<int> best_version = current;
     const Json *best = nullptr, *best_asset = nullptr;
@@ -1999,13 +1989,20 @@ void CheckForUpdate() {
             }
         }
     }
-    if (!best) { UpdateLog("msr-native " MSR_NATIVE_VERSION " is the newest"); return; }
+    if (!best) {
+        if (apply) UpdateLog("msr-native " MSR_NATIVE_VERSION " is the newest");
+        return false;
+    }
     std::string version = best->Str("tag_name");
     if (!version.empty() && (version[0] == 'v' || version[0] == 'V')) version.erase(0, 1);
+    const bool installable = Installable();
+    if (!apply) {   // (only one that Update now can put in place: a download page alone is not worth the launcher)
+        if (installable) std::fprintf(stderr, "launcher: msr-native %s waits (the last look found it)\n", version.c_str());
+        return installable;
+    }
     std::string sha256 = best_asset->Str("digest");
     if (sha256.rfind("sha256:", 0) == 0) sha256.erase(0, 7);
     else sha256.clear();
-    const bool installable = Installable();
     UpdateLog("offered: msr-native " + version + " (" + best_asset->Str("name") + ")" + (installable ? "" : ", not here: the page"));
     std::scoped_lock lock{S.lock};
     S.update = Snapshot::Update::Available;
@@ -2018,6 +2015,36 @@ void CheckForUpdate() {
     S.update_note = installable ? "A " + Megabytes(S.update_size) + " download. Your saves, settings, mods and the native code stay."
                                 : std::string("Download it from its page.");
     S.dirty = true;
+    return true;
+}
+
+// the release list (a worker thread, when the launcher starts, or while a game started without it runs): the newest
+// release above this version, if any. The list stays in the update folder for UpdateWaiting.
+void CheckForUpdate() {
+    std::string url = "https://api.github.com/repos/" MSR_UPDATE_REPO "/releases?per_page=20";
+    if (const char* u = std::getenv("MSR_UPDATE_URL"); u && *u) url = u;
+    if (url == "off") return;
+    const std::string curl = SystemTool("curl");
+    if (curl.empty()) return;
+    std::error_code e;
+    fs::create_directories(UpdateFolder(), e);
+    const fs::path list = UpdateFolder() / "releases.json";
+    fs::remove(list, e);
+    if (!UpdateTool({curl, "-sSfL", "--max-time", "20", "--connect-timeout", "10", "-H", "Accept: application/vnd.github+json",
+                     "-o", Utf8(list), url})) {
+        UpdateLog("no release list from " + url);
+        return;
+    }
+    ReadOffer(ReadText(list), true);
+}
+
+// A game started without the launcher (msr-native-direct, Skip the launcher): a newer release that the last look found
+// (its list, kept in the update folder), for the launcher to offer in place of the game. Nothing is downloaded here, so
+// the game starts at once; the look itself is made while it runs (PlayWithoutLauncher).
+bool UpdateWaiting() {
+    if (const char* u = std::getenv("MSR_UPDATE_URL"); u && !std::strcmp(u, "off")) return false;
+    const std::string text = ReadText(UpdateFolder() / "releases.json");
+    return !text.empty() && ReadOffer(text, false);
 }
 
 // the leftovers of an update: the old files (once the old program has ended) and the unpacked package
@@ -2775,8 +2802,9 @@ void CancelReport() {
 // game directly: msr-native-direct.exe on Windows (runtime/win/direct.c, inside this program as resource 200),
 // msr-native-direct.sh beside the AppImage on Linux, or msr-native-direct.app beside msr-native.app on macOS (an app
 // whose program is a shell script; DirectPath is that script). Each runs this program with --direct (msr_launcher_direct): Play
-// without the launcher's window, Restart included; while the game cannot start (no game file, the native code missing
-// or built by another version), the launcher opens instead. A shortcut, Steam or a frontend can start it. Written
+// without the launcher's window, Restart included (PlayWithoutLauncher, as Skip the launcher plays it); while the game
+// cannot start (no game file, the native code missing or built by another version) or a newer release waits, the
+// launcher opens instead. A shortcut, Steam or a frontend can start it. Written
 // again when this version's differs (after an update; the old one, perhaps running, renamed aside as an update's old
 // files are), and left out when the program's folder cannot be written to.
 #ifdef __APPLE__
@@ -2893,7 +2921,9 @@ void WriteDirect() {
 }
 
 // ---- Play: this program again, with the display settings ----
-static bool direct_start;   // msr_launcher_direct's (the game's log says how it was started)
+// How the game was started, for its log (log.c) and its menu's Quit to the launcher: "launcher" (the launcher's Play),
+// "direct" (msr-native-direct) or "skip" (Skip the launcher)
+static const char* started_by = "launcher";
 bool StartGame() {
     MsrIni::File file(Utf8(S.settings));
     const bool fullscreen = file.Bool("native", "fullscreen", false), vsync = file.Bool("native", "vsync", true);
@@ -2919,6 +2949,8 @@ bool StartGame() {
         std::scoped_lock lock{S.lock};
         if (S.gpu_driver_option && !S.gpu_driver.empty()) args.push_back("--gpu-driver=" + S.gpu_driver);
     }
+    // the bottom screen on a second display, a dual-screen handheld's lower screen (video.c's bottom output)
+    if (file.Bool("native", "bottom_display", false)) args.push_back("--bottom-display=on");
     {   // the app again, as the game (main.c starts its session's log there, user/logs); this process ends
         std::fprintf(stderr, "launcher: starting the game\n");
         std::vector<const char*> argv;
@@ -2929,9 +2961,9 @@ bool StartGame() {
     // The game writes its own log, one file for each session (user/logs, runtime/log.c; until 2026-11-19 this handle's
     // user/msr-native.log, which each start wrote over), and says in it how it was started
 #ifdef _WIN32
-    _putenv_s("MSR_STARTED_BY", direct_start ? "direct" : "launcher");
+    _putenv_s("MSR_STARTED_BY", started_by);
 #else
-    setenv("MSR_STARTED_BY", direct_start ? "direct" : "launcher", 1);
+    setenv("MSR_STARTED_BY", started_by, 1);
 #endif
     Child c;
     if (!Spawn(args, S.root, false, {}, false, c)) {
@@ -3009,8 +3041,10 @@ void Publish() {
     MSR::GetOverlay().SetLauncher(s);
 }
 
-// The game's menu (msr_report_tick): the REPORT tab and the Discord button, none of the launcher's own rows
+// The game's menu (msr_report_tick): the REPORT tab and the Discord button, none of the launcher's own rows; Quit to
+// the launcher in a game started without it
 bool game_reports = false;   // (msr_report_game_start's ReportOption)
+bool game_without_launcher = false;   // (msr_report_game_start's: MSR_STARTED_BY direct or skip, StartGame's)
 void PublishGame() {
     Snapshot s;
     {
@@ -3028,16 +3062,21 @@ void PublishGame() {
         s.discord = MSR_DISCORD_INVITE;
     }
     s.report_option = game_reports;
+    s.quit_to_launcher = game_without_launcher;
     MSR::GetOverlay().SetLauncher(s);
 }
 
 } // namespace
 
-// The game's process (main.c): its menu gets the REPORT tab and the Discord button. The user folder is the one its
-// mods are found in (beside msr/settings.ini); the logs are read when the tab first opens.
+// The game's process (main.c): its menu gets the REPORT tab and the Discord button, and Quit to the launcher when the
+// launcher's window did not start it (its exit code MSR_EXIT_LAUNCHER opens it). The user folder is the one its mods are
+// found in (beside msr/settings.ini); the logs are read when the tab first opens.
 extern "C" void msr_report_game_start(const char* user_dir) {
     S.user = FromUtf8(user_dir && *user_dir ? user_dir : "user");
     game_reports = ReportOption();
+#ifndef __ANDROID__
+    if (const char* by = std::getenv("MSR_STARTED_BY")) game_without_launcher = !std::strcmp(by, "direct") || !std::strcmp(by, "skip");
+#endif
     std::scoped_lock lock{S.lock};
     S.in_game = true;
     S.dirty = true;
@@ -3281,6 +3320,7 @@ void ReadGame() {
 
 // The launcher's window until it is closed. 0 when closed normally.
 int Launcher() {
+    started_by = "launcher";   // (its Play, also after a game started without it)
     const std::string settings = Utf8(S.settings);
     msr_settings_load(settings.c_str());
     msr_discord_start(1);   // Discord Rich Presence: "In the launcher" (discord.cpp)
@@ -3320,7 +3360,8 @@ int Launcher() {
 #endif
     Publish();
 #ifndef __ANDROID__
-    S.update_checker = std::thread([] { CleanUpdate(); CheckForUpdate(); });   // a newer release (the updates section)
+    if (!S.update_checker.joinable())   // (a game started without the launcher made its own look: its result is kept)
+        S.update_checker = std::thread([] { CleanUpdate(); CheckForUpdate(); });   // a newer release (the updates section)
 #else
     auto code_checked = std::chrono::steady_clock::now();   // (the native code's last look, below)
 #endif
@@ -3395,35 +3436,29 @@ int Launcher() {
         msr_android_relaunch(0, nullptr);
     }
 #endif
-    if (!S.restart_into.empty()) {   // an update: its program, in this one's place
+    if (!S.restart_into.empty()) {   // an update: its program, in this one's place (its launcher, Skip the launcher or not)
         std::fprintf(stderr, "launcher: starting %s\n", Utf8(S.restart_into).c_str());
 #ifdef _WIN32
         Child c;
-        if (Spawn({Utf8(S.restart_into)}, S.restart_into.parent_path(), false, {}, false, c)) Close(c);
+        if (Spawn({Utf8(S.restart_into), "--launcher"}, S.restart_into.parent_path(), false, {}, false, c)) Close(c);
 #else
         unsetenv("LD_LIBRARY_PATH");   // this AppImage's libraries; the new one sets its own
         const std::string path = Utf8(S.restart_into);
-        execl(path.c_str(), path.c_str(), static_cast<char*>(nullptr));
+        execl(path.c_str(), path.c_str(), "--launcher", static_cast<char*>(nullptr));
         std::fprintf(stderr, "launcher: could not start the new version\n");
 #endif
     }
     return 0;
 }
 
-} // namespace
-
-// main.c, when the program is started on its own: the launcher until it is closed. 0 when closed normally.
-extern "C" int msr_launcher_main(void) {
-    Setup();
-    return Launcher();
-}
-
-// main.c, --direct (msr-native-direct.exe, the direct start section): Play at once, without the launcher's window, and
-// again when the game's Restart asks; the game's exit code. The launcher when the game cannot start yet.
-extern "C" int msr_launcher_direct(void) {
-    direct_start = true;
-    Setup();
-    std::fprintf(stderr, "launcher: the direct start (--direct)\n");
+// Play without the launcher's window (msr-native-direct; Skip the launcher, `how` "skip"): the game at once, and again
+// when its Restart asks. Its exit code, or the launcher's window in its place when:
+//   - the game cannot start yet (no game file, the native code missing or built by another version);
+//   - a newer release waits (UpdateWaiting: found while a game ran before), which its Game tab then offers;
+//   - the game's menu asks (Quit to the launcher, MSR_EXIT_LAUNCHER);
+//   - the game ended with an error: it could not start, or it crashed (the REPORT tab is there, and the settings).
+// While the game runs, an update's leftovers are cleaned and the releases looked at, as the launcher does when it opens.
+int PlayWithoutLauncher(const char* how) {
     ReadGame();
     CheckCode();
     bool ready;
@@ -3435,15 +3470,68 @@ extern "C" int msr_launcher_direct(void) {
         std::fprintf(stderr, "launcher: the game cannot start yet (the game file or the native code): the launcher\n");
         return Launcher();
     }
+    if (UpdateWaiting()) {
+        std::fprintf(stderr, "launcher: a newer release to install: the launcher\n");
+        return Launcher();
+    }
+    started_by = how;
+#ifndef __ANDROID__
+    S.update_checker = std::thread([] { CleanUpdate(); CheckForUpdate(); });
+#endif
+    int code = 1;
     for (;;) {
-        if (!StartGame()) return 1;
-        const int code = Poll(S.game_process, true);
+        if (!StartGame()) break;
+        code = Poll(S.game_process, true);
         std::fprintf(stderr, "launcher: the game ended (%d)\n", code);
         {
             std::scoped_lock lock{S.lock};
             Close(S.game_process);
             S.playing = false;
         }
-        if (code != MSR_EXIT_RESTART) return code;
+        msr_discord_hold(0);
+        if (code != MSR_EXIT_RESTART) break;
     }
+    if (code != 0) {   // (the launcher takes over the look at the releases: Launcher joins it)
+        std::fprintf(stderr, "launcher: %s: the launcher\n", code == MSR_EXIT_LAUNCHER ? "the game's Quit to the launcher"
+                                                                                   : "the game ended with an error");
+        return Launcher();
+    }
+    {   // the look at the releases, if it still runs, stopped (it waits for the next start)
+        std::scoped_lock lock{S.lock};
+        Kill(S.update_tool);
+    }
+    if (S.update_checker.joinable()) S.update_checker.join();
+    return code;
+}
+
+#ifndef __ANDROID__
+// Skip the launcher (PlayerSettings::skip_launcher, the launcher's Game tab), from the settings file
+bool SkipLauncher() {
+    return MsrIni::File(Utf8(S.settings)).Bool("General", "skip_launcher", false);
+}
+#endif
+
+} // namespace
+
+// main.c, when the program is started on its own: the launcher until it is closed (may_skip 0: --launcher, always),
+// or with Skip the launcher on, the game at once as the direct start plays it. 0 when closed normally.
+extern "C" int msr_launcher_main(int may_skip) {
+    Setup();
+#ifndef __ANDROID__   // (the app's launcher and game are each a start of the app: android.c)
+    if (may_skip && SkipLauncher()) {
+        std::fprintf(stderr, "launcher: Skip the launcher is on: the game at once (msr-native --launcher opens the launcher)\n");
+        return PlayWithoutLauncher("skip");
+    }
+#else
+    (void)may_skip;
+#endif
+    return Launcher();
+}
+
+// main.c, --direct (msr-native-direct.exe, the direct start section): Play at once, without the launcher's window, and
+// again when the game's Restart asks; the game's exit code. The launcher in its place as PlayWithoutLauncher says.
+extern "C" int msr_launcher_direct(void) {
+    Setup();
+    std::fprintf(stderr, "launcher: the direct start (--direct)\n");
+    return PlayWithoutLauncher("direct");
 }

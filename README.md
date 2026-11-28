@@ -62,6 +62,7 @@ dump and holds the settings, which are also in an in-game overlay (F1 or Select)
 - Nintendo controller layout is off by default. A is accept, B is back in menus but A is jump in gameplay. This is configurable
 - Mod support
 - Steamdeck preset mode to get 60fps performance
+- Skip the launcher (off by default): straight into the game, with Quit to the launcher in the game's menu
 - Discord Rich Presence: your Discord profile shows the area you're in and the Metroids left (on by default; a switch on the Game tab turns it off)
 - Bug reports from the REPORT tab (in the launcher and in the game's menu), sent to Issues with the log of the session you choose
 
@@ -128,16 +129,21 @@ controller's Select / View / Back button opens the same menu. The internal
 resolution starts at 4x (960p): raise it on the Display tab (9x is 4K) if your
 GPU has room, or lower it if it struggles.
 
-**Without the launcher:** `msr-native-direct.exe`, beside `msr-native.exe` in
-the Windows zip, starts the game straight away with your settings: use it for a
-desktop shortcut, Steam or a frontend. When the game can't start yet (no game
-file, or the native code needs building), it opens the launcher instead. On
-Linux and macOS the launcher makes it once the native code is built:
+**Without the launcher:** turn on **Skip the launcher** (Game tab, under Play)
+and `msr-native` goes straight into the game with your settings from its next
+start. `msr-native-direct.exe`, beside `msr-native.exe` in the Windows zip,
+always does: use it for a desktop shortcut, Steam or a frontend. On Linux and
+macOS the launcher makes it once the native code is built:
 `msr-native-direct.sh` beside the AppImage, `msr-native-direct.app` beside
-`msr-native.app`.
+`msr-native.app`. Started either way, the game's menu has **Quit to the
+launcher**, and the launcher opens by itself when the game can't start yet (no
+game file, or the native code needs building), when the game crashed, or when an
+update is ready to install. `msr-native --launcher` always opens the launcher.
+(Not in the Android app.)
 
 **Updates:** when a newer release is out, the Game tab says so when the launcher
-starts. **Update now** downloads it and puts it in place of this one (the same
+starts. Started without the launcher, the game looks while you play, and the
+next start opens the launcher to offer it. **Update now** downloads it and puts it in place of this one (the same
 folder, AppImage or app), then starts it. Your saves, settings, mods and native
 code are kept; an update only asks you to rebuild the native code in the rare
 case it needs it. **What's new** opens the release's page. On a Mac, an app
@@ -170,22 +176,25 @@ The emulator-based 1.x is still on the releases page, and its code is on the
 
 ### Android
 
-There is no Android APK in the 2.0 release yet; the app's source is in
-`native/android` (see [Android app](#android-app) to build it). It needs Android
-10 or newer, a 64-bit device with Vulkan 1.3, and a controller or keyboard:
-there are no touch controls. The app can't build the native code itself, so a
-PC builds it for the app:
+The app is `msr2ds-<version>-android-arm64.apk` on the
+[releases page](../../releases/latest) (its source is in `native/android`, see
+[Android app](#android-app)). It needs Android 10 or newer on a 64-bit ARM
+device with Vulkan 1.1 or newer, and a controller or keyboard: there are no
+touch controls. The app can't build the native code itself, so a PC builds it
+for the app:
 
 1. In the launcher on a PC, with your game file chosen: Game tab, **Build for
    Android** (a few minutes). It goes into the PC's `user/msr/recomp-android`.
-2. Install the APK and start it once, so it makes its folder.
+2. Install the APK (allow your browser or file manager to install apps when
+   Android asks) and start it once, so it makes its folder.
 3. Connect the device to the PC over USB and open its storage. In
    `Android/data/io.github.gminustwo.msrnative/files/user`, put your game file,
    and copy the PC's `user/msr/recomp-android` folder into `user/msr` there.
 4. Start the app: the launcher finds both. Play.
 
 The Back button opens the game's menu. Saves and settings are in the same user
-folder on the device.
+folder on the device. The app has no in-app update: install a newer APK over it,
+and the user folder stays.
 
 **On the SD card.** The launcher's Game tab has a **User folder** row: **Move to
 the SD card** moves the whole user folder (game file, native code, saves,
@@ -304,14 +313,16 @@ keys.
 The launcher and the in-game menu (F1 or Select) have the same tabs, saved to the
 same `settings.ini`; LB and RB switch tabs.
 
-- **Game:** in the launcher, Play, the game file, the native code, saves and the
+- **Game:** in the launcher, Play, **Skip the launcher** (off by default; see
+  [Play](#play)), the game file, the native code, saves and the
   language (English, French, Spanish, German, Italian or Dutch: the last three
   set the 3DS region to Europe, which the game needs for them); volume; **Unlock amiibo galleries**, **Unlock Fusion Mode** and **Hard Mode
   from the start** (all on by default) and **Fusion suit, any difficulty** (off);
   **Discord Rich Presence** (on: with the Discord app open on the same computer,
   your Discord profile shows that you're playing, the area you're in and the
   Metroids left; not in the Android app); **Join the msr2ds Discord**; in the
-  game, Resume, Quick save, Quick load, Restart and Quit.
+  game, Resume, Quick save, Quick load, Restart, **Quit to the launcher** (when
+  the launcher was skipped) and Quit.
 
   **3DS mode** (off by default; in the launcher under Play, and on the game's
   Game tab, from the next start): the game laid out as the 3DS shows it. Both
@@ -547,9 +558,9 @@ a free account is enough), and the report goes up under your name, so you see th
 log first (as a gist), then the issue that links it. Nothing is sent without the log. You can add
 screenshots or a clip on the issue's page afterwards.
 
-You can also open an issue on the [Issues](../../issues/new/choose) page and pick **Bug report** (or
-**Feature request** for an idea): the form asks for what helps. Please check the open issues first,
-and report one problem per issue. What to have at hand:
+You can also open an issue on the [Issues](https://github.com/gminustwo/msr2ds/issues/new/choose) page
+and pick **Bug report** (or **Feature request** for an idea): the form asks for what helps. Please
+check the open issues first, and report one problem per issue. What to have at hand:
 
 - **The version**: at the bottom of the launcher's Game tab, e.g. "msr-native 2.2.0". Newer
   versions may already fix it: the Game tab offers updates.

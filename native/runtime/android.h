@@ -37,6 +37,20 @@ void msr_android_open_url(const char *url);
    line, the body read from `body_path` ("" none), the answer's body written to `out_path`. Its status, -1 for none. */
 int msr_android_http(const char *method, const char *url, const char *headers, const char *body_path, const char *out_path);
 
+/* The 3DS's bottom screen on a second display (a dual-screen handheld's lower screen: MsrActivity's BottomDisplay, a
+   Presentation there). msr_android_bottom_display asks the app for it or lets it go. video.c then takes the surface
+   with msr_android_bottom_poll each frame: the window (acquired for the caller, NULL: none now) and its size, when it
+   changed since `*serial` (1, *serial updated; 0: no change). msr_android_bottom_held says whether video.c still draws
+   into a surface it took (the app waits for it to let go before the surface goes). Touches on that display come as SDL
+   events of type msr_android_bottom_event() (0 before the first request): user.code 1 down, 0 up, data1 and data2 the
+   place in the surface's pixels (intptr_t). */
+void msr_android_bottom_display(int on);
+/* 1 when there is a display for it now (a presentation display besides the app's), else 0: the settings' row */
+int msr_android_bottom_available(void);
+int msr_android_bottom_poll(unsigned *serial, void **window, int *w, int *h);
+void msr_android_bottom_held(int held);
+unsigned msr_android_bottom_event(void);
+
 #ifdef __cplusplus
 }
 #endif
