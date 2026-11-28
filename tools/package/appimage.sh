@@ -44,6 +44,7 @@ cp "$root/native/LICENSE" "$appdir/usr/share/doc/msr-native/LICENSE-GPL-3.0.txt"
 cp "$root/license.txt" "$appdir/usr/share/doc/msr-native/LICENSE-GPL-2.0.txt"
 cp "$root/externals/msr-imgui/LICENSE.txt" "$appdir/usr/share/doc/msr-native/LICENSE-Dear-ImGui.txt"
 cp "$root/native/runtime/shaders/fsr/LICENSE-AMD-FidelityFX.txt" "$appdir/usr/share/doc/msr-native/"
+cp "$root/native/runtime/drm_lease/LICENSE-MHGU-Recomp.txt" "$appdir/usr/share/doc/msr-native/"   # the leased second display, MIT
 if [ -n "$zstd" ]; then cp "$zstd/LICENSE" "$appdir/usr/share/doc/msr-native/LICENSE-zstd.txt"   # zstd, BSD
 elif [ -f /usr/share/doc/libzstd1/copyright ]; then cp /usr/share/doc/libzstd1/copyright "$appdir/usr/share/doc/msr-native/LICENSE-zstd.txt"; fi
 cp "$root/tools/package/msr-native.png" "$appdir/usr/share/icons/hicolor/512x512/apps/msr-native.png"

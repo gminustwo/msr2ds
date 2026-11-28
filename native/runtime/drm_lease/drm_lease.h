@@ -1,5 +1,6 @@
 // The lease and the surface on the leased panel, for runtime/second_display_lease.c (plain C). New glue for
-// MHGU Recomp (MIT); the code behind it is Azahar's: drm_lease_window.cpp, drm_display_surface.cpp.
+// MHGU Recomp (MIT, Copyright (c) 2026 Rokk: LICENSE-MHGU-Recomp.txt); the code behind it is Azahar's:
+// drm_lease_window.cpp, drm_display_surface.cpp.
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>

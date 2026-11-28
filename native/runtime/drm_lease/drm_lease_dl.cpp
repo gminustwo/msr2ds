@@ -1,4 +1,4 @@
-// See drm_lease_dl.h. New glue for MHGU Recomp (MIT).
+// See drm_lease_dl.h. New glue for MHGU Recomp (MIT, Copyright (c) 2026 Rokk: LICENSE-MHGU-Recomp.txt).
 #include <wayland-client-core.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>

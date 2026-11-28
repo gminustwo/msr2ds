@@ -1,7 +1,8 @@
 // wayland-client and libdrm, opened at run time: the game then starts where they are missing, and they are only
 // loaded with the feature on. The macros before wayland-client-protocol.h are SDL's way of doing this
 // (src/video/wayland/SDL_waylanddyn.h, zlib license): the header's inline functions call through the pointers, and
-// its "extern const struct wl_interface x;" lines turn into the pointers' own declarations.
+// its "extern const struct wl_interface x;" lines turn into the pointers' own declarations. New glue for MHGU Recomp
+// (MIT, Copyright (c) 2026 Rokk: LICENSE-MHGU-Recomp.txt).
 #pragma once
 #include <wayland-client-core.h>
 #include <xf86drm.h>

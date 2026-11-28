@@ -9,7 +9,8 @@
  *   MSR_SECOND_DISPLAY_TOUCH=auto|<path>|<name>|off   the panel's touchscreen (default auto). The device is grabbed: the
  *                                                     compositor stops seeing it while the panel is leased
  *
- * Ported from MHGU Recomp's AArch64 Linux builds (MIT): runtime/nvn/vulkan/second_display_drmlease.c at
+ * Ported from MHGU Recomp's AArch64 Linux builds (MIT, Copyright (c) 2026 Rokk: drm_lease/LICENSE-MHGU-Recomp.txt):
+ * runtime/nvn/vulkan/second_display_drmlease.c at
  * https://github.com/cerroverb/MHGURecomp-aarch64 (branch aarch64-linux-v2, commit 8c10fd6). Its Vulkan instance,
  * device, swapchain set-up, turning the panel's way, touch turning and thread are kept as they are there. Edits for msr2ds:
  * the picture is the 3DS bottom screen (video.c hands it over each frame, second_display_bottom), turned on the processor

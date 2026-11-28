@@ -1,5 +1,6 @@
 // What Azahar's files take from its common/ headers: its integer names and its LOG_ macros, whose "{}" fields are
-// filled in here. New glue for MHGU Recomp (MIT, as the rest of runtime/).
+// filled in here. New glue for MHGU Recomp (MIT, as the rest of its runtime/; Copyright (c) 2026 Rokk:
+// LICENSE-MHGU-Recomp.txt).
 #pragma once
 #include <cstdint>
 #include <cstdio>
