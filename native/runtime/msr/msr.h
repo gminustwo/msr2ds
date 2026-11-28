@@ -47,6 +47,7 @@ const char *msr_settings_file(void);    /* settings.ini */
 void msr_discord_start(int launcher);         /* the connection to the Discord app: the launcher's ("In the launcher") or the game's */
 void msr_discord_hold(int held);              /* the launcher while the game runs: its presence cleared, its connection closed */
 void msr_discord_scenario(const char *path);  /* layered_fs.cpp: a package read whole (packs/maps/<scenario>/<scenario>.pkg: the area) */
+int  msr_credits_showing(void);               /* patches.cpp: the credits are on (their update ran in the last half second) */
 void msr_discord_tick(void);                  /* main.c, every 2 s on the main thread: the Metroids left */
 void msr_discord_stop(void);                  /* the end: the presence cleared */
 /* The area a map folder is in, as the game's pause map names it ("s050_area5": "Area 4"), NULL for other folders */

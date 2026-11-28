@@ -218,7 +218,7 @@ extern "C" void msr_camera_frame(double now) {
     const bool widen = P::wide_culling.load(std::memory_order_relaxed);
     const float want = widen && at && msr_world_in_play() ? std::fmax(1.f, 1.f / (ws * zoom)) : 1.f;
     cam.eased += (want - cam.eased) * (1.f - std::exp(-8.f * seconds));
-    if (std::fabs(want - cam.eased) < .0005f) cam.eased = want;
+    if (std::fabs(want - cam.eased) < .0005f || msr_credits_showing()) cam.eased = want;   // (the credits: out of play at once)
     cam.gain.store(cam.eased, std::memory_order_relaxed);
     if (!at) { cam.published_now.store(0.f, std::memory_order_relaxed); Note(1.f); }
 }

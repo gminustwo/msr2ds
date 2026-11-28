@@ -63,6 +63,7 @@ dump and holds the settings, which are also in an in-game overlay (F1 or Select)
 - Mod support
 - Steamdeck preset mode to get 60fps performance
 - Skip the launcher (off by default): straight into the game, with Quit to the launcher in the game's menu
+- Dual-screen handhelds such as the AYN Thor: the bottom screen on the second display (off by default; Android, and Linux in gamescope)
 - Discord Rich Presence: your Discord profile shows the area you're in and the Metroids left (on by default; a switch on the Game tab turns it off)
 - Bug reports from the REPORT tab (in the launcher and in the game's menu), sent to Issues with the log of the session you choose
 
@@ -157,6 +158,15 @@ refresh rate to 60 Hz (Quick Access menu, Performance). To play from Game Mode,
 add `msr-native-direct.sh` to Steam as a non-Steam game. In play the view fills
 the Deck's 16:10 screen, with more of the level above and below (**Fill 16:10
 screens** on the Display tab; off, 16:9 with bars above and below).
+
+**Dual-screen handhelds:** on a handheld with a second screen, such as the AYN
+Thor, the Display tab has **Bottom screen on the second display** (off by
+default): the 3DS's bottom screen on the lower screen, which is its touch screen
+too, and the top screen alone on the main one. The Android app shows the row when
+the handheld has a second display, and it applies at once. On Linux (the
+AppImage in gamescope, such as Armada's Game Mode on the Thor) the row shows
+where gamescope offers the lower screen, and it applies from the game's next
+start. The Steam Deck has one screen, so it never shows there.
 
 **Mac:** Macs have no Vulkan of their own, so the app includes MoltenVK, which
 runs the renderer on Metal. The first time an effect appears, its shaders
@@ -355,7 +365,9 @@ same `settings.ini`; LB and RB switch tabs.
   window, or 1x-10x: 9x is 2160p, 4K); anisotropic filtering (off, 2x-16x);
   upscaling (FSR 1, or Linear: lighter for older graphics on a large screen);
   frame rate (30, the original, 60, 90, 120 or 144; default 60); V-Sync; Show
-  FPS; menu size; and, for slower computers, **Power-saving waits**, **Draw
+  FPS; menu size; **Bottom screen on the second display** (dual-screen
+  handhelds only, see [Play](#play)); and, for slower computers,
+  **Power-saving waits**, **Draw
   only the 3DS's view** and **Texture pack size** (below).
 
   **Video preset** sets the internal resolution, anisotropic filtering, upscaling

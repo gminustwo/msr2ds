@@ -75,6 +75,7 @@ struct State {
     s64 prompt_since_us = 0, prompt_seen_us = 0;
     bool prompt_over_menu = false;   // the prompt showing came straight from a menu: one of its dialogs (msr_compose)
     bool in_play = false;
+    bool credits = false;   // the credits were on last frame (msr_credits_showing; for the log)
     s64 hud_seen_us = -1'000'000'000;   // the HUD last showed (the pad's menus' layout, glyphs.cpp): not yet
     bool menu_icons = true;   // the icons in the menus' layout: the game starts in its menus
     float zoom = 1.f;
@@ -1331,7 +1332,19 @@ extern "C" void msr_compose(const uint8_t* bottom, double now_s, unsigned button
     // Play ends at the title menus or a prompt (the title's, the prologue's), but not at the pause menu's own dialogs,
     // prompts straight over it (the map pins tool's first use): play went on behind them (2026-11-07, #43: the title
     // menus' backdrop was then left out of the pins tool, msr_skip_bottom_draw).
-    if (state == P::Bottom::Hud) {
+    // The credits (after the ending, from the menus, or a state saved in them; patches.cpp msr_credits_showing) are not
+    // play, whatever the touch screen showed before (the ending's skip prompt ends play, a state saved in play does not):
+    // shown as the title menus are, in the 16:9 view without the zoom (the user, 2026-11-28: "keep the 16:9"), and their
+    // touch screen keeps its emblem (msr_skip_bottom_draw).
+    const bool credits = msr_credits_showing() != 0;
+    if (credits != st.credits) {
+        st.credits = credits;
+        std::fprintf(stderr, "msr: %s\n", credits ? "the credits: out of play (the 16:9 view, the touch screen's emblem kept)"
+                                                  : "the credits are over");
+    }
+    if (credits) {
+        st.in_play = false;
+    } else if (state == P::Bottom::Hud) {
         st.in_play = true;
     } else if ((state == P::Bottom::Prompt && now_us - st.prompt_since_us >= 300'000 && !st.prompt_over_menu) ||
                (state == P::Bottom::Menu &&
@@ -1880,10 +1893,13 @@ bool backdrop = false;
 
 extern "C" void msr_bottom_frame(void) { bottom_draw = -1; }
 
+// The credits draw the emblem the same way, over a small copy of the credits they leave in the touch screen's frame:
+// left out, that copy read as a prompt and floated over the view, the credits twice (2026-11-28, the user: "the credits
+// play in two screens"). There the emblem stays, and the touch screen reads as the emblem (hidden).
 extern "C" int msr_skip_bottom_draw(int quad_backdrop) {
     if (++bottom_draw > 1) return 0;
     if (bottom_draw == 0) {
-        backdrop = quad_backdrop != 0 && !msr_world_in_play();
+        backdrop = quad_backdrop != 0 && !msr_world_in_play() && !msr_credits_showing();
         P::backdrop_removed.store(backdrop, std::memory_order_relaxed);
     }
     return backdrop && quad_backdrop;
