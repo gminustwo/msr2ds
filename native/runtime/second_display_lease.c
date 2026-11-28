@@ -1,7 +1,8 @@
 /* The bottom screen on a panel the compositor leases to the game (drm-lease-v1), driven directly through VK_KHR_display
  * while the game plays in its own window. On a dual-screen handheld in gamescope (the AYN Thor in Armada's Game Mode)
  * that is the bottom panel, which gamescope does not show. The panel's touchscreen is the 3DS touch screen.
- *   MSR_SECOND_DISPLAY=0                          off (the game in its window only, as without this file)
+ *   MSR_SECOND_DISPLAY=1                          on; off by default (the game in its window only, as without this
+ *                                                 file: nothing is asked of the compositor)
  *   MSR_SECOND_DISPLAY_CONNECTOR=<name>           that connector (default: the first internal panel offered)
  *   MSR_SECOND_DISPLAY_ROTATION=0|90|180|270      the picture's turn, counter-clockwise (default: the connector's panel
  *                                                 orientation)
@@ -470,7 +471,7 @@ static void *panel_thread(void *arg) {
 
 void second_display_start(void) {
     const char *e = getenv("MSR_SECOND_DISPLAY");
-    if (e && !strcmp(e, "0")) { SD_LOG("off (MSR_SECOND_DISPLAY=0)\n"); return; }
+    if (!e || strcmp(e, "1")) { SD_LOG("off (MSR_SECOND_DISPLAY=1 turns it on)\n"); return; }
     /* (read when the thread's vkCreateInstance runs; the game's instance exists by now, and nothing makes another) */
     setenv("VK_LOADER_LAYERS_DISABLE", "~implicit~", 1);
     pthread_t th;
