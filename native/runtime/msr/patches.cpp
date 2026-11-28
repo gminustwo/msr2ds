@@ -3,6 +3,8 @@
 // (video_core/gpu.cpp). With a randomizer the Fusion suit stays off (it has its own option).
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -207,7 +209,35 @@ void ScaleContactMinimum() {
         std::fprintf(stderr, "msr: floor contacts: the collision's minimum follows the frame time above 30 FPS\n");
 }
 
+// The credits: their update (0x262E98, the credits object's method at 0x6CC37C; it scrolls them, frame_rate.h) runs on
+// each frame they show, after the ending, from the menus, or in a state saved during them, and at no other time. While
+// it runs the compositor keeps their touch screen's emblem and shows them out of play (msr_credits_showing,
+// compositor.cpp: in the single view they showed twice; 2026-11-28).
+constexpr u32 CreditsUpdate = 0x262E98, CreditsUpdateSlot = 0x6CC37C;
+std::atomic<long long> credits_seen_ns{0};   // when the update last ran (steady clock), 0 never
+
+long long SteadyNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void CreditsUpdateHook(CPU*) { credits_seen_ns.store(SteadyNs(), std::memory_order_relaxed); }
+
+void WatchCredits() {
+    // its push {r4-r8, lr} and mov r4, r0, and the credits object's method table holding it
+    if (rd32(CreditsUpdate) != 0xE92D41F0u || rd32(CreditsUpdate + 4) != 0xE1A04000u || rd32(CreditsUpdateSlot) != CreditsUpdate) {
+        std::fprintf(stderr, "msr: credits: not this game's code, left in the wide view\n");
+        return;
+    }
+    if (!rt_add_call_hook(CreditsUpdate, CreditsUpdateHook)) std::fprintf(stderr, "msr: credits: no hook left\n");
+}
+
 } // namespace
+
+// The credits are on: their update ran in the last half second
+extern "C" int msr_credits_showing(void) {
+    const long long seen = credits_seen_ns.load(std::memory_order_relaxed);
+    return seen != 0 && SteadyNs() - seen < 500'000'000LL;
+}
 
 // The words patchable.txt lists that native code built before them does not check: the recompiled functions holding
 // them are turned off (menu code only), so the interpreter runs them as the patches leave them, whichever native code
@@ -221,5 +251,6 @@ extern "C" void msr_patches_module_loaded(void) {
     HookNewFileDifficulty();
     WidenPackageHeap();
     ScaleContactMinimum();
+    WatchCredits();
     msr_draw_lists_install();
 }
