@@ -18,6 +18,7 @@ import org.libsdl.app.SDLActivity;
 public class MsrActivity extends SDLActivity {
     static final String EXTRA_ARGS = "io.github.gminustwo.msrnative.ARGS";
     static final int PICK_GPU_DRIVER = 1;
+    private BottomDisplay bottom;   // the 3DS's bottom screen on a second display (BottomDisplay)
 
     @Override
     protected String[] getLibraries() {
@@ -35,6 +36,29 @@ public class MsrActivity extends SDLActivity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        bottom = new BottomDisplay(this);
+    }
+
+    @Override
+    protected void onPause() {
+        bottom.onPause();   // first: the game's thread still runs to let go of the bottom screen's surface
+        super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        bottom.onResume();
+    }
+
+    /** From the game (video.c, through android.c): the bottom screen on a second display, or not. */
+    public void bottomDisplay(boolean on) {
+        bottom.want(on);
+    }
+
+    /** From the settings (overlay_host.cpp, through android.c): whether there is a display for the bottom screen. */
+    public boolean hasBottomDisplay() {
+        return bottom.available();
     }
 
     /**
