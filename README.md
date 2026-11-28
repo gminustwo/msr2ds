@@ -59,6 +59,7 @@ dump and holds the settings, which are also in an in-game overlay (F1 or Select)
 - Nintendo controller layout is off by default. A is accept, B is back in menus but A is jump in gameplay. This is configurable
 - Mod support
 - Steamdeck preset mode to get 60fps performance
+- Skip the launcher (off by default): straight into the game, with Quit to the launcher in the game's menu
 - Discord Rich Presence: your Discord profile shows the area you're in and the Metroids left (on by default; a switch on the Game tab turns it off)
 - Bug reports from the REPORT tab (in the launcher and in the game's menu), sent to Issues with the log of the session you choose
 
@@ -125,16 +126,21 @@ controller's Select / View / Back button opens the same menu. The internal
 resolution starts at 4x (960p): raise it on the Display tab (9x is 4K) if your
 GPU has room, or lower it if it struggles.
 
-**Without the launcher:** `msr-native-direct.exe`, beside `msr-native.exe` in
-the Windows zip, starts the game straight away with your settings: use it for a
-desktop shortcut, Steam or a frontend. When the game can't start yet (no game
-file, or the native code needs building), it opens the launcher instead. On
-Linux and macOS the launcher makes it once the native code is built:
+**Without the launcher:** turn on **Skip the launcher** (Game tab, under Play)
+and `msr-native` goes straight into the game with your settings from its next
+start. `msr-native-direct.exe`, beside `msr-native.exe` in the Windows zip,
+always does: use it for a desktop shortcut, Steam or a frontend. On Linux and
+macOS the launcher makes it once the native code is built:
 `msr-native-direct.sh` beside the AppImage, `msr-native-direct.app` beside
-`msr-native.app`.
+`msr-native.app`. Started either way, the game's menu has **Quit to the
+launcher**, and the launcher opens by itself when the game can't start yet (no
+game file, or the native code needs building), when the game crashed, or when an
+update is ready to install. `msr-native --launcher` always opens the launcher.
+(Not in the Android app.)
 
 **Updates:** when a newer release is out, the Game tab says so when the launcher
-starts. **Update now** downloads it and puts it in place of this one (the same
+starts. Started without the launcher, the game looks while you play, and the
+next start opens the launcher to offer it. **Update now** downloads it and puts it in place of this one (the same
 folder, AppImage or app), then starts it. Your saves, settings, mods and native
 code are kept; an update only asks you to rebuild the native code in the rare
 case it needs it. **What's new** opens the release's page. On a Mac, an app
@@ -304,14 +310,16 @@ keys.
 The launcher and the in-game menu (F1 or Select) have the same tabs, saved to the
 same `settings.ini`; LB and RB switch tabs.
 
-- **Game:** in the launcher, Play, the game file, the native code, saves and the
+- **Game:** in the launcher, Play, **Skip the launcher** (off by default; see
+  [Play](#play)), the game file, the native code, saves and the
   language (English, French, Spanish, German, Italian or Dutch: the last three
   set the 3DS region to Europe, which the game needs for them); volume; **Unlock amiibo galleries**, **Unlock Fusion Mode** and **Hard Mode
   from the start** (all on by default) and **Fusion suit, any difficulty** (off);
   **Discord Rich Presence** (on: with the Discord app open on the same computer,
   your Discord profile shows that you're playing, the area you're in and the
   Metroids left; not in the Android app); **Join the msr2ds Discord**; in the
-  game, Resume, Quick save, Quick load, Restart and Quit.
+  game, Resume, Quick save, Quick load, Restart, **Quit to the launcher** (when
+  the launcher was skipped) and Quit.
 
   **3DS mode** (off by default; in the launcher under Play, and on the game's
   Game tab, from the next start): the game laid out as the 3DS shows it. Both

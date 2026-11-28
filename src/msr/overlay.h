@@ -77,6 +77,10 @@ struct PlayerSettings {
     /// msr-native: 3DS mode, from the game's next start (Presentation::original). Never on by default, and no preset
     /// turns it on.
     bool original_3ds = false;
+    /// msr-native (not the Android app): the launcher's Skip the launcher. Started on its own, the program plays at
+    /// once (as msr-native-direct); the launcher still opens when the game can't start, a newer release waits, the game
+    /// crashed or its menu's Quit to the launcher asked (native/runtime/msr/launcher.cpp). Off by default.
+    bool skip_launcher = false;
     // The video settings the player last set by hand, which no preset makes (the Display tab's Custom): kept when a
     // preset replaces them, so Custom brings them back
     bool custom_video = false; ///< The values below are the player's (none yet: Custom is not offered)
@@ -277,6 +281,9 @@ struct LauncherSnapshot {
     /// The program beside the launcher that starts the game without it (msr-native-direct.exe), once
     /// the native code is built; empty when there is none
     std::string direct;
+    /// The game's menu, in a game started without the launcher's window (msr-native-direct, or Skip the
+    /// launcher): Quit to the launcher is shown (its Quit ends the program)
+    bool quit_to_launcher = false;
     /// The native code can be built here (not in msr-native's Android app: a PC builds it there)
     bool can_build = true;
     /// msr-native on a PC: the Android app's native code can be built too (Build for Android)
@@ -386,6 +393,7 @@ struct OverlayAction {
         LauncherPlaceMove,        ///< msr-native (Android): move the user folder to the other place (asks first)
         LauncherPlaceConfirm,     ///< msr-native (Android): the move confirmed
         LauncherPlaceCancel,      ///< msr-native (Android): the move not wanted
+        QuitToLauncher,           ///< msr-native: end the game and open the launcher (a game started without it)
     };
     Kind kind;
     EmulatorSettings emulator{};

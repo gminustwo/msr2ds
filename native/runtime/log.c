@@ -600,7 +600,7 @@ void log_start_lines(void) {
             ""
 #endif
             , MSR_BUILD_COMMIT, MSR_BUILD_DATE, package);
-    {   /* how: the launcher's Play, the direct start (MSR_STARTED_BY, launcher.cpp), else directly; through Steam (its own
+    {   /* how: the launcher's Play, the direct start or the launcher skipped (MSR_STARTED_BY, launcher.cpp), else directly; through Steam (its own
            variables in the game's environment), RecompLauncher (RECOMPLAUNCHER) */
         const char *by = getenv("MSR_STARTED_BY");
         const char *who =
@@ -608,6 +608,7 @@ void log_start_lines(void) {
             "the app";
 #else
             by && !strcmp(by, "launcher") ? "the launcher's Play" : by && !strcmp(by, "direct") ? "the direct start (msr-native-direct)"
+            : by && !strcmp(by, "skip") ? "msr-native, the launcher skipped (its Skip the launcher)"
             : "itself (msr-native --play, no launcher)";
 #endif
         static const char *const steam_vars[] = { "SteamGameId", "SteamOverlayGameId", "SteamClientLaunch", "SteamAppId", "SteamEnv" };
