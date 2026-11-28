@@ -199,10 +199,12 @@ struct EmulatorSettings {
     bool performance_options = false;
     bool fsr = true;           ///< Upscaling with FSR 1, else linear (lighter)
     bool power_saving = false; ///< Waits sleep instead of spinning (msr-native main.c main_set_power_saving)
-    // msr-native on Android with a second display (a dual-screen handheld's lower screen): the Bottom screen there row;
-    // settings.ini [native] bottom_display, applied at once (video.c's bottom output)
+    // msr-native with a second display (a dual-screen handheld's lower screen): the Bottom screen there row; settings.ini
+    // [native] bottom_display. Android: applied at once (video.c's bottom output); Linux: the panel the compositor
+    // leases (second_display_lease.c), from the game's next start
     bool bottom_display_option = false;
     bool bottom_display = false;
+    int bottom_display_running = -1; ///< Linux: what the running game started with (0, 1); -1: applied at once
     int texture_detail = 1;    ///< Texture pack size: 1 full, 2 half, 4 quarter (msr-native textures.cpp), from the next start
     int texture_detail_running = 1; ///< What the running game loads packs at (in the launcher: the same)
     // msr-native with OpenGL (MSR_OPENGL): the Graphics API row. 0 automatic (Vulkan with 1.3, else OpenGL), 1 Vulkan,

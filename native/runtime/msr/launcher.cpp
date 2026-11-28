@@ -2944,13 +2944,14 @@ bool StartGame() {
         const std::string renderer = file.String("native", "renderer", "auto");
         if (renderer == "vulkan" || renderer == "opengl") args.push_back("--renderer=" + renderer);
     }
+    // the bottom screen on a second display, a dual-screen handheld's lower screen (Android: video.c's bottom output;
+    // Linux: the panel the compositor leases, second_display_lease.c)
+    if (file.Bool("native", "bottom_display", false)) args.push_back("--bottom-display=on");
 #ifdef __ANDROID__
     {   // a GPU driver the player installed (the GPU driver section)
         std::scoped_lock lock{S.lock};
         if (S.gpu_driver_option && !S.gpu_driver.empty()) args.push_back("--gpu-driver=" + S.gpu_driver);
     }
-    // the bottom screen on a second display, a dual-screen handheld's lower screen (video.c's bottom output)
-    if (file.Bool("native", "bottom_display", false)) args.push_back("--bottom-display=on");
     {   // the app again, as the game (main.c starts its session's log there, user/logs); this process ends
         std::fprintf(stderr, "launcher: starting the game\n");
         std::vector<const char*> argv;

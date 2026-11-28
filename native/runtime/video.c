@@ -176,7 +176,8 @@ SDL_bool msr_vk_surface(SDL_Window *win, VkInstance inst, VkSurfaceKHR *surf);
 static int opt_drawdist = 1;        /* draw distance multiplier (drawdist.c), read when the game starts */
 static int fs_last = 1;   /* the fullscreen mode F11 toggles to */
 static float opt_window_aspect = 16.f / 9.f;   /* the single layout's window when it opens ("21:9", "2.37") */
-static int opt_bottom_display;   /* Android: the bottom screen on a second display (bottom_display, the bottom output below) */
+static int opt_bottom_display;   /* the bottom screen on a second display (bottom_display): Android's bottom output below,
+                                    Linux's leased panel (second_display_lease.c, from the game's start) */
 
 static int pick(const char *v, const char *const *names, int n) { for (int i = 0; i < n; i++) if (!strcmp(v, names[i])) return i; return -1; }
 int video_option(const char *name, const char *value) {
@@ -264,8 +265,11 @@ typedef struct { float x, y, w, h; int on; } Rect;   /* window pixels */
 static int auto_state;   /* 0 = menu, 1 = gameplay */
 
 static int bottom_live;  /* the bottom screen is on a second display (the bottom output): the window shows the top one */
+static volatile int bottom_leased;   /* ...or on a panel the compositor leased (Linux, second_display_lease.c's thread) */
+void video_bottom_leased(int on) { bottom_leased = on; }
+int video_bottom_display(void) { return opt_bottom_display; }
 static int effective_layout(void) {
-    if (bottom_live) return L_TOP;
+    if (bottom_live || bottom_leased) return L_TOP;
     return opt_layout == L_AUTO ? (auto_state ? opt_auto_gameplay : L_STACKED) : opt_layout;
 }
 
@@ -2271,6 +2275,9 @@ int video_frame(void) {
         }
         if (!read_back) decode_screen(&bottom, BOT_W, bot_px);
     }
+#ifdef MSR_DRM_LEASE
+    second_display_bottom(bot_px);
+#endif
     {   /* PWR_SEQ=<first presented frame>,<count>[,<every>]: both screens as decoded, one PPM pair per presented frame
            (or every <every>th of them) */
         static long first = -2, count, every = 1; static long n;

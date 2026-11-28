@@ -100,5 +100,6 @@ LICENSE-shaderc.txt).
 The macOS app also holds MoltenVK and shaderc (Apache 2.0), SDL 2 (zlib) and libpng (libpng
 license), each with its license beside this file. The Android app holds shaderc (Apache 2.0)
 too, built from the Android NDK's copy, with SDL 2, libpng and zstd.
-Dear ImGui and AMD FidelityFX FSR 1 are MIT. Metroid: Samus Returns belongs to Nintendo; this
-program contains none of it.
+Dear ImGui and AMD FidelityFX FSR 1 are MIT. The Linux AppImage's bottom screen on a second
+panel is MHGU Recomp's (MIT, LICENSE-MHGU-Recomp.txt) and Azahar's (GPL 2.0 or later).
+Metroid: Samus Returns belongs to Nintendo; this program contains none of it.

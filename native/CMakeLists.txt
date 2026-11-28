@@ -348,6 +348,38 @@ if (PNG_FOUND)
 else()
     message(STATUS "msr-native: no libpng, texture packs are left out")
 endif()
+# Linux: the bottom screen on a panel the compositor leases (drm-lease-v1: a dual-screen handheld's second panel in
+# gamescope), runtime/second_display_lease.c and runtime/drm_lease (Azahar's code, GPLv2 or later). Needs wayland-scanner
+# and the wayland-client and libdrm headers to build (Debian: libwayland-dev, libwayland-bin, libdrm-dev; Fedora:
+# wayland-devel, libdrm-devel). Both libraries are opened when the game runs, so the program
+# still starts where they are missing. Without the headers it is left out.
+if (UNIX AND NOT APPLE AND NOT ANDROID)
+    find_package(PkgConfig)
+    if (PKG_CONFIG_FOUND)
+        pkg_check_modules(MSR_LEASE_DEPS wayland-client libdrm)
+    endif()
+    find_program(MSR_WAYLAND_SCANNER wayland-scanner)
+    if (MSR_LEASE_DEPS_FOUND AND MSR_WAYLAND_SCANNER)
+        set(MSR_LEASE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/runtime/drm_lease)
+        set(MSR_LEASE_GEN ${CMAKE_CURRENT_BINARY_DIR}/drm_lease)
+        file(MAKE_DIRECTORY ${MSR_LEASE_GEN})
+        add_custom_command(OUTPUT ${MSR_LEASE_GEN}/drm-lease-v1-client-protocol.h
+            COMMAND ${MSR_WAYLAND_SCANNER} client-header ${MSR_LEASE_DIR}/drm-lease-v1.xml ${MSR_LEASE_GEN}/drm-lease-v1-client-protocol.h
+            DEPENDS ${MSR_LEASE_DIR}/drm-lease-v1.xml)
+        add_custom_command(OUTPUT ${MSR_LEASE_GEN}/drm-lease-v1-protocol.c
+            COMMAND ${MSR_WAYLAND_SCANNER} private-code ${MSR_LEASE_DIR}/drm-lease-v1.xml ${MSR_LEASE_GEN}/drm-lease-v1-protocol.c
+            DEPENDS ${MSR_LEASE_DIR}/drm-lease-v1.xml)
+        target_sources(msr-native PRIVATE runtime/second_display_lease.c
+            ${MSR_LEASE_DIR}/drm_display_surface.cpp ${MSR_LEASE_DIR}/drm_lease_client.cpp ${MSR_LEASE_DIR}/drm_lease_dl.cpp
+            ${MSR_LEASE_DIR}/drm_lease_touch.cpp ${MSR_LEASE_DIR}/drm_lease_window.cpp
+            ${MSR_LEASE_GEN}/drm-lease-v1-client-protocol.h ${MSR_LEASE_GEN}/drm-lease-v1-protocol.c)
+        target_include_directories(msr-native PRIVATE ${MSR_LEASE_GEN})
+        target_include_directories(msr-native SYSTEM PRIVATE ${MSR_LEASE_DEPS_INCLUDE_DIRS})
+        target_compile_definitions(msr-native PRIVATE MSR_DRM_LEASE)
+    else()
+        message(STATUS "msr-native: no wayland-scanner, wayland-client or libdrm headers, the leased second display is left out")
+    endif()
+endif()
 if(WIN32)
   enable_language(RC)
   if(MINGW AND CMAKE_HOST_WIN32)

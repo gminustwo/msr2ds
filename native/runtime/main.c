@@ -876,6 +876,9 @@ int main(int argc, char **argv) {
     msr_overlay_start(video_fullscreen(), video_resolution(), video_vsync(), g_mute ? 0 : volume, video_aniso(), video_filter_fsr(),
                       power_saving);
     if (video_init(scale)) { fprintf(stderr, "native: video init failed\n"); video_explain(log_path()[0] ? log_path() : "user/logs"); return 1; }
+#ifdef MSR_DRM_LEASE
+    second_display_start();
+#endif
     settings_line(fps);
     fprintf(stderr, "native: boot (input=%s, audio=%s)\n", g_input_none ? "none" : "default", g_mute ? "muted" : "on");
 
